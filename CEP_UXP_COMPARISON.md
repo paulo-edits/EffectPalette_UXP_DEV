@@ -54,7 +54,7 @@ The CEP implementation routes audio effects through the undocumented QE DOM. The
 
 The official UXP path validates a runtime match name from `TransitionFactory`, creates a `VideoTransition`, configures the target clip edge with `AddTransitionOptions`, and submits `VideoClipTrackItem.createAddVideoTransitionAction()` in a project transaction. Unlike inserted effect components, `VideoTransition` exposes no readable identity surface, so the proof of concept records catalog validation, transaction acceptance, transition-count change and required visual confirmation without claiming a direct post-insertion identity check.
 
-Premiere 26.3.2 visually mapped `ADBE Additive Dissolve` to **Additive Dissolve (Legacy)**. There is no official post-creation display-name method with which to build or verify a direct transition identity pair, so production mapping remains an explicit capability gap.
+Premiere 26.3.2 visually mapped `ADBE Additive Dissolve` and `ADBE Film Dissolve` to their **(Legacy)** variants. Adobe's Premiere 26.0 documentation confirms that modern GPU-accelerated Film Impact replacements took over several familiar transition names while historical implementations moved to Legacy. There is no official transition display-name catalog or post-creation display-name method with which to identify the modern implementations, so production mapping remains an explicit capability gap.
 
 ## Reference locations (read-only)
 

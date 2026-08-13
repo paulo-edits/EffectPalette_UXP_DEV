@@ -55,7 +55,7 @@ The third mutation probe is `timeline.applyAudioEffect`. It accepts an exact, ru
 
 The fourth mutation probe is `timeline.applyVideoTransition`. It accepts an exact runtime `matchName`, filters selection to video clips, creates one `VideoTransition` per target, and applies it to the selected start or end edge in one undoable transaction. The proof of concept leaves duration and alignment at Premiere's host defaults. It verifies the transition-item count before and after; transition identity remains visual-only because the official `VideoTransition` class exposes no methods or properties.
 
-In Premiere 26.3.2, `ADBE Additive Dissolve` visibly produced **Additive Dissolve (Legacy)**. Because the official transition object cannot report its display name, the diagnostic default is `ADBE Film Dissolve`, another exact match name observed in the runtime catalog. Product code must treat transition match-name/display-name mapping as unresolved rather than infer identity from the internal name.
+In Premiere 26.3.2, `ADBE Additive Dissolve` and `ADBE Film Dissolve` visibly produced their **(Legacy)** variants. Adobe documents that Premiere 26.0 replaced several familiar transitions with modern GPU-accelerated versions originating from Film Impact while preserving the old implementations in the Legacy folder. Because the official transition object cannot report its display name and the factory exposes no display-name catalog, the diagnostic field intentionally has no default. Product code must treat modern transition match-name/display-name mapping as unresolved rather than infer identity from historical internal names.
 
 Do not infer effect identity from a remembered match name. In Premiere 26.3.2, the documented example `AE.ADBE Mosaic` resolved to the component displayed as **Mosaic (Legacy)**. The production catalog must persist both the runtime match name and the display name resolved from a created component or another officially supported mapping; it must not assume positional correspondence between separately returned arrays.
 
@@ -74,4 +74,6 @@ No status should be promoted to **Tested in Premiere** until the exact Premiere 
 - [Project](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/project)
 - [Sequence](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequence)
 - [TrackItemSelection](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/trackitemselection)
+- [Premiere 26.0 effects and transitions reorganization](https://helpx.adobe.com/premiere/desktop/add-video-effects/effects-and-transitions-library/effects-and-transitions-reorganization.html)
+- [Premiere 26.0 effects and transitions changes](https://helpx.adobe.com/premiere/desktop/add-video-effects/effects-and-transitions-library/list-of-effects-and-transitions.html)
 - [UDT plugin workflows](https://developer.adobe.com/premiere-pro/uxp/plugins/tutorials/udt-deep-dive/plugin-workflows)
