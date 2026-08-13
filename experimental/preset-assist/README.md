@@ -11,4 +11,6 @@ python experimental/preset-assist/diagnose_premiere_window.py --output "$env:TEM
 
 Future gates, in order, are panel-region calibration, OCR/result ambiguity detection, dry-run pointer targeting, user-confirmed drag acquisition, and post-drop UXP verification. Every gate must fail closed.
 
+Premiere 26.3.2 exposes the Effects search Edit through Windows UI Automation, including its exact current text, but does not expose the visible filtered result row. The result validator must therefore be hybrid: semantic exact-query verification plus visual detection/OCR of the preset row and icon. A pixel-only or UIA-only decision is forbidden.
+
 The alias bridge export remains research evidence only. It was rejected as a product workflow because importing generated copies would pollute and desynchronize the user's Presets catalog.
