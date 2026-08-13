@@ -63,6 +63,8 @@ The read-only CEP catalog file is generated at runtime by `getEffectsList()` in 
 
 The official UXP surface provides `Sequence.createSubsequence(ignoreTrackTargeting)` directly. The proof of concept requires an explicit current Timeline selection and passes `true`, avoiding dependence on the user's targeted tracks. It renames the returned sequence through its official ProjectItem action. Unlike effect/transition mutations, creation does not expose an Action, so atomic Undo behavior cannot be assumed and must be characterized in the host.
 
+Host testing confirmed that `createSubsequence()` creates a project-root sequence without replacing the selected source clips. Rename and creation occupy separate Undo steps. Reproducing the product's full Nest behavior therefore requires a second stage that removes the original selection and inserts the new sequence item at the correct Timeline coordinates using official actions.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
