@@ -16,6 +16,8 @@ from pathlib import Path
 
 
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
 def enable_per_monitor_dpi() -> str:
@@ -41,7 +43,20 @@ def window_candidates() -> list[dict]:
         buffer = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buffer, len(buffer))
         title = buffer.value
-        if "Adobe Premiere Pro" not in title:
+        process_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        process_path = ""
+        process_handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id.value)
+        if process_handle:
+            try:
+                path_size = wintypes.DWORD(32768)
+                path_buffer = ctypes.create_unicode_buffer(path_size.value)
+                if kernel32.QueryFullProcessImageNameW(process_handle, 0, path_buffer, ctypes.byref(path_size)):
+                    process_path = path_buffer.value
+            finally:
+                kernel32.CloseHandle(process_handle)
+        executable_name = process_path.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        if executable_name != "adobe premiere pro.exe":
             return True
         rect = wintypes.RECT()
         if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -49,6 +64,9 @@ def window_candidates() -> list[dict]:
         candidates.append({
             "hwnd": int(hwnd),
             "title": title,
+            "processId": process_id.value,
+            "processPath": process_path,
+            "identityEvidence": "exact-executable-name",
             "rect": {
                 "left": rect.left,
                 "top": rect.top,
