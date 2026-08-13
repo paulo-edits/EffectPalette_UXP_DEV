@@ -3,6 +3,7 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
 const executionAdapter = require("./execution-adapter.js");
+let capturedTransformCurveReference = null;
 
 function text(id, value) {
   const node = document.getElementById(id);
@@ -311,6 +312,154 @@ function cubicBezierProgress(progress, x1, y1, x2, y2) {
   return cubicBezierCoordinate(parameter, y1, y2);
 }
 
+function unwrapNumericHostValue(value) {
+  let current = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof current === "number") return current;
+    if (!current || typeof current !== "object" || !("value" in current)) break;
+    current = current.value;
+  }
+  return typeof current === "number" ? current : null;
+}
+
+async function getSequenceFramesPerSecond(sequence) {
+  const settings = await sequence.getSettings();
+  if (settings && typeof settings.getVideoFrameRate === "function") {
+    const frameRate = await settings.getVideoFrameRate();
+    if (frameRate && Number(frameRate.value) > 0) return Number(frameRate.value);
+  }
+  const timebase = Number(await sequence.getTimebase());
+  if (timebase > 0) return 254016000000 / timebase;
+  throw new Error("The sequence frame rate could not be read through the official API.");
+}
+
+async function getSingleSelectedVideoClip(sequence) {
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const videoMediaTypes = new Set();
+  for (let index = 0; index < await sequence.getVideoTrackCount(); index += 1) {
+    videoMediaTypes.add(guidToString(await (await sequence.getVideoTrack(index)).getMediaType()));
+  }
+  const clips = [];
+  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
+    if (videoMediaTypes.has(guidToString(await item.getMediaType()))) clips.push(item);
+  }
+  if (clips.length !== 1) throw new Error("Select exactly one video clip.");
+  return clips[0];
+}
+
+async function findLastComponentByMatchName(chain, matchName) {
+  for (let index = (await chain.getComponentCount()) - 1; index >= 0; index -= 1) {
+    const component = await chain.getComponentAtIndex(index);
+    if (await component.getMatchName() === matchName) return { component, index };
+  }
+  return null;
+}
+
+async function captureTransformCurveReference() {
+  const matchName = "AE.ADBE Geometry2";
+  const parameterIndex = 3;
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before capturing a reference.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before capturing a reference.");
+  const clip = await getSingleSelectedVideoClip(sequence);
+  const chain = await clip.getComponentChain();
+  const resolved = await findLastComponentByMatchName(chain, matchName);
+  if (!resolved) throw new Error("Apply a Transform effect/preset manually to the selected reference clip first.");
+  const parameter = await resolved.component.getParam(parameterIndex);
+  const times = Array.from(await parameter.getKeyframeListAsTickTimes());
+  if (times.length < 2) throw new Error("Transform Scale Height must contain at least two keyframes.");
+  const firstTime = times[0];
+  const lastTime = times[times.length - 1];
+  const fps = await getSequenceFramesPerSecond(sequence);
+  const durationSeconds = lastTime.seconds - firstTime.seconds;
+  const segmentCount = Math.max(1, Math.min(1200, Math.round(durationSeconds * fps)));
+  const samples = [];
+  for (let frame = 0; frame <= segmentCount; frame += 1) {
+    const offsetSeconds = frame === segmentCount ? durationSeconds : Math.min(durationSeconds, frame / fps);
+    const time = firstTime.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+    const value = unwrapNumericHostValue(await parameter.getValueAtTime(time));
+    if (!Number.isFinite(value)) throw new Error(`Scale Height returned a non-numeric value at sample ${frame}.`);
+    samples.push({ offsetSeconds, value });
+  }
+  capturedTransformCurveReference = {
+    schemaVersion: 1, matchName, parameterIndex, parameterDisplayName: parameter.displayName || null,
+    fps, durationSeconds, sourceFirstKeySeconds: firstTime.seconds, samples
+  };
+  return {
+    captured: true,
+    sourceClipName: await clip.getName(),
+    componentIndex: resolved.index,
+    matchName,
+    parameterIndex,
+    parameterDisplayName: parameter.displayName || null,
+    originalKeyframeCount: times.length,
+    fps,
+    durationSeconds,
+    sampleCount: samples.length,
+    firstSample: samples[0],
+    lastSample: samples[samples.length - 1],
+    mutation: "none",
+    captureScope: "in-memory-until-plugin-reload"
+  };
+}
+
+async function applyTransformCurveReference() {
+  if (!capturedTransformCurveReference) throw new Error("Capture the manually applied reference curve first.");
+  const reference = capturedTransformCurveReference;
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying the reference.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying the reference.");
+  const target = await getSingleSelectedVideoClip(sequence);
+  const targetDuration = await target.getDuration();
+  if (targetDuration.seconds < reference.durationSeconds) {
+    throw new Error("The target clip is shorter than the captured reference curve.");
+  }
+  const targetInPoint = await target.getInPoint();
+  const chain = await target.getComponentChain();
+  const componentIndex = await chain.getComponentCount();
+  const created = await premiere.VideoFilterFactory.createComponent(reference.matchName);
+  let insertionTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    insertionTransactionSucceeded = project.executeTransaction((compound) => {
+      compound.addAction(chain.createAppendComponentAction(created));
+    }, "FX.palette: Insert captured Transform reference");
+  });
+  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the Transform insertion.");
+  const component = await chain.getComponentAtIndex(componentIndex);
+  const parameter = await component.getParam(reference.parameterIndex);
+  const prepared = [];
+  for (const sample of reference.samples) {
+    const keyframe = await parameter.createKeyframe(sample.value);
+    keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(sample.offsetSeconds));
+    await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+    prepared.push(keyframe);
+  }
+  let curveTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const actions = prepared.map((keyframe) => parameter.createAddKeyframeAction(keyframe));
+    curveTransactionSucceeded = project.executeTransaction((compound) => {
+      compound.addAction(parameter.createSetTimeVaryingAction(true));
+      actions.forEach((itemAction) => compound.addAction(itemAction));
+    }, "FX.palette: Apply captured Transform curve");
+  });
+  if (!curveTransactionSucceeded) throw new Error("Premiere rejected the captured curve transaction.");
+  const resultTimes = Array.from(await parameter.getKeyframeListAsTickTimes());
+  return {
+    targetClipName: await target.getName(), matchName: reference.matchName,
+    parameterIndex: reference.parameterIndex, parameterDisplayName: parameter.displayName || null,
+    componentIndex, sourceFramesPerSecond: reference.fps, sourceDurationSeconds: reference.durationSeconds,
+    requestedSampleCount: reference.samples.length, resultingKeyframeCount: resultTimes.length,
+    firstRequestedValue: reference.samples[0].value,
+    lastRequestedValue: reference.samples[reference.samples.length - 1].value,
+    insertionTransactionSucceeded, curveTransactionSucceeded,
+    reproductionModel: "frame-sampled-reference-values",
+    undoModelExpected: ["Undo sampled Transform curve", "Undo inserted Transform effect"]
+  };
+}
+
 async function probeVideoEffectParameters(action) {
   const requestedMatchName = typeof action.payload.matchName === "string"
     ? action.payload.matchName.trim()
@@ -525,12 +674,8 @@ async function probeAnimatedVideoEffectParameter(action) {
   let sequenceFramesPerSecond = null;
   if (approximateBezier && sampleEveryFrame) {
     try {
-      const settings = await sequence.getSettings();
-      const frameDuration = settings && settings.videoFrameRate;
-      if (frameDuration && Number(frameDuration.seconds) > 0) {
-        sequenceFramesPerSecond = 1 / Number(frameDuration.seconds);
-        approximationSamples = Math.max(3, Math.min(120, Math.round(sequenceFramesPerSecond)));
-      }
+      sequenceFramesPerSecond = await getSequenceFramesPerSecond(sequence);
+      approximationSamples = Math.max(3, Math.min(120, Math.round(sequenceFramesPerSecond)));
     } catch (_) { /* Explicit segment count remains the safe fallback. */ }
   }
   const selection = await sequence.getSelection();
@@ -1599,6 +1744,26 @@ async function runProbeAnimatedVideoEffectParameter() {
   if (button) button.disabled = false;
 }
 
+async function runCaptureTransformCurveReference() {
+  const button = document.getElementById("capture-transform-reference");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "timeline.captureTransformCurveReference", requestId: String(Date.now()), payload: {}
+  }, { "timeline.captureTransformCurveReference": captureTransformCurveReference });
+  text("transform-reference-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
+async function runApplyTransformCurveReference() {
+  const button = document.getElementById("apply-transform-reference");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "timeline.applyTransformCurveReference", requestId: String(Date.now()), payload: {}
+  }, { "timeline.applyTransformCurveReference": applyTransformCurveReference });
+  text("transform-reference-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -1812,6 +1977,16 @@ function wirePanel() {
   if (animatedParameterButton && !animatedParameterButton.dataset.wired) {
     animatedParameterButton.addEventListener("click", runProbeAnimatedVideoEffectParameter);
     animatedParameterButton.dataset.wired = "true";
+  }
+  const captureTransformButton = document.getElementById("capture-transform-reference");
+  if (captureTransformButton && !captureTransformButton.dataset.wired) {
+    captureTransformButton.addEventListener("click", runCaptureTransformCurveReference);
+    captureTransformButton.dataset.wired = "true";
+  }
+  const applyTransformButton = document.getElementById("apply-transform-reference");
+  if (applyTransformButton && !applyTransformButton.dataset.wired) {
+    applyTransformButton.addEventListener("click", runApplyTransformCurveReference);
+    applyTransformButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {

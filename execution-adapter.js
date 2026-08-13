@@ -11,6 +11,8 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.probeVideoEffectParameters",
   "timeline.probeStaticVideoEffectParameter",
   "timeline.probeAnimatedVideoEffectParameter",
+  "timeline.captureTransformCurveReference",
+  "timeline.applyTransformCurveReference",
   "timeline.applyAudioEffect",
   "timeline.applyVideoTransition",
   "timeline.createSubsequence",

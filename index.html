@@ -117,6 +117,12 @@
         <button id="probe-animated-video-effect-parameter" type="button">Append effect and add two keyframes</button>
         <button class="copy-json" data-copy-target="effect-parameter-output" type="button">Copy parameter probe JSON</button>
         <pre id="effect-parameter-output">No parameter probe executed.</pre>
+        <h3>Manual preset A/B comparison</h3>
+        <p class="hint">Apply your preset manually to clip A, select only clip A and capture its last Transform Scale Height curve. Then select only clip B and apply the captured frame samples. The capture remains in memory until the plugin reloads.</p>
+        <button id="capture-transform-reference" type="button">Capture manual Transform reference (clip A)</button>
+        <button id="apply-transform-reference" type="button">Apply captured Transform reference (clip B)</button>
+        <button class="copy-json" data-copy-target="transform-reference-output" type="button">Copy A/B comparison JSON</button>
+        <pre id="transform-reference-output">No manual reference captured.</pre>
       </section>
 
       <section aria-labelledby="audio-effect-action-heading">
