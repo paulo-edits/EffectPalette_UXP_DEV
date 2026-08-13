@@ -67,31 +67,28 @@ async function readCatalogs() {
 async function resolveVideoEffectCatalog() {
   const startedAt = Date.now();
   const matchNames = await premiere.VideoFilterFactory.getMatchNames();
-  const entries = [];
-  const failures = [];
-
-  for (const matchName of matchNames) {
-    try {
-      const component = await premiere.VideoFilterFactory.createComponent(matchName);
-      const displayName = component && typeof component.getDisplayName === "function"
-        ? await component.getDisplayName()
-        : null;
-      entries.push({ matchName, displayName });
-    } catch (error) {
-      failures.push({
-        matchName,
-        error: error && error.message ? error.message : String(error)
-      });
-    }
-  }
+  const displayNames = await premiere.VideoFilterFactory.getDisplayNames();
+  const sampleMatchName = matchNames[0] || null;
+  const sampleComponent = sampleMatchName
+    ? await premiere.VideoFilterFactory.createComponent(sampleMatchName)
+    : null;
+  const canReadDisplayNameBeforeInsertion = Boolean(
+    sampleComponent && typeof sampleComponent.getDisplayName === "function"
+  );
 
   return {
-    catalogCount: matchNames.length,
-    resolvedCount: entries.length,
-    failureCount: failures.length,
+    status: canReadDisplayNameBeforeInsertion ? "runtime-extension-detected" : "unsupported-by-official-api",
+    matchNameCount: matchNames.length,
+    displayNameCount: displayNames.length,
+    canReadDisplayNameBeforeInsertion,
+    positionalPairingAssumed: false,
+    sampleMatchName,
+    sampleMatchNames: matchNames.slice(0, 10),
+    sampleDisplayNames: displayNames.slice(0, 10),
+    explanation: canReadDisplayNameBeforeInsertion
+      ? "The runtime exposes an undocumented method; the proof of concept will not depend on it."
+      : "VideoFilterComponent has no official display-name API, and Adobe does not document positional correspondence between the two catalog arrays.",
     durationMs: Date.now() - startedAt,
-    entries,
-    failures
   };
 }
 
