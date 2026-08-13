@@ -12,7 +12,8 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.applyVideoTransition",
   "timeline.createSubsequence",
   "timeline.createNest",
-  "timeline.insertProjectItem"
+  "timeline.insertProjectItem",
+  "timeline.insertGenericItem"
 ]);
 
 function failure(code, message, actionType) {

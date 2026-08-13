@@ -14,6 +14,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.createSubsequence" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.createNest" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.insertProjectItem" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "timeline.insertGenericItem" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.resolve" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.read" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoTransitions.read" }).ok, true);

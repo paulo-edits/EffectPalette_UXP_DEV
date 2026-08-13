@@ -765,6 +765,142 @@ async function insertSelectedProjectItem(action) {
   };
 }
 
+async function insertGenericItemAcrossSelection(action) {
+  const videoTrackIndex = readNonNegativeTrackIndex(action.payload.videoTrackIndex, "Video track index");
+  const audioTrackIndex = readNonNegativeTrackIndex(action.payload.audioTrackIndex, "Audio track index");
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before inserting a generic item.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before inserting a generic item.");
+
+  const projectSelection = await premiere.ProjectUtils.getSelection(project);
+  const projectItems = projectSelection ? await projectSelection.getItems() : [];
+  if (!Array.isArray(projectItems) || projectItems.length !== 1) {
+    throw new Error("Select exactly one generic item in the Project panel.");
+  }
+  const projectItem = projectItems[0];
+  if (!projectItem || typeof projectItem.getId !== "function") {
+    throw new Error("The selected Project item is not insertable.");
+  }
+
+  const timelineSelection = await sequence.getSelection();
+  const timelineItems = timelineSelection ? await timelineSelection.getTrackItems() : [];
+  if (!Array.isArray(timelineItems) || timelineItems.length === 0) {
+    throw new Error("Select at least one video clip in the Timeline to define the duration.");
+  }
+  const videoMediaTypes = new Set();
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  for (let index = 0; index < videoTrackCount; index += 1) {
+    videoMediaTypes.add(guidToString(await (await sequence.getVideoTrack(index)).getMediaType()));
+  }
+  if (videoTrackIndex >= videoTrackCount) {
+    throw new Error("The generic-item probe requires an existing destination video track.");
+  }
+
+  const selectedVideoItems = [];
+  for (const trackItem of timelineItems) {
+    if (!videoMediaTypes.has(guidToString(await trackItem.getMediaType()))) continue;
+    selectedVideoItems.push({
+      startTime: await trackItem.getStartTime(),
+      endTime: await trackItem.getEndTime()
+    });
+  }
+  if (selectedVideoItems.length === 0) {
+    throw new Error("The Timeline selection contains no video clips.");
+  }
+
+  const rangeStart = selectedVideoItems.reduce((current, item) =>
+    !current || item.startTime.seconds < current.seconds ? item.startTime : current
+  , null);
+  const rangeEnd = selectedVideoItems.reduce((current, item) =>
+    !current || item.endTime.seconds > current.seconds ? item.endTime : current
+  , null);
+  if (!rangeStart || !rangeEnd || rangeEnd.seconds <= rangeStart.seconds) {
+    throw new Error("The selected video range has no positive duration.");
+  }
+
+  const projectItemId = await projectItem.getId();
+  const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, rangeStart);
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  let insertionTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const insertionAction = editor.createOverwriteItemAction(
+      projectItem,
+      rangeStart,
+      videoTrackIndex,
+      audioTrackIndex
+    );
+    insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(insertionAction);
+    }, `FX.palette: Insert generic item ${projectItem.name || ""}`);
+  });
+  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the generic-item insertion transaction.");
+
+  const destinationTrack = await sequence.getVideoTrack(videoTrackIndex);
+  const destinationItems = await destinationTrack.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+  let insertedTrackItem = null;
+  for (const trackItem of destinationItems) {
+    const startTime = await trackItem.getStartTime();
+    if (String(startTime.ticks) !== String(rangeStart.ticks)) continue;
+    const linkedProjectItem = await trackItem.getProjectItem();
+    if (linkedProjectItem && await linkedProjectItem.getId() === projectItemId) {
+      insertedTrackItem = trackItem;
+      break;
+    }
+  }
+  if (!insertedTrackItem) {
+    throw new Error("The item was inserted, but its video TrackItem could not be resolved for duration matching.");
+  }
+
+  const endBefore = await insertedTrackItem.getEndTime();
+  const isAdjustmentLayer = typeof insertedTrackItem.isAdjustmentLayer === "function"
+    ? await insertedTrackItem.isAdjustmentLayer()
+    : null;
+  let durationTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const setEndAction = insertedTrackItem.createSetEndAction(
+      premiere.TickTime.createWithTicks(String(rangeEnd.ticks))
+    );
+    durationTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(setEndAction);
+    }, `FX.palette: Match generic item duration ${projectItem.name || ""}`);
+  });
+  if (!durationTransactionSucceeded) {
+    throw new Error("The item was inserted, but Premiere rejected its duration-matching transaction.");
+  }
+
+  const endAfter = await insertedTrackItem.getEndTime();
+  const instancesAfter = await findProjectItemInstancesAtTime(sequence, projectItemId, rangeStart);
+  return {
+    projectItem: { id: projectItemId, name: projectItem.name || null, type: projectItem.type },
+    selectedVideoItemCount: selectedVideoItems.length,
+    selectedRange: {
+      startSeconds: rangeStart.seconds,
+      startTicks: rangeStart.ticks,
+      endSeconds: rangeEnd.seconds,
+      endTicks: rangeEnd.ticks
+    },
+    requestedTracks: { videoTrackIndex, audioTrackIndex },
+    insertedTrackItem: {
+      name: await insertedTrackItem.getName(),
+      isAdjustmentLayer,
+      endBeforeSeconds: endBefore.seconds,
+      endBeforeTicks: endBefore.ticks,
+      endAfterSeconds: endAfter.seconds,
+      endAfterTicks: endAfter.ticks
+    },
+    matchingInstanceCountBefore: instancesBefore.length,
+    matchingInstanceCountAfter: instancesAfter.length,
+    insertionTransactionSucceeded,
+    durationTransactionSucceeded,
+    verificationSucceeded: String(endAfter.ticks) === String(rangeEnd.ticks),
+    undoModelExpected: [
+      "Undo duration matching",
+      "Undo generic item insertion"
+    ]
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -988,6 +1124,28 @@ async function runInsertProjectItem() {
   if (button) button.disabled = false;
 }
 
+async function runInsertGenericItem() {
+  const button = document.getElementById("insert-generic-item");
+  const videoTrackInput = document.getElementById("project-item-video-track");
+  const audioTrackInput = document.getElementById("project-item-audio-track");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.insertGenericItem",
+      requestId: String(Date.now()),
+      payload: {
+        videoTrackIndex: videoTrackInput ? videoTrackInput.value : "0",
+        audioTrackIndex: audioTrackInput ? audioTrackInput.value : "0"
+      }
+    },
+    { "timeline.insertGenericItem": insertGenericItemAcrossSelection }
+  );
+
+  text("project-item-insertion-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
@@ -1089,6 +1247,11 @@ function wirePanel() {
   if (insertProjectItemButton && !insertProjectItemButton.dataset.wired) {
     insertProjectItemButton.addEventListener("click", runInsertProjectItem);
     insertProjectItemButton.dataset.wired = "true";
+  }
+  const insertGenericItemButton = document.getElementById("insert-generic-item");
+  if (insertGenericItemButton && !insertGenericItemButton.dataset.wired) {
+    insertGenericItemButton.addEventListener("click", runInsertGenericItem);
+    insertGenericItemButton.dataset.wired = "true";
   }
   const catalogButton = document.getElementById("resolve-video-effect-catalog");
   if (catalogButton && !catalogButton.dataset.wired) {
