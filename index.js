@@ -98,6 +98,8 @@ async function resolveVideoEffectCatalog() {
     displayNameCount: displayNames.length,
     canReadDisplayNameBeforeInsertion,
     positionalPairingAssumed: false,
+    impactMatchNameCount: matchNames.filter((name) => /impact/i.test(name)).length,
+    impactMatchNames: matchNames.filter((name) => /impact/i.test(name)),
     sampleMatchName,
     sampleMatchNames: matchNames.slice(0, 10),
     sampleDisplayNames: displayNames.slice(0, 10),
