@@ -573,6 +573,121 @@ function inspectImportedEffectPreset(action) {
   };
 }
 
+function parsePrfpsetValue(rawValue, controlType) {
+  const raw = String(rawValue == null ? "" : rawValue).trim();
+  if (String(controlType) === "6" && raw.includes(":")) {
+    const coordinates = raw.split(":").map(Number);
+    if (coordinates.length === 2 && coordinates.every(Number.isFinite)) return { type: "point", value: coordinates };
+  }
+  if (raw === "true" || raw === "false") return { type: "boolean", value: raw === "true" };
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) return { type: "number", value: numeric };
+  throw new Error(`Unsupported .prfpset value '${raw}' for control type ${controlType}.`);
+}
+
+function parsePrfpsetKeyframes(parameter) {
+  return String(parameter.keyframes || "").split(";").filter(Boolean).map((record) => {
+    const parts = record.split(",");
+    return { ticks: Number(parts[0]), value: parsePrfpsetValue(parts[1], parameter.controlType), parts };
+  });
+}
+
+async function applyImportedTransformPreset(action) {
+  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
+  const requestedName = String(action.payload.name || "").trim();
+  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
+  const matches = importedEffectPresetCatalog.presets.filter((preset) =>
+    preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
+    preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
+  if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
+  const preset = matches[0];
+  if (preset.filters.length !== 1 || preset.filters[0].matchName !== "AE.ADBE Geometry2") {
+    throw new Error("This first direct-application probe supports exactly one Transform filter.");
+  }
+  const filter = preset.filters[0];
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying the imported preset.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying the imported preset.");
+  const target = await getSingleSelectedVideoClip(sequence);
+  const targetInPoint = await target.getInPoint();
+  const targetDuration = await target.getDuration();
+  const fps = await getSequenceFramesPerSecond(sequence);
+  const animatedSources = filter.parameters.filter((parameter) => parameter.timeVarying && parameter.keyframes);
+  const longestTicks = Math.max(0, ...animatedSources.flatMap((parameter) => parsePrfpsetKeyframes(parameter).map((key) => key.ticks)));
+  const longestSeconds = longestTicks / 254016000000;
+  if (targetDuration.seconds < longestSeconds) throw new Error("The selected clip is shorter than the imported preset animation.");
+
+  const chain = await target.getComponentChain();
+  const componentIndex = await chain.getComponentCount();
+  const created = await premiere.VideoFilterFactory.createComponent(filter.matchName);
+  let insertionTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    insertionTransactionSucceeded = project.executeTransaction((compound) => {
+      compound.addAction(chain.createAppendComponentAction(created));
+    }, `FX.palette: Insert ${preset.name}`);
+  });
+  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the imported Transform insertion.");
+  const component = await chain.getComponentAtIndex(componentIndex);
+  const prepared = [];
+  for (const source of filter.parameters) {
+    const parameter = await component.getParam(source.index);
+    if (!source.timeVarying || !source.keyframes) {
+      const typedValue = parsePrfpsetValue(source.value, source.controlType);
+      prepared.push({ source, parameter, staticKeyframe: await parameter.createKeyframe(createHostValue(typedValue)), keys: [] });
+      continue;
+    }
+    const sourceKeys = parsePrfpsetKeyframes(source);
+    if (sourceKeys.length !== 2 || sourceKeys.some((key) => key.value.type !== "point")) {
+      throw new Error(`The first probe supports a two-key Point curve; parameter ${source.index} differs.`);
+    }
+    const first = sourceKeys[0];
+    const second = sourceKeys[1];
+    const durationSeconds = (second.ticks - first.ticks) / 254016000000;
+    const segments = Math.max(1, Math.round(durationSeconds * fps));
+    const startParts = first.parts;
+    const endParts = second.parts;
+    const x1 = Math.max(0.09, Math.min(1, 0.09 + ((Number(startParts[5]) || 0) * 0.44)));
+    const y1 = Math.min(0.04, Math.max(0.004, (Number(startParts[7]) || 0) * 0.04));
+    const x2 = Math.min(0.36, Math.max(x1 + 0.04, 0.15 + ((Number(endParts[7]) || 0) * 0.18)));
+    const y2 = Math.max(0.96, Math.min(1, 0.94 + ((Number(endParts[5]) || 0) * 0.05)));
+    const keys = [];
+    for (let frame = 0; frame <= segments; frame += 1) {
+      const progress = frame / segments;
+      const eased = cubicBezierProgress(progress, x1, y1, x2, y2);
+      const point = first.value.value.map((start, index) => start + ((second.value.value[index] - start) * eased));
+      const keyframe = await parameter.createKeyframe(createHostValue({ type: "point", value: point }));
+      keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(durationSeconds * progress));
+      await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+      keys.push(keyframe);
+    }
+    prepared.push({ source, parameter, staticKeyframe: null, keys, curve: { x1, y1, x2, y2, durationSeconds } });
+  }
+  let parameterTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    parameterTransactionSucceeded = project.executeTransaction((compound) => {
+      prepared.forEach((entry) => {
+        if (entry.staticKeyframe) compound.addAction(entry.parameter.createSetValueAction(entry.staticKeyframe, false));
+        else {
+          compound.addAction(entry.parameter.createSetTimeVaryingAction(true));
+          entry.keys.forEach((keyframe) => compound.addAction(entry.parameter.createAddKeyframeAction(keyframe)));
+        }
+      });
+    }, `FX.palette: Apply ${preset.name}`);
+  });
+  if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the imported preset parameters.");
+  return {
+    preset: { name: preset.name, category: preset.category }, targetClipName: await target.getName(),
+    matchName: filter.matchName, componentIndex, framesPerSecond: fps, durationSeconds: longestSeconds,
+    staticParameterCount: prepared.filter((entry) => entry.staticKeyframe).length,
+    animatedParameterCount: prepared.filter((entry) => entry.keys.length).length,
+    sampledKeyframeCounts: prepared.filter((entry) => entry.keys.length).map((entry) => ({ index: entry.source.index, name: entry.source.name, count: entry.keys.length, curve: entry.curve })),
+    insertionTransactionSucceeded, parameterTransactionSucceeded,
+    reproductionModel: "prfpset-point-curve-frame-sampled",
+    undoModelExpected: ["Undo imported preset parameters", "Undo inserted Transform effect"]
+  };
+}
+
 async function captureTransformCurveReference() {
   const matchName = "AE.ADBE Geometry2";
   const project = await premiere.Project.getActiveProject();
@@ -2045,6 +2160,20 @@ async function runInspectImportedEffectPreset() {
   if (button) button.disabled = false;
 }
 
+async function runApplyImportedTransformPreset() {
+  const button = document.getElementById("apply-imported-transform-preset");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "timeline.applyImportedTransformPreset",
+    requestId: String(Date.now()),
+    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
+  }, { "timeline.applyImportedTransformPreset": applyImportedTransformPreset });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -2278,6 +2407,11 @@ function wirePanel() {
   if (inspectPrfpsetButton && !inspectPrfpsetButton.dataset.wired) {
     inspectPrfpsetButton.addEventListener("click", runInspectImportedEffectPreset);
     inspectPrfpsetButton.dataset.wired = "true";
+  }
+  const applyImportedPresetButton = document.getElementById("apply-imported-transform-preset");
+  if (applyImportedPresetButton && !applyImportedPresetButton.dataset.wired) {
+    applyImportedPresetButton.addEventListener("click", runApplyImportedTransformPreset);
+    applyImportedPresetButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
