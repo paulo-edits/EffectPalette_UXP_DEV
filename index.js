@@ -829,6 +829,8 @@ async function insertGenericItemAcrossSelection(action) {
   let atomicDurationPrepared = false;
   let atomicActionMethod = null;
   let atomicActionSource = null;
+  let atomicActionMethodsAvailable = [];
+  const atomicAttemptErrors = [];
   const atomicActionSurface = {
     projectItem: {
       getInPoint: typeof projectItem.getInPoint === "function",
@@ -855,19 +857,17 @@ async function insertGenericItemAcrossSelection(action) {
   ];
   for (const candidate of atomicCandidates) {
     if (!candidate.value || typeof candidate.value.getInPoint !== "function" || typeof candidate.value.getOutPoint !== "function") continue;
-    const method = typeof candidate.value.createSetOutPointAction === "function"
-      ? "createSetOutPointAction"
-      : typeof candidate.value.createSetInOutPointsAction === "function"
-        ? "createSetInOutPointsAction"
-        : null;
-    if (!method) continue;
+    const methods = [];
+    if (typeof candidate.value.createSetOutPointAction === "function") methods.push("createSetOutPointAction");
+    if (typeof candidate.value.createSetInOutPointsAction === "function") methods.push("createSetInOutPointsAction");
+    if (methods.length === 0) continue;
     try {
       sourceInPoint = await candidate.value.getInPoint(premiere.Constants.MediaType.VIDEO);
       sourceOutPoint = await candidate.value.getOutPoint(premiere.Constants.MediaType.VIDEO);
       if (!sourceInPoint || !sourceOutPoint) continue;
       atomicActionOwner = candidate.value;
       atomicActionSource = candidate.source;
-      atomicActionMethod = method;
+      atomicActionMethodsAvailable = methods;
       atomicDurationPrepared = true;
       break;
     } catch (error) {}
@@ -875,7 +875,7 @@ async function insertGenericItemAcrossSelection(action) {
   const rangeDuration = rangeEnd.subtract(rangeStart);
   const temporaryOutPoint = atomicDurationPrepared ? sourceInPoint.add(rangeDuration) : null;
   let insertionTransactionSucceeded = false;
-  const executeInsertionTransaction = (useAtomicDuration) => {
+  const executeInsertionTransaction = (method) => {
     project.lockedAccess(() => {
       const insertionAction = editor.createOverwriteItemAction(
         projectItem,
@@ -885,10 +885,10 @@ async function insertGenericItemAcrossSelection(action) {
       );
       let temporaryOutAction = null;
       let restoreOutAction = null;
-      if (useAtomicDuration && atomicActionMethod === "createSetOutPointAction") {
+      if (method === "createSetOutPointAction") {
         temporaryOutAction = atomicActionOwner.createSetOutPointAction(temporaryOutPoint);
         restoreOutAction = atomicActionOwner.createSetOutPointAction(sourceOutPoint);
-      } else if (useAtomicDuration && atomicActionMethod === "createSetInOutPointsAction") {
+      } else if (method === "createSetInOutPointsAction") {
         temporaryOutAction = atomicActionOwner.createSetInOutPointsAction(sourceInPoint, temporaryOutPoint);
         restoreOutAction = atomicActionOwner.createSetInOutPointsAction(sourceInPoint, sourceOutPoint);
       }
@@ -899,13 +899,29 @@ async function insertGenericItemAcrossSelection(action) {
       }, `FX.palette: Insert generic item ${projectItem.name || ""}`);
     });
   };
-  try {
-    executeInsertionTransaction(atomicDurationPrepared);
-  } catch (error) {
+  if (atomicDurationPrepared) {
+    for (const method of atomicActionMethodsAvailable) {
+      try {
+        insertionTransactionSucceeded = false;
+        executeInsertionTransaction(method);
+        if (insertionTransactionSucceeded) {
+          atomicActionMethod = method;
+          break;
+        }
+        atomicAttemptErrors.push({ method, message: "Premiere rejected the transaction." });
+      } catch (error) {
+        atomicAttemptErrors.push({
+          method,
+          message: error && error.message ? error.message : String(error)
+        });
+      }
+    }
+  }
+  if (!insertionTransactionSucceeded) {
     atomicDurationPrepared = false;
     atomicActionMethod = null;
     atomicActionSource = null;
-    executeInsertionTransaction(false);
+    executeInsertionTransaction(null);
   }
   if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the generic-item insertion transaction.");
 
@@ -979,6 +995,8 @@ async function insertGenericItemAcrossSelection(action) {
     atomicDurationPrepared,
     atomicActionMethod,
     atomicActionSource,
+    atomicActionMethodsAvailable,
+    atomicAttemptErrors,
     atomicActionSurface,
     atomicDurationSucceeded,
     projectItemOutPointRestored: sourceOutPoint && sourceOutPointAfter

@@ -83,6 +83,8 @@ The first 26.3.2 run showed a documentation/runtime mismatch: `ClipProjectItem.c
 
 The 0.15.1 host result confirmed that neither action was exposed on the cast object. Version 0.15.2 additionally checks the original ProjectItem selection proxy and serializes both method surfaces; some UXP proxies expose subclass methods without requiring the documented cast wrapper.
 
+The more detailed 0.15.2 result corrected that interpretation: both methods were visible on the cast surface, but invoking the preferred wrapper failed internally. Version 0.15.3 isolates both action attempts and records their errors before using the known-good TrackItem fallback.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
