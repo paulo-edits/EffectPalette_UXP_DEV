@@ -624,6 +624,50 @@ function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
   return { value: importedPointAtProgress(segmentKeys, curve, progress), segmentIndex, segmentProgress: progress, curve };
 }
 
+function derivePrfpsetScalarCurve(sourceKeys) {
+  const first = sourceKeys[0];
+  const second = sourceKeys[1];
+  const durationSeconds = (second.ticks - first.ticks) / 254016000000;
+  const delta = second.value.value - first.value.value;
+  const averageSpeed = durationSeconds > 0 ? delta / durationSeconds : 0;
+  const x1 = Math.max(0, Math.min(1, Number(first.parts[5]) || (1 / 3)));
+  const x2 = Math.max(x1, Math.min(1, 1 - (Number(second.parts[7]) || (1 / 3))));
+  const outgoingSpeed = Number(first.parts[6]);
+  const incomingSpeed = Number(second.parts[4]);
+  const outgoingRatio = Math.abs(averageSpeed) > 1e-9 && Number.isFinite(outgoingSpeed) ? outgoingSpeed / averageSpeed : 1;
+  const incomingRatio = Math.abs(averageSpeed) > 1e-9 && Number.isFinite(incomingSpeed) ? incomingSpeed / averageSpeed : 1;
+  return {
+    x1,
+    y1: x1 * outgoingRatio,
+    x2,
+    y2: 1 - ((1 - x2) * incomingRatio),
+    durationSeconds,
+    outgoingSpeed,
+    incomingSpeed,
+    averageSpeed
+  };
+}
+
+function sampleImportedScalarCurve(sourceKeys, offsetSeconds) {
+  const originTicks = sourceKeys[0].ticks;
+  const requestedTicks = originTicks + (Math.max(0, offsetSeconds) * 254016000000);
+  let segmentIndex = sourceKeys.length - 2;
+  for (let index = 0; index < sourceKeys.length - 1; index += 1) {
+    if (requestedTicks <= sourceKeys[index + 1].ticks) { segmentIndex = index; break; }
+  }
+  const segmentKeys = [sourceKeys[segmentIndex], sourceKeys[segmentIndex + 1]];
+  const curve = derivePrfpsetScalarCurve(segmentKeys);
+  const segmentTicks = segmentKeys[1].ticks - segmentKeys[0].ticks;
+  const progress = segmentTicks > 0 ? Math.max(0, Math.min(1, (requestedTicks - segmentKeys[0].ticks) / segmentTicks)) : 0;
+  const eased = cubicBezierProgress(progress, curve.x1, curve.y1, curve.x2, curve.y2);
+  return {
+    value: segmentKeys[0].value.value + ((segmentKeys[1].value.value - segmentKeys[0].value.value) * eased),
+    segmentIndex,
+    segmentProgress: progress,
+    curve
+  };
+}
+
 function compareImportedTransformWithCapture(action) {
   if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
   if (!capturedTransformCurveReference) throw new Error("Capture the manually applied Transform preset from clip A first.");
@@ -637,7 +681,39 @@ function compareImportedTransformWithCapture(action) {
   if (!transform) throw new Error("The imported preset contains no Transform filter.");
   const source = transform.parameters.find((parameter) => parameter.index === 1 && parameter.timeVarying && parameter.keyframes);
   const captured = capturedTransformCurveReference.parameters.find((parameter) => parameter.index === 1 && parameter.mode === "animated");
-  if (!source || !captured) throw new Error("Both imported and captured presets must contain animated Transform Position at index 1.");
+  if (!source || !captured) {
+    const scalarComparisons = transform.parameters.filter((parameter) => parameter.timeVarying && parameter.keyframes)
+      .map((scalarSource) => {
+        const scalarCaptured = capturedTransformCurveReference.parameters.find((parameter) => parameter.index === scalarSource.index && parameter.mode === "animated");
+        if (!scalarCaptured || scalarCaptured.samples.some((sample) => sample.value.type !== "number")) return null;
+        const sourceKeys = parsePrfpsetKeyframes(scalarSource);
+        if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "number")) return null;
+        const samples = scalarCaptured.samples.map((sample) => {
+          const derived = sampleImportedScalarCurve(sourceKeys, sample.offsetSeconds);
+          const manual = sample.value.value;
+          const delta = derived.value - manual;
+          return { offsetSeconds: sample.offsetSeconds, manual, derived: derived.value, delta, absoluteError: Math.abs(delta), segmentIndex: derived.segmentIndex, segmentProgress: derived.segmentProgress };
+        });
+        const sumSquares = samples.reduce((sum, sample) => sum + (sample.delta * sample.delta), 0);
+        const worst = samples.reduce((current, sample) => !current || sample.absoluteError > current.absoluteError ? sample : current, null);
+        return {
+          index: scalarSource.index, name: scalarSource.name, importedKeyframeCount: sourceKeys.length,
+          importedDurationSeconds: (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000,
+          capturedDurationSeconds: scalarCaptured.durationSeconds,
+          segmentCurves: sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetScalarCurve([sourceKeys[index], sourceKeys[index + 1]])),
+          sampleCount: samples.length, rootMeanSquareError: Math.sqrt(sumSquares / Math.max(1, samples.length)),
+          maximumAbsoluteError: worst ? worst.absoluteError : 0, worstSample: worst, samples
+        };
+      }).filter(Boolean);
+    if (scalarComparisons.length === 0) throw new Error("No comparable animated Position or scalar Transform parameters were found.");
+    return {
+      preset: { name: matches[0].name, category: matches[0].category },
+      scalarComparisonCount: scalarComparisons.length,
+      scalarComparisons,
+      mutation: "none",
+      comparisonModel: "manual-host-samples-vs-prfpset-scalar-velocity-model"
+    };
+  }
   const sourceKeys = parsePrfpsetKeyframes(source);
   if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "point")) throw new Error("Expected an imported Point curve with at least two keys.");
   const importedDurationSeconds = (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000;
