@@ -652,16 +652,23 @@ async function applyImportedTransformPreset(action) {
     const x2 = Math.min(0.36, Math.max(x1 + 0.04, 0.15 + ((Number(endParts[7]) || 0) * 0.18)));
     const y2 = Math.max(0.96, Math.min(1, 0.94 + ((Number(endParts[5]) || 0) * 0.05)));
     const keys = [];
+    let explicitLinearInterpolationCount = 0;
     for (let frame = 0; frame <= segments; frame += 1) {
       const progress = frame / segments;
       const eased = cubicBezierProgress(progress, x1, y1, x2, y2);
       const point = first.value.value.map((start, index) => start + ((second.value.value[index] - start) * eased));
       const keyframe = await parameter.createKeyframe(createHostValue({ type: "point", value: point }));
       keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(durationSeconds * progress));
-      await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+      if (typeof keyframe.setTemporalInterpolationMode === "function") {
+        await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+        explicitLinearInterpolationCount += 1;
+      }
       keys.push(keyframe);
     }
-    prepared.push({ source, parameter, staticKeyframe: null, keys, curve: { x1, y1, x2, y2, durationSeconds } });
+    prepared.push({
+      source, parameter, staticKeyframe: null, keys,
+      curve: { x1, y1, x2, y2, durationSeconds, explicitLinearInterpolationCount }
+    });
   }
   let parameterTransactionSucceeded = false;
   project.lockedAccess(() => {
