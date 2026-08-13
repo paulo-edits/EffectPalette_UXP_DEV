@@ -28,7 +28,8 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Set a static value | `ComponentParam.createKeyframe(value)` and `createSetValueAction(keyframe, safeForPlayback)` | Tested with Gamma 10 → 20 in Premiere 26.3.2 |
 | Enable animation | `createSetTimeVaryingAction(true)` | Tested on a normal clip and Adjustment Layer in Premiere 26.3.2 |
 | Add a keyframe | set the typed Keyframe `position`, then `createAddKeyframeAction()` | Tested with exact tick/value readback in Premiere 26.3.2 |
-| Set interpolation | `Keyframe.setTemporalInterpolationMode()` before `createAddKeyframeAction()` | 0.20.0 exposed action-ordering failure; corrected 0.20.1 host retest pending |
+| Set interpolation mode | `Keyframe.setTemporalInterpolationMode()` before `createAddKeyframeAction()` | Hold=4 and Bezier=5 tested with exact readback in Premiere 26.3.2 |
+| Preserve exact Bezier easing | No official tangent/influence/velocity/handle surface exists on `Keyframe` | Unsupported by the reviewed official API; do not claim curve fidelity |
 | Typed values | number, string, boolean, `PointF`, or `Color` | Documented; individual control-type mapping pending |
 | Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and a persistent user-granted file/folder token | Documented; permission deliberately not added until the parser probe is implemented |
 
@@ -86,6 +87,7 @@ The production schema must preserve the source preset's parameter index, control
 - `.prfpset` parameter indices are promising because CEP already records and uses them, but equivalence with UXP `getParam(index)` is not documented and must be tested.
 - Display names are localized and are diagnostic metadata only; filter identity uses exact runtime IDs/match names.
 - The `.prfpset` interpolation numbers are not assumed to equal UXP enum values.
+- UXP can preserve the documented interpolation mode, but not exact Bezier handle/easing values. Preset results must disclose this fidelity limit rather than synthesize undocumented data.
 - Some third-party parameters may expose unsupported or unusual control types. Unknown conversions must produce a structured unsupported-parameter result.
 - It is not yet proven that component insertion and all parameter actions can be composed into one UXP transaction. If actions require the component to be inserted first, Undo atomicity may differ from the desired product behavior.
 - Missing effects, parameter-count mismatches or incompatible `createKeyframe()` values must abort before mutation whenever possible; partial application must never be reported as full success.
