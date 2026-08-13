@@ -99,6 +99,16 @@
         <input id="animated-first-value" type="number" step="any" value="10" />
         <label for="animated-second-value">Second keyframe value (+1 second)</label>
         <input id="animated-second-value" type="number" step="any" value="20" />
+        <label for="animated-interpolation-mode">Keyframe interpolation</label>
+        <select id="animated-interpolation-mode">
+          <option value="DEFAULT">Host default</option>
+          <option value="LINEAR">Linear</option>
+          <option value="HOLD">Hold</option>
+          <option value="BEZIER">Bezier</option>
+          <option value="TIME">Time</option>
+          <option value="TIME_TRANSITION_START">Time transition start</option>
+          <option value="TIME_TRANSITION_END">Time transition end</option>
+        </select>
         <button id="probe-animated-video-effect-parameter" type="button">Append effect and add two keyframes</button>
         <button class="copy-json" data-copy-target="effect-parameter-output" type="button">Copy parameter probe JSON</button>
         <pre id="effect-parameter-output">No parameter probe executed.</pre>

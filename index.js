@@ -483,9 +483,14 @@ async function probeAnimatedVideoEffectParameter(action) {
   const parameterIndex = Number(action.payload.parameterIndex);
   const firstValue = Number(action.payload.firstValue);
   const secondValue = Number(action.payload.secondValue);
+  const interpolationName = typeof action.payload.interpolationName === "string"
+    ? action.payload.interpolationName.trim().toUpperCase()
+    : "DEFAULT";
+  const interpolationNames = ["DEFAULT", "LINEAR", "HOLD", "BEZIER", "TIME", "TIME_TRANSITION_START", "TIME_TRANSITION_END"];
   if (!matchName) throw new Error("A video-effect match name is required.");
   if (!Number.isInteger(parameterIndex) || parameterIndex < 0) throw new Error("Parameter index must be a non-negative integer.");
   if (!Number.isFinite(firstValue) || !Number.isFinite(secondValue)) throw new Error("Both keyframe values must be finite numbers.");
+  if (!interpolationNames.includes(interpolationName)) throw new Error("Interpolation mode is not allowlisted.");
   if (!(await premiere.VideoFilterFactory.getMatchNames()).includes(matchName)) throw new Error("Video-effect match name was not found in the official runtime catalog.");
 
   const project = await premiere.Project.getActiveProject();
@@ -539,6 +544,11 @@ async function probeAnimatedVideoEffectParameter(action) {
       compoundAction.addAction(timeVaryingAction);
       compoundAction.addAction(firstAction);
       compoundAction.addAction(secondAction);
+      if (interpolationName !== "DEFAULT") {
+        const interpolationMode = premiere.Constants.InterpolationMode[interpolationName];
+        compoundAction.addAction(parameter.createSetInterpolationAtKeyframeAction(firstTime, interpolationMode, true));
+        compoundAction.addAction(parameter.createSetInterpolationAtKeyframeAction(secondTime, interpolationMode, true));
+      }
     }, "FX.palette: Add preset keyframes");
   });
   if (!keyframeTransactionSucceeded) throw new Error("Premiere rejected the keyframe transaction.");
@@ -568,6 +578,18 @@ async function probeAnimatedVideoEffectParameter(action) {
       { seconds: firstTime.seconds, ticks: firstTime.ticks, value: firstValue },
       { seconds: secondTime.seconds, ticks: secondTime.ticks, value: secondValue }
     ],
+    requestedInterpolationName: interpolationName,
+    requestedInterpolationValue: interpolationName === "DEFAULT"
+      ? null
+      : premiere.Constants.InterpolationMode[interpolationName],
+    runtimeInterpolationConstants: {
+      LINEAR: premiere.Constants.InterpolationMode.LINEAR,
+      HOLD: premiere.Constants.InterpolationMode.HOLD,
+      BEZIER: premiere.Constants.InterpolationMode.BEZIER,
+      TIME: premiere.Constants.InterpolationMode.TIME,
+      TIME_TRANSITION_START: premiere.Constants.InterpolationMode.TIME_TRANSITION_START,
+      TIME_TRANSITION_END: premiere.Constants.InterpolationMode.TIME_TRANSITION_END
+    },
     timeVaryingAfter: await parameter.isTimeVarying(),
     keyframeCountAfter: keyframes.length,
     keyframes,
@@ -1482,6 +1504,7 @@ async function runProbeAnimatedVideoEffectParameter() {
   const parameterIndexInput = document.getElementById("static-parameter-index");
   const firstValueInput = document.getElementById("animated-first-value");
   const secondValueInput = document.getElementById("animated-second-value");
+  const interpolationInput = document.getElementById("animated-interpolation-mode");
   if (button) button.disabled = true;
   const result = await executionAdapter.execute({
     type: "timeline.probeAnimatedVideoEffectParameter",
@@ -1490,7 +1513,8 @@ async function runProbeAnimatedVideoEffectParameter() {
       matchName: matchNameInput ? matchNameInput.value : "",
       parameterIndex: parameterIndexInput ? parameterIndexInput.value : "0",
       firstValue: firstValueInput ? firstValueInput.value : "10",
-      secondValue: secondValueInput ? secondValueInput.value : "20"
+      secondValue: secondValueInput ? secondValueInput.value : "20",
+      interpolationName: interpolationInput ? interpolationInput.value : "DEFAULT"
     }
   }, { "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter });
   text("effect-parameter-output", JSON.stringify(result, null, 2));
