@@ -15,12 +15,12 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Read Premiere and UXP versions | Tested in Premiere | Available | Not applicable | Host and runtime fields populated in Test A. Exact UXP runtime string was not supplied for the written test record. | 26.3.2 |
 | Read active project | Tested in Premiere | Available | Not applicable | Empty-project state, project name and project GUID succeeded. Native `Project.guid` is converted with the officially documented `Guid.toString()`. | 26.3.2 |
 | Read active sequence | Tested in Premiere | Available | Not applicable | No-sequence state, active-sequence name and sequence GUID succeeded. Native `Sequence.guid` is converted with `Guid.toString()`. | 26.3.2 |
-| Read timeline selection | Tested in Premiere | Available | Not applicable | Empty selection and one/multiple selected timeline items returned the expected counts. Current panel records count only. | 26.3.2 |
-| Read project-panel selection | Documented; implemented, pending host test | Available | Not applicable | Uses official `ProjectUtils.getSelection(project)` and `ProjectItemSelection.getItems()` plus item name, type, ID and label index. | None |
-| Read video effect catalog | Documented; implemented, pending host test | Available | None selected | `VideoFilterFactory.getDisplayNames()` and `getMatchNames()` are documented since 25.6. Probe returns counts and samples only. | None |
-| Read audio effect catalog | Documented; implemented, pending host test | Available | None selected | `AudioFilterFactory.getDisplayNames()` is documented since 25.6. Probe returns count and sample names. | None |
+| Read timeline selection | Tested in Premiere | Available | Not applicable | Empty, single and multiple selections returned expected counts and serialized name, type, track index, media type and linked project item. | 26.3.2 |
+| Read project-panel selection | Tested in Premiere | Available | Not applicable | Empty, single and multiple selections returned expected count, name, type, ID and color-label index through official selection APIs. | 26.3.2 |
+| Read video effect catalog | Tested in Premiere | Available | None selected | Official display-name and match-name factories returned a non-empty catalog; probe exposes counts and samples only. | 26.3.2 |
+| Read audio effect catalog | Tested in Premiere | Available | None selected | Official audio-effect display-name factory returned a non-empty catalog; probe exposes count and samples only. | 26.3.2 |
 | Read preset catalog | Unknown | Available | None selected | No official effect-preset catalog API was identified in the current Premiere UXP reference. Sequence/export presets are separate concepts. | None |
-| Read video transition catalog | Documented; implemented, pending host test | Available | None selected | `TransitionFactory.getVideoTransitionMatchNames()` is documented since 25.6. Audio-transition catalog coverage remains unknown. | None |
+| Read video transition catalog | Tested in Premiere | Available | None selected | Official video-transition factory returned a non-empty match-name catalog. Audio-transition catalog coverage remains unknown. | 26.3.2 |
 | Operate without visible panel | Documented concept; not implemented or tested | CEP worker can run headless | Not applicable | Adobe documents invisible plugins using `hostUIContext.hideFromMenu`; lifecycle persistence and future authenticated transport must be proven in Premiere. | None |
 | Apply video/audio effect | Unknown | Available | Existing stable product may use native routing | Mutation intentionally deferred; requires documented catalog lookup, component action and undoable transaction evidence. | None |
 | Apply preset | Unknown | Available | Existing stable product has routing | Mutation intentionally deferred. | None |
@@ -40,6 +40,7 @@ Add one entry per test session; do not overwrite earlier evidence.
 | Date | Premiere version | UXP runtime | UDT version | OS | Project fixture | Result/evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | A: no project; B: project/no sequence; C: active sequence/no selection; D: selected clips | A–D succeeded. Initial B/C run exposed native `Guid` values serializing as `{}`; after applying `Guid.toString()`, focused B/C retest displayed both identifiers as strings. Logs contained no error attributable to the FX.palette plugin ID. |
+| 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | E: official catalogs; F: project-panel selection; G: detailed timeline selection; H: empty selections | E–H succeeded. Video-effect, audio-effect and video-transition catalogs were populated; project and timeline selection details matched the active Premiere state. Diagnostic details were intentionally displayed as serialized JSON. |
 
 Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent manual host tests above supersede the earlier untested state.
 
