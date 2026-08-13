@@ -118,9 +118,9 @@
         <button class="copy-json" data-copy-target="effect-parameter-output" type="button">Copy parameter probe JSON</button>
         <pre id="effect-parameter-output">No parameter probe executed.</pre>
         <h3>Manual preset A/B comparison</h3>
-        <p class="hint">Apply your preset manually to clip A, select only clip A and capture its last Transform Scale Height curve. Then select only clip B and apply the captured frame samples. The capture remains in memory until the plugin reloads.</p>
-        <button id="capture-transform-reference" type="button">Capture manual Transform reference (clip A)</button>
-        <button id="apply-transform-reference" type="button">Apply captured Transform reference (clip B)</button>
+        <p class="hint">Apply your preset manually to clip A, select only clip A and capture every static/animated parameter from its last Transform component. Then select only clip B and reconstruct the complete Transform. Animated values are sampled every frame; capture remains in memory until reload.</p>
+        <button id="capture-transform-reference" type="button">Capture complete manual Transform (clip A)</button>
+        <button id="apply-transform-reference" type="button">Reconstruct captured Transform (clip B)</button>
         <button class="copy-json" data-copy-target="transform-reference-output" type="button">Copy A/B comparison JSON</button>
         <pre id="transform-reference-output">No manual reference captured.</pre>
       </section>

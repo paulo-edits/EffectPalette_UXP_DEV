@@ -356,9 +356,32 @@ async function findLastComponentByMatchName(chain, matchName) {
   return null;
 }
 
+function normalizeCapturedValue(value) {
+  let current = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof current === "number") return { type: "number", value: current };
+    if (typeof current === "boolean") return { type: "boolean", value: current };
+    if (typeof current === "string") return { type: "string", value: current };
+    if (Array.isArray(current) && current.length === 2 && current.every(Number.isFinite)) {
+      return { type: "point", value: [current[0], current[1]] };
+    }
+    if (current && typeof current === "object" && Number.isFinite(current.x) && Number.isFinite(current.y)) {
+      return { type: "point", value: [current.x, current.y] };
+    }
+    if (!current || typeof current !== "object" || !("value" in current)) break;
+    current = current.value;
+  }
+  return { type: "unsupported", value: serializePresetProbeValue(value) };
+}
+
+function createHostValue(captured) {
+  if (captured.type === "point") return new premiere.PointF(captured.value[0], captured.value[1]);
+  if (["number", "boolean", "string"].includes(captured.type)) return captured.value;
+  throw new Error(`Unsupported captured value type: ${captured.type}`);
+}
+
 async function captureTransformCurveReference() {
   const matchName = "AE.ADBE Geometry2";
-  const parameterIndex = 3;
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before capturing a reference.");
   const sequence = await project.getActiveSequence();
@@ -367,39 +390,50 @@ async function captureTransformCurveReference() {
   const chain = await clip.getComponentChain();
   const resolved = await findLastComponentByMatchName(chain, matchName);
   if (!resolved) throw new Error("Apply a Transform effect/preset manually to the selected reference clip first.");
-  const parameter = await resolved.component.getParam(parameterIndex);
-  const times = Array.from(await parameter.getKeyframeListAsTickTimes());
-  if (times.length < 2) throw new Error("Transform Scale Height must contain at least two keyframes.");
-  const firstTime = times[0];
-  const lastTime = times[times.length - 1];
   const fps = await getSequenceFramesPerSecond(sequence);
-  const durationSeconds = lastTime.seconds - firstTime.seconds;
-  const segmentCount = Math.max(1, Math.min(1200, Math.round(durationSeconds * fps)));
-  const samples = [];
-  for (let frame = 0; frame <= segmentCount; frame += 1) {
-    const offsetSeconds = frame === segmentCount ? durationSeconds : Math.min(durationSeconds, frame / fps);
-    const time = firstTime.add(premiere.TickTime.createWithSeconds(offsetSeconds));
-    const value = unwrapNumericHostValue(await parameter.getValueAtTime(time));
-    if (!Number.isFinite(value)) throw new Error(`Scale Height returned a non-numeric value at sample ${frame}.`);
-    samples.push({ offsetSeconds, value });
+  const parameterCount = await resolved.component.getParamCount();
+  const parameters = [];
+  for (let parameterIndex = 0; parameterIndex < parameterCount; parameterIndex += 1) {
+    const parameter = await resolved.component.getParam(parameterIndex);
+    const timeVarying = await parameter.isTimeVarying();
+    const times = timeVarying ? Array.from(await parameter.getKeyframeListAsTickTimes()) : [];
+    if (timeVarying && times.length >= 2) {
+      const firstTime = times[0];
+      const lastTime = times[times.length - 1];
+      const durationSeconds = lastTime.seconds - firstTime.seconds;
+      const segmentCount = Math.max(1, Math.min(1200, Math.round(durationSeconds * fps)));
+      const samples = [];
+      for (let frame = 0; frame <= segmentCount; frame += 1) {
+        const offsetSeconds = frame === segmentCount ? durationSeconds : Math.min(durationSeconds, frame / fps);
+        const time = firstTime.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+        const value = normalizeCapturedValue(await parameter.getValueAtTime(time));
+        if (value.type === "unsupported") throw new Error(`Unsupported animated value at Transform parameter ${parameterIndex}.`);
+        samples.push({ offsetSeconds, value });
+      }
+      parameters.push({ index: parameterIndex, displayName: parameter.displayName || null, mode: "animated", durationSeconds, samples });
+    } else {
+      const value = normalizeCapturedValue(await parameter.getStartValue());
+      parameters.push({ index: parameterIndex, displayName: parameter.displayName || null, mode: "static", value });
+    }
   }
   capturedTransformCurveReference = {
-    schemaVersion: 1, matchName, parameterIndex, parameterDisplayName: parameter.displayName || null,
-    fps, durationSeconds, sourceFirstKeySeconds: firstTime.seconds, samples
+    schemaVersion: 2, matchName, fps, parameters
   };
+  const animated = parameters.filter((item) => item.mode === "animated");
+  const unsupported = parameters.filter((item) => item.mode === "static" && item.value.type === "unsupported");
   return {
     captured: true,
     sourceClipName: await clip.getName(),
     componentIndex: resolved.index,
     matchName,
-    parameterIndex,
-    parameterDisplayName: parameter.displayName || null,
-    originalKeyframeCount: times.length,
+    parameterCount,
+    staticParameterCount: parameters.length - animated.length,
+    animatedParameterCount: animated.length,
+    unsupportedStaticParameters: unsupported.map((item) => ({ index: item.index, displayName: item.displayName, value: item.value.value })),
     fps,
-    durationSeconds,
-    sampleCount: samples.length,
-    firstSample: samples[0],
-    lastSample: samples[samples.length - 1],
+    parameters: parameters.map((item) => item.mode === "animated"
+      ? { index: item.index, displayName: item.displayName, mode: item.mode, durationSeconds: item.durationSeconds, sampleCount: item.samples.length, valueType: item.samples[0].value.type }
+      : { index: item.index, displayName: item.displayName, mode: item.mode, valueType: item.value.type, value: item.value.value }),
     mutation: "none",
     captureScope: "in-memory-until-plugin-reload"
   };
@@ -414,9 +448,8 @@ async function applyTransformCurveReference() {
   if (!sequence) throw new Error("Open a sequence before applying the reference.");
   const target = await getSingleSelectedVideoClip(sequence);
   const targetDuration = await target.getDuration();
-  if (targetDuration.seconds < reference.durationSeconds) {
-    throw new Error("The target clip is shorter than the captured reference curve.");
-  }
+  const longestDuration = Math.max(0, ...reference.parameters.filter((item) => item.mode === "animated").map((item) => item.durationSeconds));
+  if (targetDuration.seconds < longestDuration) throw new Error("The target clip is shorter than the longest captured Transform curve.");
   const targetInPoint = await target.getInPoint();
   const chain = await target.getComponentChain();
   const componentIndex = await chain.getComponentCount();
@@ -429,31 +462,62 @@ async function applyTransformCurveReference() {
   });
   if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the Transform insertion.");
   const component = await chain.getComponentAtIndex(componentIndex);
-  const parameter = await component.getParam(reference.parameterIndex);
-  const prepared = [];
-  for (const sample of reference.samples) {
-    const keyframe = await parameter.createKeyframe(sample.value);
-    keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(sample.offsetSeconds));
-    await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
-    prepared.push(keyframe);
+  const preparedParameters = [];
+  const skippedParameters = [];
+  for (const capturedParameter of reference.parameters) {
+    if (capturedParameter.mode === "static" && capturedParameter.value.type === "unsupported") {
+      skippedParameters.push({ index: capturedParameter.index, reason: "unsupported-static-value-type" });
+      continue;
+    }
+    const parameter = await component.getParam(capturedParameter.index);
+    if (capturedParameter.mode === "static") {
+      const keyframe = await parameter.createKeyframe(createHostValue(capturedParameter.value));
+      preparedParameters.push({ capturedParameter, parameter, staticKeyframe: keyframe, animatedKeyframes: [] });
+    } else {
+      const animatedKeyframes = [];
+      for (const sample of capturedParameter.samples) {
+        const keyframe = await parameter.createKeyframe(createHostValue(sample.value));
+        keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(sample.offsetSeconds));
+        await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+        animatedKeyframes.push(keyframe);
+      }
+      preparedParameters.push({ capturedParameter, parameter, staticKeyframe: null, animatedKeyframes });
+    }
   }
   let curveTransactionSucceeded = false;
   project.lockedAccess(() => {
-    const actions = prepared.map((keyframe) => parameter.createAddKeyframeAction(keyframe));
     curveTransactionSucceeded = project.executeTransaction((compound) => {
-      compound.addAction(parameter.createSetTimeVaryingAction(true));
-      actions.forEach((itemAction) => compound.addAction(itemAction));
+      preparedParameters.forEach((entry) => {
+        if (entry.capturedParameter.mode === "static") {
+          compound.addAction(entry.parameter.createSetValueAction(entry.staticKeyframe, false));
+        } else {
+          compound.addAction(entry.parameter.createSetTimeVaryingAction(true));
+          entry.animatedKeyframes.forEach((keyframe) => compound.addAction(entry.parameter.createAddKeyframeAction(keyframe)));
+        }
+      });
     }, "FX.palette: Apply captured Transform curve");
   });
   if (!curveTransactionSucceeded) throw new Error("Premiere rejected the captured curve transaction.");
-  const resultTimes = Array.from(await parameter.getKeyframeListAsTickTimes());
+  const verification = [];
+  for (const entry of preparedParameters) {
+    verification.push({
+      index: entry.capturedParameter.index,
+      displayName: entry.capturedParameter.displayName,
+      mode: entry.capturedParameter.mode,
+      requestedKeyframeCount: entry.animatedKeyframes.length,
+      resultingKeyframeCount: entry.capturedParameter.mode === "animated"
+        ? Array.from(await entry.parameter.getKeyframeListAsTickTimes()).length
+        : 0,
+      resultingStartValue: serializePresetProbeValue(await entry.parameter.getStartValue())
+    });
+  }
   return {
     targetClipName: await target.getName(), matchName: reference.matchName,
-    parameterIndex: reference.parameterIndex, parameterDisplayName: parameter.displayName || null,
-    componentIndex, sourceFramesPerSecond: reference.fps, sourceDurationSeconds: reference.durationSeconds,
-    requestedSampleCount: reference.samples.length, resultingKeyframeCount: resultTimes.length,
-    firstRequestedValue: reference.samples[0].value,
-    lastRequestedValue: reference.samples[reference.samples.length - 1].value,
+    componentIndex, sourceFramesPerSecond: reference.fps, longestSourceCurveSeconds: longestDuration,
+    capturedParameterCount: reference.parameters.length,
+    appliedParameterCount: preparedParameters.length,
+    skippedParameters,
+    verification,
     insertionTransactionSucceeded, curveTransactionSucceeded,
     reproductionModel: "frame-sampled-reference-values",
     undoModelExpected: ["Undo sampled Transform curve", "Undo inserted Transform effect"]

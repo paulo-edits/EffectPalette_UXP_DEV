@@ -33,6 +33,7 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Approximate scalar easing | Sample a cubic curve into official Linear helper Keyframes | Implemented as an opt-in 0.21.0 experiment; Point/Position excluded; host comparison pending |
 | Per-frame scalar baking | Use official sequence frame duration and add one sampled Keyframe per intervening frame | OpenCurve confirms the strategy independently; 0.22.0 Transform Scale host test pending |
 | Manual-preset A/B oracle | Sample manual clip A through `getValueAtTime()`, replay exact samples on clip B | Implemented for Transform Scale Height in 0.23.0; host comparison pending |
+| Complete Transform A/B oracle | Copy all supported static values and independently sample every animated number/Point parameter | Implemented in 0.24.0; real-preset host test pending |
 | Typed values | number, string, boolean, `PointF`, or `Color` | Documented; individual control-type mapping pending |
 | Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and a persistent user-granted file/folder token | Documented; permission deliberately not added until the parser probe is implemented |
 
