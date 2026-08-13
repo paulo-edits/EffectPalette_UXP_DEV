@@ -38,7 +38,7 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
 
-Version 0.5.0 reports:
+Version 0.6.0 reports:
 
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
@@ -47,7 +47,7 @@ Version 0.5.0 reports:
 
 It also includes the first mutation probe: `projectItems.setColorLabel`. The panel can set the currently selected Project-panel items to Adobe's `VIOLET` label slot. This constant identifies a palette slot/index; its visible name and color can differ when the user customizes Premiere's Label palette. The action is allowlisted, creates Premiere `Action` objects inside `Project.lockedAccess()`, and submits them as one undoable `Project.executeTransaction()` operation. No other mutation is accepted by the adapter.
 
-The second mutation probe is `timeline.applyVideoEffect`. It accepts an exact `matchName` present in `VideoFilterFactory.getMatchNames()`, creates one `VideoFilterComponent` per selected video clip, reports the component's authoritative `getDisplayName()`, and appends the components to their official `VideoComponentChain` objects in one undoable transaction. The diagnostic UI defaults to `PR.ADBE Gamma Correction`, used by Adobe's official Premiere UXP sample. Audio effects and presets are not handled by this action.
+The second mutation probe is `timeline.applyVideoEffect`. It accepts an exact `matchName` present in `VideoFilterFactory.getMatchNames()`, creates one `VideoFilterComponent` per selected video clip, and appends the components to their official `VideoComponentChain` objects in one undoable transaction. After the transaction, it reads each newly appended `Component` from the chain and serializes its authoritative `getMatchName()` and `getDisplayName()` values, component counts, and identity check. Verification failure is reported separately from mutation failure because the effect may already have been applied. The diagnostic UI defaults to `PR.ADBE Gamma Correction`, used by Adobe's official Premiere UXP sample. Audio effects and presets are not handled by this action.
 
 Do not infer effect identity from a remembered match name. In Premiere 26.3.2, the documented example `AE.ADBE Mosaic` resolved to the component displayed as **Mosaic (Legacy)**. The production catalog must persist both the runtime match name and the display name resolved from a created component or another officially supported mapping; it must not assume positional correspondence between separately returned arrays.
 

@@ -36,7 +36,7 @@ Provisional UXP request:
 
 The production adapter should resolve product search results to exact UXP match names before dispatch. Display-name normalization belongs in catalog/search preparation, not in the host mutation handler.
 
-The `catalog.videoEffects.resolve` probe creates unattached components from every official runtime match name and reads `Component.getDisplayName()`. This establishes explicit pairs without assuming that the separate display-name and match-name arrays have the same ordering.
+The `catalog.videoEffects.resolve` probe confirmed that an unattached `VideoFilterComponent` has no official display-name method. The two factory arrays therefore remain separate and are not paired by position. After mutation, the handler reads the newly appended object back from `VideoComponentChain` as a `Component`; only then does it call the official `getMatchName()` and `getDisplayName()` methods and serialize the verified identity.
 
 ### Known differences
 

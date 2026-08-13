@@ -168,12 +168,12 @@ async function applyVideoEffectToSelection(action) {
   const componentChains = await Promise.all(
     selectedVideoClips.map((item) => item.getComponentChain())
   );
+  const componentCountsBefore = await Promise.all(
+    componentChains.map((chain) => chain.getComponentCount())
+  );
   const components = await Promise.all(
     selectedVideoClips.map(() => premiere.VideoFilterFactory.createComponent(matchName))
   );
-  const resolvedDisplayName = components.length > 0 && typeof components[0].getDisplayName === "function"
-    ? await components[0].getDisplayName()
-    : null;
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
@@ -186,10 +186,49 @@ async function applyVideoEffectToSelection(action) {
   });
 
   if (!transactionSucceeded) throw new Error("Premiere rejected the video-effect transaction.");
+  const verification = await Promise.all(componentChains.map(async (chain, index) => {
+    try {
+      const componentCountAfter = await chain.getComponentCount();
+      const expectedComponentIndex = componentCountsBefore[index];
+      const insertedComponent = componentCountAfter > expectedComponentIndex
+        ? await chain.getComponentAtIndex(expectedComponentIndex)
+        : null;
+      const verifiedMatchName = insertedComponent && typeof insertedComponent.getMatchName === "function"
+        ? await insertedComponent.getMatchName()
+        : null;
+      const displayName = insertedComponent && typeof insertedComponent.getDisplayName === "function"
+        ? await insertedComponent.getDisplayName()
+        : null;
+
+      return {
+        clipName: typeof selectedVideoClips[index].getName === "function"
+          ? await selectedVideoClips[index].getName()
+          : null,
+        componentCountBefore: componentCountsBefore[index],
+        componentCountAfter,
+        expectedComponentIndex,
+        appended: componentCountAfter === componentCountsBefore[index] + 1,
+        requestedMatchName: matchName,
+        verifiedMatchName,
+        displayName,
+        identityMatchesRequest: verifiedMatchName === matchName
+      };
+    } catch (error) {
+      return {
+        requestedMatchName: matchName,
+        verified: false,
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  }));
+
   return {
     affectedItemCount: selectedVideoClips.length,
     matchName,
-    resolvedDisplayName,
+    verificationSucceeded: verification.every((item) =>
+      item.appended === true && item.identityMatchesRequest === true && typeof item.displayName === "string"
+    ),
+    verification,
     undoable: true
   };
 }
