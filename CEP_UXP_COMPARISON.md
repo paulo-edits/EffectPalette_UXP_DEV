@@ -69,6 +69,8 @@ Version 0.11.0 implements that second stage as an official-only host probe. Afte
 
 Premiere 26.3.2 testing confirmed creation, replacement and placement, but also showed that ProjectItem rename alone does not change the nested Timeline instance name. Review of the stable CEP implementation identified its additional `clip.name = finalName` pass. Version 0.12.0 translates that pass to official UXP `VideoClipTrackItem.createSetNameAction()` and `AudioClipTrackItem.createSetNameAction()` calls after overwrite. This avoids private APIs, but requires a separate transaction and therefore likely introduces a third Undo level; host testing must confirm both naming and Undo behavior.
 
+Follow-up host testing confirmed matching Project-panel and Timeline names and the expected three Undo levels. The official UXP implementation is therefore functionally validated for creation, replacement, naming and Undo behavior in Premiere 26.3.2.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
