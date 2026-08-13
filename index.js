@@ -1387,7 +1387,23 @@ function wirePanel() {
   refresh();
 }
 
+async function runHeadlessSetVioletLabelCommand() {
+  const result = await executionAdapter.execute(
+    {
+      type: "projectItems.setColorLabel",
+      requestId: String(Date.now()),
+      payload: { labelName: "VIOLET" }
+    },
+    { "projectItems.setColorLabel": setSelectedProjectItemLabel }
+  );
+  console.log("FX.palette headless command result:", JSON.stringify(result));
+  return result;
+}
+
 entrypoints.setup({
+  commands: {
+    headlessSetVioletLabel: runHeadlessSetVioletLabelCommand
+  },
   panels: {
     effectPaletteDiagnostics: {
       create() { wirePanel(); },

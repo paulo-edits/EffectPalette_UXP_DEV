@@ -87,6 +87,10 @@ The more detailed 0.15.2 result corrected that interpretation: both methods were
 
 Host testing of 0.15.3 showed that `createSetInOutPointsAction()` is callable but overwrite does not snapshot its temporary duration when both actions are composed together; the new TrackItem still has the source's original duration. CEP can assign `insertedClip.end` directly after insertion without the same explicit UXP transaction boundary. Under the currently tested official UXP action model, exact duration plus source preservation therefore yields two Undo entries.
 
+## Headless command execution
+
+UXP command entrypoints run discrete handlers without a persistent panel. Version 0.16.0 exposes the already validated ProjectItem Label action as a command so the panel can be closed throughout execution. This establishes the UI-lifecycle boundary needed by the future architecture, while transport from the Python companion remains deliberately unimplemented.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

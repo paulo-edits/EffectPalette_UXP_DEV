@@ -20,6 +20,7 @@ expect(manifest.host && manifest.host.app === "premierepro", "host.app must be p
 expect(manifest.host && manifest.host.minVersion === "25.6.0", "host.minVersion must be 25.6.0");
 expect(Array.isArray(manifest.entrypoints) && manifest.entrypoints.length > 0, "at least one entrypoint is required");
 expect(manifest.entrypoints.some((item) => item.type === "panel" && item.id === "effectPaletteDiagnostics"), "diagnostics panel entrypoint is required");
+expect(manifest.entrypoints.some((item) => item.type === "command" && item.id === "headlessSetVioletLabel"), "headless command entrypoint is required");
 expect(
   manifest.requiredPermissions &&
     Object.keys(manifest.requiredPermissions).length === 1 &&
