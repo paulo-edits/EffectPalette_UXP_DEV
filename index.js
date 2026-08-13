@@ -347,6 +347,89 @@ async function applyAudioEffectToSelection(action) {
   };
 }
 
+async function countVideoTransitions(sequence) {
+  let count = 0;
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  for (let trackIndex = 0; trackIndex < videoTrackCount; trackIndex += 1) {
+    const videoTrack = await sequence.getVideoTrack(trackIndex);
+    const transitions = await videoTrack.getTrackItems(premiere.Constants.TrackItemType.TRANSITION, false);
+    count += Array.isArray(transitions) ? transitions.length : 0;
+  }
+  return count;
+}
+
+async function applyVideoTransitionToSelection(action) {
+  const requestedMatchName = typeof action.payload.matchName === "string"
+    ? action.payload.matchName.trim()
+    : "";
+  const position = action.payload.position === "END" ? "END" : "START";
+  if (!requestedMatchName) throw new Error("A video-transition match name is required.");
+
+  const availableMatchNames = await premiere.TransitionFactory.getVideoTransitionMatchNames();
+  const matchName = availableMatchNames.find((candidate) => candidate === requestedMatchName);
+  if (!matchName) throw new Error("Video-transition match name was not found in the official runtime catalog.");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying a video transition.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying a video transition.");
+
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const videoMediaTypes = new Set();
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  for (let trackIndex = 0; trackIndex < videoTrackCount; trackIndex += 1) {
+    const videoTrack = await sequence.getVideoTrack(trackIndex);
+    videoMediaTypes.add(guidToString(await videoTrack.getMediaType()));
+  }
+  const selectedItemsWithMediaType = await Promise.all(
+    (Array.isArray(selectedItems) ? selectedItems : []).map(async (item) => ({
+      item,
+      mediaType: guidToString(await item.getMediaType())
+    }))
+  );
+  const selectedVideoClips = selectedItemsWithMediaType
+    .filter((entry) => videoMediaTypes.has(entry.mediaType))
+    .map((entry) => entry.item);
+  if (selectedVideoClips.length === 0) throw new Error("Select at least one video clip in the Timeline.");
+
+  const transitionCountBefore = await countVideoTransitions(sequence);
+  const transitions = await Promise.all(
+    selectedVideoClips.map(() => premiere.TransitionFactory.createVideoTransition(matchName))
+  );
+  const options = selectedVideoClips.map(() => {
+    const transitionOptions = premiere.AddTransitionOptions();
+    transitionOptions.setApplyToStart(position === "START");
+    return transitionOptions;
+  });
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const actions = selectedVideoClips.map((clip, index) =>
+      clip.createAddVideoTransitionAction(transitions[index], options[index])
+    );
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      actions.forEach((itemAction) => compoundAction.addAction(itemAction));
+    }, `FX.palette: Apply video transition ${matchName}`);
+  });
+
+  if (!transactionSucceeded) throw new Error("Premiere rejected the video-transition transaction.");
+  const transitionCountAfter = await countVideoTransitions(sequence);
+  return {
+    affectedItemCount: selectedVideoClips.length,
+    matchName,
+    position,
+    transitionCountBefore,
+    transitionCountAfter,
+    transitionCountDelta: transitionCountAfter - transitionCountBefore,
+    verificationSucceeded: transitionCountAfter > transitionCountBefore,
+    identityVerification: "visual-only",
+    identityReason: "The official VideoTransition class exposes no methods or properties.",
+    hostDefaultDurationAndAlignment: true,
+    undoable: true
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -488,6 +571,28 @@ async function runApplyAudioEffect() {
   if (button) button.disabled = false;
 }
 
+async function runApplyVideoTransition() {
+  const button = document.getElementById("apply-video-transition");
+  const matchNameInput = document.getElementById("video-transition-match-name");
+  const positionInput = document.getElementById("video-transition-position");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.applyVideoTransition",
+      requestId: String(Date.now()),
+      payload: {
+        matchName: matchNameInput ? matchNameInput.value : "",
+        position: positionInput ? positionInput.value : "START"
+      }
+    },
+    { "timeline.applyVideoTransition": applyVideoTransitionToSelection }
+  );
+
+  text("video-transition-action-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
@@ -535,6 +640,11 @@ function wirePanel() {
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
     audioEffectButton.addEventListener("click", runApplyAudioEffect);
     audioEffectButton.dataset.wired = "true";
+  }
+  const videoTransitionButton = document.getElementById("apply-video-transition");
+  if (videoTransitionButton && !videoTransitionButton.dataset.wired) {
+    videoTransitionButton.addEventListener("click", runApplyVideoTransition);
+    videoTransitionButton.dataset.wired = "true";
   }
   const catalogButton = document.getElementById("resolve-video-effect-catalog");
   if (catalogButton && !catalogButton.dataset.wired) {

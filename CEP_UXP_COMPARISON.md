@@ -50,6 +50,10 @@ The `catalog.videoEffects.resolve` probe confirmed that an unattached `VideoFilt
 
 The CEP implementation routes audio effects through the undocumented QE DOM. The official UXP path instead resolves an exact localized display name through `AudioFilterFactory`, creates an `AudioFilterComponent` for each selected `AudioClipTrackItem`, and appends it through that clip's `AudioComponentChain` in a single project transaction. As with video, the inserted component is read back after mutation for serialized identity verification.
 
+## Video transition application
+
+The official UXP path validates a runtime match name from `TransitionFactory`, creates a `VideoTransition`, configures the target clip edge with `AddTransitionOptions`, and submits `VideoClipTrackItem.createAddVideoTransitionAction()` in a project transaction. Unlike inserted effect components, `VideoTransition` exposes no readable identity surface, so the proof of concept records catalog validation, transaction acceptance, transition-count change and required visual confirmation without claiming a direct post-insertion identity check.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

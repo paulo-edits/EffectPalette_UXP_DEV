@@ -26,7 +26,7 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Apply video effect | Tested in Premiere | Available through undocumented QE DOM | Existing stable product may use native routing | No selection and audio-only selection failed closed; one/multiple video clips succeeded with one Undo. Post-application chain inspection verified the official match/display identity, including `AE.ADBE Mosaic` resolving to `Mosaic (Legacy)`. | 26.3.2 |
 | Apply audio effect | Tested in Premiere | Available through undocumented QE DOM | Existing stable product may use native routing | Exact runtime display-name validation, audio-only selection filtering, one/multiple clip application, post-insertion identity verification and a single Undo all succeeded. Empty/audio-free selections failed closed. Display names may be localized. | 26.3.2 |
 | Apply preset | Unknown | Available | Existing stable product has routing | Mutation intentionally deferred. | None |
-| Apply transition | Documented API surface, not implemented | Available | Existing stable product has routing | Track-item transition actions are documented, but catalog lookup and real behavior remain untested. | None |
+| Apply transition | Documented; implemented, pending host test | Available | Existing stable product has routing | Version 0.9.0 validates an exact video-transition match name, filters selection to video clips, applies to the chosen clip edge in one transaction, and compares transition-item counts. Duration/alignment use host defaults. Identity verification is visual because `VideoTransition` exposes no methods/properties. | None |
 | Read project-item label | Tested in Premiere | Available | Existing stable product has routing | Project selection probe returned `getColorLabelIndex()` values in Test F. Mapping every numeric index to localized display names remains out of scope. | 26.3.2 |
 | Set project-item label | Tested in Premiere | Available | Existing stable product has routing | Single and multiple selections succeeded and one Undo restored all prior labels. `VIOLET` identifies Adobe's default palette slot/index; customized user palettes can show a different name or color for that slot. | 26.3.2 |
 | Select Label group | Unknown | Available | Existing stable product has native routing | No official end-to-end UXP operation has yet been established. | None |
@@ -76,6 +76,8 @@ Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent 
 - [AudioComponentChain class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiocomponentchain)
 - [AudioClipTrackItem class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiocliptrackitem)
 - [TransitionFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transitionfactory)
+- [VideoTransition class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videotransition)
+- [AddTransitionOptions class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/addtransitionoptions)
 - [Constants](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/)
 - [UDT workflows](https://developer.adobe.com/premiere-pro/uxp/plugins/tutorials/udt-deep-dive/plugin-workflows)
 - [Premiere UXP clipboard recipe](https://developer.adobe.com/premiere-pro/uxp/resources/recipes/clipboard/)

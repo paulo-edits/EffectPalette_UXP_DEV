@@ -93,6 +93,21 @@
         <pre id="audio-effect-action-output">No audio effect action executed.</pre>
       </section>
 
+      <section aria-labelledby="video-transition-action-heading">
+        <h2 id="video-transition-action-heading">Video transition probe</h2>
+        <p class="hint">Select one or more video clips. The exact match name must come from the runtime catalog. Premiere chooses its default duration and alignment.</p>
+        <label for="video-transition-match-name">Transition match name</label>
+        <input id="video-transition-match-name" type="text" value="ADBE Additive Dissolve" />
+        <label for="video-transition-position">Clip edge</label>
+        <select id="video-transition-position">
+          <option value="START">Start</option>
+          <option value="END">End</option>
+        </select>
+        <button id="apply-video-transition" type="button">Apply transition to selected clips</button>
+        <button class="copy-json" data-copy-target="video-transition-action-output" type="button">Copy transition JSON</button>
+        <pre id="video-transition-action-output">No transition action executed.</pre>
+      </section>
+
       <details>
         <summary>Serializable result</summary>
         <button class="copy-json" data-copy-target="serialized-output" type="button">Copy diagnostics JSON</button>
