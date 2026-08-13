@@ -16,6 +16,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyTransformCurveReference" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.importPrfpset" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.inspectImported" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.inspectBridgeCandidate" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyImportedTransformPreset" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.compareImportedTransform" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.inspectSelectedVideoComponents" }).ok, true);

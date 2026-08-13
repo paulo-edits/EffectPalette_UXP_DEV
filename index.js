@@ -5,6 +5,7 @@ const premiere = require("premierepro");
 const executionAdapter = require("./execution-adapter.js");
 let capturedTransformCurveReference = null;
 let importedEffectPresetCatalog = null;
+let importedEffectPresetXml = null;
 
 function text(id, value) {
   const node = document.getElementById(id);
@@ -505,6 +506,8 @@ function parsePrfpsetCatalog(xml) {
       presets.push({
         name: xmlText(xmlPath(element, ["TreeItemBase", "Name"])) || "?",
         category: categoryParts.join(" > "),
+        sourceObjectId: element.attributes.ObjectID || null,
+        dataObjectId: dataRef.attributes.ObjectRef || null,
         filters
       });
     });
@@ -519,6 +522,7 @@ async function importPrfpsetCatalog() {
   if (!file) throw new Error("No .prfpset file was selected.");
   const xml = await file.read();
   const presets = parsePrfpsetCatalog(xml);
+  importedEffectPresetXml = xml;
   importedEffectPresetCatalog = { schemaVersion: 1, fileName: file.name, presets };
   const transformPresets = presets.filter((preset) => preset.filters.some((filter) => filter.matchName === "AE.ADBE Geometry2"));
   return {
@@ -546,6 +550,53 @@ function findImportedEffectPresets(name, category) {
     ? named.filter((preset) => preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase())
     : named;
   return { requestedName, requestedCategory, named, matches };
+}
+
+function stablePresetAlias(preset) {
+  const identity = `${preset.category}>${preset.name}>${preset.sourceObjectId || ""}`;
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= identity.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  const suffix = preset.name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "PRESET";
+  return `FXP_${hash.toString(16).toUpperCase().padStart(8, "0")}__${suffix}`;
+}
+
+function inspectImportedPresetBridgeCandidate(action) {
+  if (!importedEffectPresetCatalog || !importedEffectPresetXml) throw new Error("Import a .prfpset catalog first.");
+  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
+  if (!preset.sourceObjectId) throw new Error("The imported preset has no source ObjectID.");
+  const documentNode = parseXmlTree(importedEffectPresetXml);
+  const objectIndex = {};
+  xmlDescendants(documentNode).forEach((element) => {
+    if (element.attributes.ObjectID) objectIndex[element.attributes.ObjectID] = element;
+  });
+  const visited = new Set();
+  const unresolved = new Set();
+  const tagCounts = {};
+  function visitObject(objectId) {
+    if (!objectId || visited.has(objectId)) return;
+    const element = objectIndex[objectId];
+    if (!element) { unresolved.add(objectId); return; }
+    visited.add(objectId);
+    tagCounts[element.tagName] = (tagCounts[element.tagName] || 0) + 1;
+    xmlDescendants(element).forEach((node) => {
+      if (node.attributes.ObjectRef) visitObject(node.attributes.ObjectRef);
+    });
+  }
+  visitObject(preset.sourceObjectId);
+  return {
+    preset: { name: preset.name, category: preset.category, sourceObjectId: preset.sourceObjectId, dataObjectId: preset.dataObjectId },
+    alias: stablePresetAlias(preset),
+    sameNameCount: importedEffectPresetCatalog.presets.filter((entry) => entry.name.toLocaleLowerCase() === preset.name.toLocaleLowerCase()).length,
+    dependencyObjectCount: visited.size,
+    dependencyTagCounts: tagCounts,
+    unresolvedObjectRefs: Array.from(unresolved),
+    preservesOpaquePayloads: unresolved.size === 0,
+    nextMutation: "none-export-not-yet-enabled",
+    mutation: "none"
+  };
 }
 
 function resolveUniqueImportedEffectPreset(name, category) {
@@ -2381,6 +2432,20 @@ async function runApplyImportedTransformPreset() {
   if (button) button.disabled = false;
 }
 
+async function runInspectPresetBridgeCandidate() {
+  const button = document.getElementById("inspect-preset-bridge-candidate");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "catalog.effectPresets.inspectBridgeCandidate",
+    requestId: String(Date.now()),
+    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
+  }, { "catalog.effectPresets.inspectBridgeCandidate": inspectImportedPresetBridgeCandidate });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function inspectSelectedVideoComponents() {
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before inspecting components.");
@@ -2761,6 +2826,11 @@ function wirePanel() {
   if (applyImportedPresetButton && !applyImportedPresetButton.dataset.wired) {
     applyImportedPresetButton.addEventListener("click", runApplyImportedTransformPreset);
     applyImportedPresetButton.dataset.wired = "true";
+  }
+  const inspectBridgeButton = document.getElementById("inspect-preset-bridge-candidate");
+  if (inspectBridgeButton && !inspectBridgeButton.dataset.wired) {
+    inspectBridgeButton.addEventListener("click", runInspectPresetBridgeCandidate);
+    inspectBridgeButton.dataset.wired = "true";
   }
   const compareImportedPresetButton = document.getElementById("compare-imported-transform-preset");
   if (compareImportedPresetButton && !compareImportedPresetButton.dataset.wired) {
