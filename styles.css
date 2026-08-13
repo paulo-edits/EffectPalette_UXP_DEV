@@ -3,10 +3,12 @@
   background: var(--uxp-host-background-color, #292929);
   font-family: Arial, sans-serif;
   font-size: 13px;
+  height: 100%;
 }
 
-body { margin: 0; }
-main { padding: 16px; }
+html, body { height: 100%; }
+body { margin: 0; overflow-y: auto; overflow-x: hidden; }
+main { box-sizing: border-box; min-height: 100%; padding: 16px; }
 header { margin-bottom: 16px; }
 h1 { margin: 0; font-size: 20px; }
 h2 { margin: 18px 0 8px; font-size: 13px; }
