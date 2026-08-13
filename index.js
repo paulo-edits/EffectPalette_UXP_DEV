@@ -693,7 +693,10 @@ async function applyImportedTransformPreset(action) {
   const targetDuration = await target.getDuration();
   const fps = await getSequenceFramesPerSecond(sequence);
   const animatedSources = filter.parameters.filter((parameter) => parameter.timeVarying && parameter.keyframes);
-  const longestTicks = Math.max(0, ...animatedSources.flatMap((parameter) => parsePrfpsetKeyframes(parameter).map((key) => key.ticks)));
+  const longestTicks = Math.max(0, ...animatedSources.map((parameter) => {
+    const keys = parsePrfpsetKeyframes(parameter);
+    return keys.length > 1 ? keys[keys.length - 1].ticks - keys[0].ticks : 0;
+  }));
   const longestSeconds = longestTicks / 254016000000;
   if (targetDuration.seconds < longestSeconds) throw new Error("The selected clip is shorter than the imported preset animation.");
 
