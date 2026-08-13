@@ -9,6 +9,10 @@ function text(id, value) {
   if (node) node.textContent = value == null || value === "" ? "—" : String(value);
 }
 
+function guidToString(guid) {
+  return guid && typeof guid.toString === "function" ? guid.toString() : null;
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -27,7 +31,7 @@ async function readDiagnostics() {
 
   result.project = {
     name: project.name || null,
-    guid: project.guid || null
+    guid: guidToString(project.guid)
   };
 
   const sequence = await project.getActiveSequence();
@@ -35,7 +39,7 @@ async function readDiagnostics() {
 
   result.sequence = {
     name: sequence.name || null,
-    guid: sequence.guid || null
+    guid: guidToString(sequence.guid)
   };
 
   const selection = await sequence.getSelection();
