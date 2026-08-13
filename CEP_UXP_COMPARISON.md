@@ -65,6 +65,8 @@ The official UXP surface provides `Sequence.createSubsequence(ignoreTrackTargeti
 
 Host testing confirmed that `createSubsequence()` creates a project-root sequence without replacing the selected source clips. Rename and creation occupy separate Undo steps. Reproducing the product's full Nest behavior therefore requires a second stage that removes the original selection and inserts the new sequence item at the correct Timeline coordinates using official actions.
 
+Version 0.11.0 implements that second stage as an official-only host probe. After `createSubsequence(true)`, a single transaction adds `ProjectItem.createSetNameAction()`, `SequenceEditor.createRemoveItemsAction()` and `SequenceEditor.createOverwriteItemAction()`. The earliest selected start and lowest selected video/audio track indices define the insertion point. This mirrors the observable Nest result without invoking CEP or undocumented commands, but remains pending Premiere host validation and is expected to retain two Undo levels because sequence creation cannot be added to the transaction.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

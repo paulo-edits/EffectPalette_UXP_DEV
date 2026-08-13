@@ -38,7 +38,7 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
 
-Version 0.10.0 reports:
+Version 0.11.0 reports:
 
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
@@ -58,6 +58,8 @@ The fourth mutation probe is `timeline.applyVideoTransition`. It accepts an exac
 The fifth mutation probe is `timeline.createSubsequence`. It requires an explicit Timeline selection and calls official `Sequence.createSubsequence(true)` so track targeting is ignored. The returned sequence's project item is renamed through an undoable `ProjectItem.createSetNameAction()` transaction, and the result serializes sequence counts, generated/requested names, GUID, project-item ID and parent bin. Creation itself is explicitly reported with unknown Undo behavior because `createSubsequence()` returns a `Sequence` directly rather than an `Action`; test only in a disposable project.
 
 Premiere 26.3.2 host tests established that this API leaves the original Timeline selection intact and creates the new subsequence at the project root. It is not equivalent to Premiere's complete Nest command. Undo is two-stage: the first Undo reverts the separate rename transaction and the second removes the created subsequence. Full selection replacement requires a separate official remove/insert design.
+
+The sixth mutation probe is `timeline.createNest`. It builds on the characterized subsequence behavior and uses only official UXP APIs: `Sequence.createSubsequence(true)` creates the nested sequence, then one `Project.executeTransaction()` combines the ProjectItem rename, removal of the original selection and overwrite insertion of the new sequence item. Placement uses the earliest selected start time, the lowest selected video-track index and the lowest selected audio-track index. Because subsequence creation itself is not an Action, the expected Undo model remains two-stage: one Undo for replacement/rename and another for creation. This probe is implemented but must be verified in Premiere before it is considered supported.
 
 In Premiere 26.3.2, `ADBE Additive Dissolve` and `ADBE Film Dissolve` visibly produced their **(Legacy)** variants. Adobe documents that Premiere 26.0 replaced several familiar transitions with modern GPU-accelerated versions originating from Film Impact while preserving the old implementations in the Legacy folder. Full official catalog export plus visual host tests established these modern runtime mappings: `AE.Impact_Additive_Dissolve` → Additive Dissolve, `AE.Impact_Film_Dissolve` → Film Dissolve, and `AE.AE_Impact_Dissolve` → Cross Dissolve. The first is now the diagnostic default. These are tested runtime mappings, not a general display-name API; other transitions still require explicit evidence.
 

@@ -12,6 +12,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyAudioEffect" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoTransition" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.createSubsequence" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "timeline.createNest" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.resolve" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.read" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoTransitions.read" }).ok, true);

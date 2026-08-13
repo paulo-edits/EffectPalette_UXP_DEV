@@ -517,6 +517,122 @@ async function createSubsequenceFromSelection(action) {
   };
 }
 
+async function createNestFromSelection(action) {
+  const requestedName = typeof action.payload.name === "string" ? action.payload.name.trim() : "";
+  if (!requestedName) throw new Error("A Nest name is required.");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before creating a Nest.");
+  const sourceSequence = await project.getActiveSequence();
+  if (!sourceSequence) throw new Error("Open a sequence before creating a Nest.");
+
+  const selection = await sourceSequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
+    throw new Error("Select at least one Timeline clip before creating a Nest.");
+  }
+
+  const videoMediaTypes = new Set();
+  const audioMediaTypes = new Set();
+  const videoTrackCount = await sourceSequence.getVideoTrackCount();
+  const audioTrackCount = await sourceSequence.getAudioTrackCount();
+  for (let index = 0; index < videoTrackCount; index += 1) {
+    videoMediaTypes.add(guidToString(await (await sourceSequence.getVideoTrack(index)).getMediaType()));
+  }
+  for (let index = 0; index < audioTrackCount; index += 1) {
+    audioMediaTypes.add(guidToString(await (await sourceSequence.getAudioTrack(index)).getMediaType()));
+  }
+
+  const selectedDetails = await Promise.all(selectedItems.map(async (item) => ({
+    item,
+    name: typeof item.getName === "function" ? await item.getName() : null,
+    mediaType: guidToString(await item.getMediaType()),
+    trackIndex: await item.getTrackIndex(),
+    startTime: await item.getStartTime()
+  })));
+  const videoItems = selectedDetails.filter((entry) => videoMediaTypes.has(entry.mediaType));
+  const audioItems = selectedDetails.filter((entry) => audioMediaTypes.has(entry.mediaType));
+  if (videoItems.length === 0) throw new Error("The first Nest probe requires at least one selected video clip.");
+
+  const earliest = selectedDetails.reduce((current, entry) =>
+    !current || entry.startTime.seconds < current.seconds ? entry.startTime : current
+  , null);
+  const targetVideoTrackIndex = Math.min(...videoItems.map((entry) => entry.trackIndex));
+  const targetAudioTrackIndex = audioItems.length > 0
+    ? Math.min(...audioItems.map((entry) => entry.trackIndex))
+    : 0;
+  const sequencesBefore = await project.getSequences();
+  const createdSequence = await sourceSequence.createSubsequence(true);
+  if (!createdSequence) throw new Error("Premiere did not return the created Nest sequence.");
+  const createdProjectItem = await createdSequence.getProjectItem();
+  if (!createdProjectItem) throw new Error("Premiere did not return the Nest project item.");
+
+  const sequenceEditor = premiere.SequenceEditor.getEditor(sourceSequence);
+  let replacementTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const renameAction = createdProjectItem.createSetNameAction(requestedName);
+    const removeAction = sequenceEditor.createRemoveItemsAction(
+      selection,
+      false,
+      premiere.Constants.MediaType.ANY,
+      false
+    );
+    const overwriteAction = sequenceEditor.createOverwriteItemAction(
+      createdProjectItem,
+      earliest,
+      targetVideoTrackIndex,
+      targetAudioTrackIndex
+    );
+    replacementTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(renameAction);
+      compoundAction.addAction(removeAction);
+      compoundAction.addAction(overwriteAction);
+    }, `FX.palette: Create Nest ${requestedName}`);
+  });
+
+  if (!replacementTransactionSucceeded) {
+    throw new Error("Premiere created the subsequence but rejected the Timeline replacement transaction.");
+  }
+
+  const sequencesAfter = await project.getSequences();
+  return {
+    sourceSequence: { name: sourceSequence.name || null, guid: guidToString(sourceSequence.guid) },
+    selectedItemCount: selectedItems.length,
+    selectedVideoItemCount: videoItems.length,
+    selectedAudioItemCount: audioItems.length,
+    selectedItems: selectedDetails.map((entry) => ({
+      name: entry.name,
+      trackIndex: entry.trackIndex,
+      startSeconds: entry.startTime.seconds,
+      mediaKind: videoMediaTypes.has(entry.mediaType) ? "video" : "audio"
+    })),
+    insertion: {
+      startSeconds: earliest.seconds,
+      startTicks: earliest.ticks,
+      videoTrackIndex: targetVideoTrackIndex,
+      audioTrackIndex: targetAudioTrackIndex,
+      editMode: "overwrite"
+    },
+    sequenceCountBefore: sequencesBefore.length,
+    sequenceCountAfter: sequencesAfter.length,
+    sequenceCountDelta: sequencesAfter.length - sequencesBefore.length,
+    createdSequence: {
+      requestedName,
+      sequenceName: createdSequence.name || null,
+      projectItemName: createdProjectItem.name || null,
+      guid: guidToString(createdSequence.guid),
+      projectItemId: await createdProjectItem.getId()
+    },
+    replacementTransactionSucceeded,
+    originalSelectionExpectedRemoved: true,
+    nestedItemExpectedInserted: true,
+    undoModelExpected: [
+      "Undo replacement and rename transaction",
+      "Undo subsequence creation"
+    ]
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -698,6 +814,24 @@ async function runCreateSubsequence() {
   if (button) button.disabled = false;
 }
 
+async function runCreateNest() {
+  const button = document.getElementById("create-nest");
+  const input = document.getElementById("subsequence-name");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.createNest",
+      requestId: String(Date.now()),
+      payload: { name: input ? input.value : "" }
+    },
+    { "timeline.createNest": createNestFromSelection }
+  );
+
+  text("subsequence-action-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
@@ -789,6 +923,11 @@ function wirePanel() {
   if (subsequenceButton && !subsequenceButton.dataset.wired) {
     subsequenceButton.addEventListener("click", runCreateSubsequence);
     subsequenceButton.dataset.wired = "true";
+  }
+  const nestButton = document.getElementById("create-nest");
+  if (nestButton && !nestButton.dataset.wired) {
+    nestButton.addEventListener("click", runCreateNest);
+    nestButton.dataset.wired = "true";
   }
   const catalogButton = document.getElementById("resolve-video-effect-catalog");
   if (catalogButton && !catalogButton.dataset.wired) {
