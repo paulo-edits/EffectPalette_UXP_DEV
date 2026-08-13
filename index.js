@@ -475,8 +475,10 @@ function parsePrfpsetCatalog(xml) {
         const componentReference = xmlChild(filterElement, "Component");
         const componentElement = componentReference ? objectIndex[componentReference.attributes.ObjectRef] : null;
         if (!componentElement) return;
+        // Common component data is nested by Premiere inside the typed component.
+        const componentPayload = xmlChild(componentElement, "Component") || componentElement;
         const parameters = [];
-        const paramsElement = xmlChild(componentElement, "Params");
+        const paramsElement = xmlChild(componentPayload, "Params");
         (paramsElement ? paramsElement.children.filter((child) => child.tagName === "Param") : []).forEach((parameterReference) => {
           const parameterElement = objectIndex[parameterReference.attributes.ObjectRef];
           if (!parameterElement) return;
@@ -495,7 +497,7 @@ function parsePrfpsetCatalog(xml) {
         });
         filters.push({
           matchName: xmlText(xmlChild(filterElement, "FilterMatchName")),
-          displayName: xmlText(xmlChild(componentElement, "DisplayName")),
+          displayName: xmlText(xmlChild(componentPayload, "DisplayName")),
           mediaType: xmlText(xmlChild(filterElement, "MediaType")),
           parameters
         });
