@@ -63,6 +63,8 @@ Focused Film Impact research found 32 official video-effect match names containi
 
 The explicit `catalog.videoEffects.resolve` action now probes this limitation without modifying a project. It creates one unattached `VideoFilterComponent`, reports whether the runtime exposes a display-name method, returns concise samples from the two separate catalogs, and includes the subset of official match names containing `Impact` for focused Film Impact migration research. Premiere 26.3.2 returned no display-name method, consistently with Adobe's documentation that `VideoFilterComponent` has no methods or properties. `Component.getDisplayName()` applies to a component already read from a clip's `VideoComponentChain`; obtaining it requires a timeline mutation first. Because Adobe does not document positional correspondence between `getDisplayNames()` and `getMatchNames()`, this proof of concept does not zip those arrays or claim a direct mapping.
 
+The separate `catalog.videoEffects.read` action exports the complete match-name and display-name arrays as independent evidence for offline analysis of native and third-party effects. The export deliberately includes `positionalPairingAssumed: false`; candidate mappings must be confirmed through post-insertion `Component` inspection before becoming trusted product data.
+
 The visible panel is a proof-of-concept diagnostic surface, not a production dependency. The future operational plugin must work without requiring this panel to remain open.
 
 No status should be promoted to **Tested in Premiere** until the exact Premiere version and evidence are recorded in the capability matrix.

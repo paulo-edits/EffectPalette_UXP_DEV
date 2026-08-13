@@ -120,6 +120,19 @@ async function readVideoTransitionCatalog() {
   };
 }
 
+async function readVideoEffectCatalog() {
+  const matchNames = await premiere.VideoFilterFactory.getMatchNames();
+  const displayNames = await premiere.VideoFilterFactory.getDisplayNames();
+  return {
+    matchNameCount: matchNames.length,
+    displayNameCount: displayNames.length,
+    matchNames,
+    displayNames,
+    positionalPairingAssumed: false,
+    warning: "The arrays are exported as independent evidence; Adobe does not document positional correspondence."
+  };
+}
+
 async function setSelectedProjectItemLabel(action) {
   const allowedLabels = {
     VIOLET: premiere.Constants.ProjectItemColorLabel.VIOLET
@@ -649,6 +662,23 @@ async function runReadVideoTransitionCatalog() {
   if (button) button.disabled = false;
 }
 
+async function runReadVideoEffectCatalog() {
+  const button = document.getElementById("read-video-effect-catalog");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "catalog.videoEffects.read",
+      requestId: String(Date.now()),
+      payload: {}
+    },
+    { "catalog.videoEffects.read": readVideoEffectCatalog }
+  );
+
+  text("video-effect-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 function wirePanel() {
   const button = document.getElementById("refresh");
   if (button && !button.dataset.wired) {
@@ -684,6 +714,11 @@ function wirePanel() {
   if (transitionCatalogButton && !transitionCatalogButton.dataset.wired) {
     transitionCatalogButton.addEventListener("click", runReadVideoTransitionCatalog);
     transitionCatalogButton.dataset.wired = "true";
+  }
+  const videoEffectCatalogButton = document.getElementById("read-video-effect-catalog");
+  if (videoEffectCatalogButton && !videoEffectCatalogButton.dataset.wired) {
+    videoEffectCatalogButton.addEventListener("click", runReadVideoEffectCatalog);
+    videoEffectCatalogButton.dataset.wired = "true";
   }
   document.querySelectorAll(".copy-json").forEach((copyButton) => {
     if (!copyButton.dataset.wired) {
