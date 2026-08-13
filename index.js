@@ -670,6 +670,101 @@ async function createNestFromSelection(action) {
   };
 }
 
+function readNonNegativeTrackIndex(value, label) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer.`);
+  }
+  return parsed;
+}
+
+async function findProjectItemInstancesAtTime(sequence, projectItemId, tickTime) {
+  const matches = [];
+  const collectTrack = async (track, mediaKind, trackIndex) => {
+    const trackItems = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+    for (const trackItem of trackItems) {
+      const startTime = await trackItem.getStartTime();
+      if (String(startTime.ticks) !== String(tickTime.ticks)) continue;
+      const linkedProjectItem = await trackItem.getProjectItem();
+      if (!linkedProjectItem || await linkedProjectItem.getId() !== projectItemId) continue;
+      matches.push({
+        mediaKind,
+        trackIndex,
+        name: await trackItem.getName(),
+        startSeconds: startTime.seconds,
+        startTicks: startTime.ticks
+      });
+    }
+  };
+
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  const audioTrackCount = await sequence.getAudioTrackCount();
+  for (let index = 0; index < videoTrackCount; index += 1) {
+    await collectTrack(await sequence.getVideoTrack(index), "video", index);
+  }
+  for (let index = 0; index < audioTrackCount; index += 1) {
+    await collectTrack(await sequence.getAudioTrack(index), "audio", index);
+  }
+  return matches;
+}
+
+async function insertSelectedProjectItem(action) {
+  const editMode = action.payload.editMode === "OVERWRITE" ? "OVERWRITE" : "INSERT";
+  const videoTrackIndex = readNonNegativeTrackIndex(action.payload.videoTrackIndex, "Video track index");
+  const audioTrackIndex = readNonNegativeTrackIndex(action.payload.audioTrackIndex, "Audio track index");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before inserting a Project item.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before inserting a Project item.");
+  const selection = await premiere.ProjectUtils.getSelection(project);
+  const projectItems = selection ? await selection.getItems() : [];
+  if (!Array.isArray(projectItems) || projectItems.length !== 1) {
+    throw new Error("Select exactly one item in the Project panel before insertion.");
+  }
+
+  const projectItem = projectItems[0];
+  if (!projectItem || typeof projectItem.getId !== "function") {
+    throw new Error("The selected Project item is not insertable.");
+  }
+  const projectItemId = await projectItem.getId();
+  const playhead = await sequence.getPlayerPosition();
+  const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, playhead);
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const insertionAction = editMode === "OVERWRITE"
+      ? editor.createOverwriteItemAction(projectItem, playhead, videoTrackIndex, audioTrackIndex)
+      : editor.createInsertProjectItemAction(projectItem, playhead, videoTrackIndex, audioTrackIndex, false);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(insertionAction);
+    }, `FX.palette: ${editMode === "OVERWRITE" ? "Overwrite" : "Insert"} ${projectItem.name || "Project item"}`);
+  });
+
+  if (!transactionSucceeded) throw new Error("Premiere rejected the Project item insertion transaction.");
+
+  const instancesAfter = await findProjectItemInstancesAtTime(sequence, projectItemId, playhead);
+  const insertedInstanceCount = Math.max(0, instancesAfter.length - instancesBefore.length);
+  return {
+    projectItem: {
+      id: projectItemId,
+      name: projectItem.name || null,
+      type: projectItem.type
+    },
+    editMode,
+    playhead: { seconds: playhead.seconds, ticks: playhead.ticks },
+    requestedTracks: { videoTrackIndex, audioTrackIndex },
+    matchingInstanceCountBefore: instancesBefore.length,
+    matchingInstanceCountAfter: instancesAfter.length,
+    insertedInstanceCount,
+    insertedInstances: instancesAfter.slice(instancesBefore.length),
+    verificationSucceeded: insertedInstanceCount > 0,
+    transactionSucceeded,
+    undoable: true
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -869,6 +964,30 @@ async function runCreateNest() {
   if (button) button.disabled = false;
 }
 
+async function runInsertProjectItem() {
+  const button = document.getElementById("insert-project-item");
+  const editModeInput = document.getElementById("project-item-edit-mode");
+  const videoTrackInput = document.getElementById("project-item-video-track");
+  const audioTrackInput = document.getElementById("project-item-audio-track");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.insertProjectItem",
+      requestId: String(Date.now()),
+      payload: {
+        editMode: editModeInput ? editModeInput.value : "INSERT",
+        videoTrackIndex: videoTrackInput ? videoTrackInput.value : "0",
+        audioTrackIndex: audioTrackInput ? audioTrackInput.value : "0"
+      }
+    },
+    { "timeline.insertProjectItem": insertSelectedProjectItem }
+  );
+
+  text("project-item-insertion-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
@@ -965,6 +1084,11 @@ function wirePanel() {
   if (nestButton && !nestButton.dataset.wired) {
     nestButton.addEventListener("click", runCreateNest);
     nestButton.dataset.wired = "true";
+  }
+  const insertProjectItemButton = document.getElementById("insert-project-item");
+  if (insertProjectItemButton && !insertProjectItemButton.dataset.wired) {
+    insertProjectItemButton.addEventListener("click", runInsertProjectItem);
+    insertProjectItemButton.dataset.wired = "true";
   }
   const catalogButton = document.getElementById("resolve-video-effect-catalog");
   if (catalogButton && !catalogButton.dataset.wired) {

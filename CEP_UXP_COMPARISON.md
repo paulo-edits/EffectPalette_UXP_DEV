@@ -71,6 +71,10 @@ Premiere 26.3.2 testing confirmed creation, replacement and placement, but also 
 
 Follow-up host testing confirmed matching Project-panel and Timeline names and the expected three Undo levels. The official UXP implementation is therefore functionally validated for creation, replacement, naming and Undo behavior in Premiere 26.3.2.
 
+## Project-item insertion
+
+UXP exposes official Insert and Overwrite actions through `SequenceEditor`. Version 0.13.0 uses the current Project-panel selection, active-sequence playhead and explicit V/A track indices, then verifies the resulting TrackItems by linked ProjectItem ID and start ticks. This is the primitive needed for the stable product's project and generic item routing; media-specific behavior and duration matching remain separate host tests.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

@@ -125,6 +125,23 @@
         <pre id="subsequence-action-output">No subsequence action executed.</pre>
       </section>
 
+      <section aria-labelledby="project-item-insertion-heading">
+        <h2 id="project-item-insertion-heading">Project item insertion probe</h2>
+        <p class="hint">Select exactly one insertable item in the Project panel. It will be inserted at the active sequence playhead in one undoable transaction.</p>
+        <label for="project-item-edit-mode">Edit mode</label>
+        <select id="project-item-edit-mode">
+          <option value="INSERT">Insert</option>
+          <option value="OVERWRITE">Overwrite</option>
+        </select>
+        <label for="project-item-video-track">Video track index (zero-based)</label>
+        <input id="project-item-video-track" type="number" min="0" step="1" value="0" />
+        <label for="project-item-audio-track">Audio track index (zero-based)</label>
+        <input id="project-item-audio-track" type="number" min="0" step="1" value="0" />
+        <button id="insert-project-item" type="button">Insert selected Project item at playhead</button>
+        <button class="copy-json" data-copy-target="project-item-insertion-output" type="button">Copy insertion JSON</button>
+        <pre id="project-item-insertion-output">No Project item insertion executed.</pre>
+      </section>
+
       <details>
         <summary>Serializable result</summary>
         <button class="copy-json" data-copy-target="serialized-output" type="button">Copy diagnostics JSON</button>
