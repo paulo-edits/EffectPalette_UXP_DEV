@@ -537,24 +537,41 @@ async function importPrfpsetCatalog() {
   };
 }
 
-function inspectImportedEffectPreset(action) {
-  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
-  const requestedName = String(action.payload.name || "").trim();
-  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
+function findImportedEffectPresets(name, category) {
+  const requestedName = String(name || "").trim();
+  const requestedCategory = String(category || "").trim().replace(/^Presets\s*>\s*/i, "");
   if (!requestedName) throw new Error("Preset name is required.");
   const named = importedEffectPresetCatalog.presets.filter((preset) => preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase());
-  const exact = named.filter((preset) => preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
-  if (exact.length !== 1) {
+  const matches = requestedCategory
+    ? named.filter((preset) => preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase())
+    : named;
+  return { requestedName, requestedCategory, named, matches };
+}
+
+function resolveUniqueImportedEffectPreset(name, category) {
+  const result = findImportedEffectPresets(name, category);
+  if (result.matches.length !== 1) {
+    const candidates = result.matches.length ? result.matches : result.named;
+    const categories = candidates.slice(0, 20).map((preset) => preset.category || "(root)").join("; ");
+    throw new Error(`Expected one imported preset match, found ${result.matches.length}.${categories ? ` Candidate categories: ${categories}` : ""}`);
+  }
+  return { ...result, preset: result.matches[0] };
+}
+
+function inspectImportedEffectPreset(action) {
+  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
+  const { requestedName, requestedCategory, named, matches } = findImportedEffectPresets(action.payload.name, action.payload.category);
+  if (matches.length !== 1) {
     return {
       requestedName,
       requestedCategory,
-      exactMatchCount: exact.length,
+      exactMatchCount: matches.length,
       namedMatchCount: named.length,
       candidates: named.slice(0, 50).map((preset) => ({ name: preset.name, category: preset.category, filterCount: preset.filters.length })),
       mutation: "none"
     };
   }
-  const preset = exact[0];
+  const preset = matches[0];
   return {
     requestedName,
     requestedCategory,
@@ -2399,17 +2416,15 @@ async function inspectSelectedVideoComponents() {
 
 async function applyImportedStaticVideoPreset(action) {
   if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
-  const requestedName = String(action.payload.name || "").trim();
-  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
-  const matches = importedEffectPresetCatalog.presets.filter((preset) =>
-    preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
-    preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
-  if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
-  const preset = matches[0];
+  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
   if (preset.filters.length < 1) throw new Error("The imported preset contains no video filters.");
   if (preset.filters.some((filter) => filter.parameters.some((parameter) => parameter.timeVarying || parameter.keyframes))) {
     throw new Error("This probe accepts static presets only.");
   }
+  const runtimeFilters = preset.filters.slice().reverse().map((filter) => ({
+    ...filter,
+    preparedParameters: filter.parameters.map((source) => ({ source, hostValue: parsePrfpsetStaticHostValue(source) }))
+  }));
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before applying the preset.");
   const sequence = await project.getActiveSequence();
@@ -2417,7 +2432,6 @@ async function applyImportedStaticVideoPreset(action) {
   const target = await getSingleSelectedVideoClip(sequence);
   const chain = await target.getComponentChain();
   const componentCountBefore = await chain.getComponentCount();
-  const runtimeFilters = preset.filters.slice().reverse();
   const created = [];
   for (const filter of runtimeFilters) created.push(await premiere.VideoFilterFactory.createComponent(filter.matchName));
   let insertionTransactionSucceeded = false;
@@ -2431,9 +2445,10 @@ async function applyImportedStaticVideoPreset(action) {
   for (let filterIndex = 0; filterIndex < runtimeFilters.length; filterIndex += 1) {
     const filter = runtimeFilters[filterIndex];
     const component = await chain.getComponentAtIndex(componentCountBefore + filterIndex);
-    for (const source of filter.parameters) {
+    for (const preparedParameter of filter.preparedParameters) {
+      const { source, hostValue } = preparedParameter;
       const parameter = await component.getParam(source.index);
-      const keyframe = await parameter.createKeyframe(parsePrfpsetStaticHostValue(source));
+      const keyframe = await parameter.createKeyframe(hostValue);
       prepared.push({ filter, source, component, parameter, keyframe });
     }
   }
