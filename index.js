@@ -320,7 +320,7 @@ async function runApplyVideoEffect() {
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
-  text("catalog-resolution-status", "Resolving components. This can take a while…");
+  text("catalog-resolution-status", "Probing official effect identity capabilities…");
 
   const result = await executionAdapter.execute(
     {
@@ -334,9 +334,9 @@ async function runResolveVideoEffectCatalog() {
   if (result.ok) {
     text(
       "catalog-resolution-status",
-      `Resolved ${result.data.resolvedCount}/${result.data.catalogCount} in ${result.data.durationMs} ms; ${result.data.failureCount} failure(s).`
+      `Probe: ${result.data.status}. ${result.data.matchNameCount} match name(s), ${result.data.displayNameCount} display name(s), completed in ${result.data.durationMs} ms.`
     );
-    text("catalog-resolution-output", JSON.stringify(result.data.entries, null, 2));
+    text("catalog-resolution-output", JSON.stringify(result.data, null, 2));
   } else {
     text("catalog-resolution-status", result.error.message);
     text("catalog-resolution-output", JSON.stringify(result, null, 2));
