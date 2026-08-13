@@ -64,6 +64,37 @@ async function readCatalogs() {
   };
 }
 
+async function resolveVideoEffectCatalog() {
+  const startedAt = Date.now();
+  const matchNames = await premiere.VideoFilterFactory.getMatchNames();
+  const entries = [];
+  const failures = [];
+
+  for (const matchName of matchNames) {
+    try {
+      const component = await premiere.VideoFilterFactory.createComponent(matchName);
+      const displayName = component && typeof component.getDisplayName === "function"
+        ? await component.getDisplayName()
+        : null;
+      entries.push({ matchName, displayName });
+    } catch (error) {
+      failures.push({
+        matchName,
+        error: error && error.message ? error.message : String(error)
+      });
+    }
+  }
+
+  return {
+    catalogCount: matchNames.length,
+    resolvedCount: entries.length,
+    failureCount: failures.length,
+    durationMs: Date.now() - startedAt,
+    entries,
+    failures
+  };
+}
+
 async function setSelectedProjectItemLabel(action) {
   const allowedLabels = {
     VIOLET: premiere.Constants.ProjectItemColorLabel.VIOLET
@@ -289,6 +320,33 @@ async function runApplyVideoEffect() {
   if (button) button.disabled = false;
 }
 
+async function runResolveVideoEffectCatalog() {
+  const button = document.getElementById("resolve-video-effect-catalog");
+  if (button) button.disabled = true;
+  text("catalog-resolution-status", "Resolving components. This can take a while…");
+
+  const result = await executionAdapter.execute(
+    {
+      type: "catalog.videoEffects.resolve",
+      requestId: String(Date.now()),
+      payload: {}
+    },
+    { "catalog.videoEffects.resolve": resolveVideoEffectCatalog }
+  );
+
+  if (result.ok) {
+    text(
+      "catalog-resolution-status",
+      `Resolved ${result.data.resolvedCount}/${result.data.catalogCount} in ${result.data.durationMs} ms; ${result.data.failureCount} failure(s).`
+    );
+    text("catalog-resolution-output", JSON.stringify(result.data.entries, null, 2));
+  } else {
+    text("catalog-resolution-status", result.error.message);
+    text("catalog-resolution-output", JSON.stringify(result, null, 2));
+  }
+  if (button) button.disabled = false;
+}
+
 function wirePanel() {
   const button = document.getElementById("refresh");
   if (button && !button.dataset.wired) {
@@ -304,6 +362,11 @@ function wirePanel() {
   if (effectButton && !effectButton.dataset.wired) {
     effectButton.addEventListener("click", runApplyVideoEffect);
     effectButton.dataset.wired = "true";
+  }
+  const catalogButton = document.getElementById("resolve-video-effect-catalog");
+  if (catalogButton && !catalogButton.dataset.wired) {
+    catalogButton.addEventListener("click", runResolveVideoEffectCatalog);
+    catalogButton.dataset.wired = "true";
   }
   refresh();
 }

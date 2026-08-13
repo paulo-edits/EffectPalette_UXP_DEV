@@ -36,6 +36,8 @@ Provisional UXP request:
 
 The production adapter should resolve product search results to exact UXP match names before dispatch. Display-name normalization belongs in catalog/search preparation, not in the host mutation handler.
 
+The `catalog.videoEffects.resolve` probe creates unattached components from every official runtime match name and reads `Component.getDisplayName()`. This establishes explicit pairs without assuming that the separate display-name and match-name arrays have the same ordering.
+
 ### Known differences
 
 - The current CEP path supports video and audio effects; the first UXP probe is video-only.

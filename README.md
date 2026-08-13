@@ -38,7 +38,7 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
 
-Version 0.4.0 reports:
+Version 0.5.0 reports:
 
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
@@ -50,6 +50,8 @@ It also includes the first mutation probe: `projectItems.setColorLabel`. The pan
 The second mutation probe is `timeline.applyVideoEffect`. It accepts an exact `matchName` present in `VideoFilterFactory.getMatchNames()`, creates one `VideoFilterComponent` per selected video clip, reports the component's authoritative `getDisplayName()`, and appends the components to their official `VideoComponentChain` objects in one undoable transaction. The diagnostic UI defaults to `PR.ADBE Gamma Correction`, used by Adobe's official Premiere UXP sample. Audio effects and presets are not handled by this action.
 
 Do not infer effect identity from a remembered match name. In Premiere 26.3.2, the documented example `AE.ADBE Mosaic` resolved to the component displayed as **Mosaic (Legacy)**. The production catalog must persist both the runtime match name and the display name resolved from a created component or another officially supported mapping; it must not assume positional correspondence between separately returned arrays.
+
+The explicit `catalog.videoEffects.resolve` probe builds that mapping without modifying a project. For every runtime `matchName`, it creates an unattached component, calls `Component.getDisplayName()`, and returns serializable `{ matchName, displayName }` entries plus failures and duration. It runs only when requested because resolving the complete catalog may be more expensive than the normal diagnostics refresh.
 
 The visible panel is a proof-of-concept diagnostic surface, not a production dependency. The future operational plugin must work without requiring this panel to remain open.
 
