@@ -381,66 +381,127 @@ function createHostValue(captured) {
   throw new Error(`Unsupported captured value type: ${captured.type}`);
 }
 
-function parsePrfpsetCatalog(xml) {
-  const documentNode = new DOMParser().parseFromString(xml, "text/xml");
-  const objectIndex = {};
-  Array.from(documentNode.querySelectorAll("[ObjectID]")).forEach((element) => {
-    objectIndex[element.getAttribute("ObjectID")] = element;
+function decodeXmlText(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'").replace(/&amp;/g, "&")
+    .replace(/&#(\d+);/g, (_, number) => String.fromCharCode(Number(number)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, number) => String.fromCharCode(parseInt(number, 16)));
+}
+
+function parseXmlTree(xml) {
+  const root = { tagName: "#document", attributes: {}, children: [], text: "" };
+  const stack = [root];
+  const tokens = String(xml).match(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<[^>]+>|[^<]+/g) || [];
+  tokens.forEach((token) => {
+    if (token.startsWith("<?") || token.startsWith("<!--") || /^<!DOCTYPE/i.test(token)) return;
+    if (token.startsWith("<![CDATA[")) {
+      stack[stack.length - 1].text += token.slice(9, -3);
+      return;
+    }
+    if (token.startsWith("</")) { if (stack.length > 1) stack.pop(); return; }
+    if (token.startsWith("<")) {
+      const selfClosing = /\/\s*>$/.test(token);
+      const content = token.slice(1, selfClosing ? token.lastIndexOf("/") : -1).trim();
+      const nameMatch = content.match(/^([^\s/>]+)/);
+      if (!nameMatch || nameMatch[1].startsWith("!")) return;
+      const node = { tagName: nameMatch[1], attributes: {}, children: [], text: "" };
+      const attributeText = content.slice(nameMatch[0].length);
+      const attributePattern = /([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+      let match;
+      while ((match = attributePattern.exec(attributeText))) node.attributes[match[1]] = decodeXmlText(match[2] !== undefined ? match[2] : match[3]);
+      stack[stack.length - 1].children.push(node);
+      if (!selfClosing) stack.push(node);
+      return;
+    }
+    stack[stack.length - 1].text += decodeXmlText(token);
   });
-  const getText = (element) => element ? String(element.textContent || "").trim() : "";
+  return root;
+}
+
+function xmlDescendants(node, tagName, output) {
+  const result = output || [];
+  (node.children || []).forEach((child) => {
+    if (!tagName || child.tagName === tagName) result.push(child);
+    xmlDescendants(child, tagName, result);
+  });
+  return result;
+}
+
+function xmlChild(node, tagName) {
+  return (node && node.children || []).find((child) => child.tagName === tagName) || null;
+}
+
+function xmlPath(node, path) {
+  return path.reduce((current, tagName) => xmlChild(current, tagName), node);
+}
+
+function xmlText(node) {
+  if (!node) return "";
+  return (String(node.text || "") + (node.children || []).map(xmlText).join("")).trim();
+}
+
+function parsePrfpsetCatalog(xml) {
+  const documentNode = parseXmlTree(xml);
+  const objectIndex = {};
+  xmlDescendants(documentNode).forEach((element) => {
+    if (element.attributes.ObjectID) objectIndex[element.attributes.ObjectID] = element;
+  });
   let rootBin = null;
-  for (const bin of Array.from(documentNode.querySelectorAll("BinTreeItem"))) {
-    if (getText(bin.querySelector("TreeItemBase > Name")) === "Presets") { rootBin = bin; break; }
+  for (const bin of xmlDescendants(documentNode, "BinTreeItem")) {
+    if (xmlText(xmlPath(bin, ["TreeItemBase", "Name"])) === "Presets") { rootBin = bin; break; }
   }
   if (!rootBin) throw new Error("The selected file contains no root Presets bin.");
   const presets = [];
   function traverse(binElement, categoryParts) {
-    const itemsContainer = Array.from(binElement.children || []).find((child) => child.tagName === "Items");
+    const itemsContainer = xmlChild(binElement, "Items");
     const items = itemsContainer ? Array.from(itemsContainer.children || []).filter((child) => child.tagName === "Item") : [];
     items.forEach((item) => {
-      const element = objectIndex[item.getAttribute("ObjectRef")];
+      const element = objectIndex[item.attributes.ObjectRef];
       if (!element) return;
       if (element.tagName === "BinTreeItem") {
-        traverse(element, categoryParts.concat(getText(element.querySelector("TreeItemBase > Name")) || "?"));
+        traverse(element, categoryParts.concat(xmlText(xmlPath(element, ["TreeItemBase", "Name"])) || "?"));
         return;
       }
       if (element.tagName !== "TreeItem") return;
-      const dataRef = element.querySelector("TreeItemBase > Data");
-      const dataElement = dataRef ? objectIndex[dataRef.getAttribute("ObjectRef")] : null;
+      const dataRef = xmlPath(element, ["TreeItemBase", "Data"]);
+      const dataElement = dataRef ? objectIndex[dataRef.attributes.ObjectRef] : null;
       if (!dataElement) return;
       const filters = [];
-      Array.from(dataElement.querySelectorAll("FilterPresets > FilterPreset")).forEach((filterReference) => {
-        const filterElement = objectIndex[filterReference.getAttribute("ObjectRef")];
+      const filterPresets = xmlPath(dataElement, ["FilterPresets"]);
+      (filterPresets ? filterPresets.children.filter((child) => child.tagName === "FilterPreset") : []).forEach((filterReference) => {
+        const filterElement = objectIndex[filterReference.attributes.ObjectRef];
         if (!filterElement) return;
-        const componentReference = filterElement.querySelector("Component");
-        const componentElement = componentReference ? objectIndex[componentReference.getAttribute("ObjectRef")] : null;
+        const componentReference = xmlChild(filterElement, "Component");
+        const componentElement = componentReference ? objectIndex[componentReference.attributes.ObjectRef] : null;
         if (!componentElement) return;
         const parameters = [];
-        Array.from(componentElement.querySelectorAll("Params > Param")).forEach((parameterReference) => {
-          const parameterElement = objectIndex[parameterReference.getAttribute("ObjectRef")];
+        const paramsElement = xmlChild(componentElement, "Params");
+        (paramsElement ? paramsElement.children.filter((child) => child.tagName === "Param") : []).forEach((parameterReference) => {
+          const parameterElement = objectIndex[parameterReference.attributes.ObjectRef];
           if (!parameterElement) return;
-          const startKeyframe = getText(parameterElement.querySelector("StartKeyframe"));
+          const startKeyframe = xmlText(xmlChild(parameterElement, "StartKeyframe"));
           const startParts = startKeyframe ? startKeyframe.split(",") : [];
           parameters.push({
-            index: Number(parameterReference.getAttribute("Index")),
-            name: getText(parameterElement.querySelector("Name")) || null,
-            parameterId: getText(parameterElement.querySelector("ParameterID")) || null,
-            controlType: getText(parameterElement.querySelector("ParameterControlType")) || null,
-            timeVarying: getText(parameterElement.querySelector("IsTimeVarying")) === "true",
+            index: Number(parameterReference.attributes.Index),
+            name: xmlText(xmlChild(parameterElement, "Name")) || null,
+            parameterId: xmlText(xmlChild(parameterElement, "ParameterID")) || null,
+            controlType: xmlText(xmlChild(parameterElement, "ParameterControlType")) || null,
+            timeVarying: xmlText(xmlChild(parameterElement, "IsTimeVarying")) === "true",
             value: startParts.length > 1 ? startParts[1].trim() : null,
             startKeyframe,
-            keyframes: getText(parameterElement.querySelector("Keyframes")) || null
+            keyframes: xmlText(xmlChild(parameterElement, "Keyframes")) || null
           });
         });
         filters.push({
-          matchName: getText(filterElement.querySelector("FilterMatchName")),
-          displayName: getText(componentElement.querySelector("DisplayName")),
-          mediaType: getText(filterElement.querySelector("MediaType")),
+          matchName: xmlText(xmlChild(filterElement, "FilterMatchName")),
+          displayName: xmlText(xmlChild(componentElement, "DisplayName")),
+          mediaType: xmlText(xmlChild(filterElement, "MediaType")),
           parameters
         });
       });
       presets.push({
-        name: getText(element.querySelector("TreeItemBase > Name")) || "?",
+        name: xmlText(xmlPath(element, ["TreeItemBase", "Name"])) || "?",
         category: categoryParts.join(" > "),
         filters
       });
