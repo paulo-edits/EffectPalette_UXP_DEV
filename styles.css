@@ -1,0 +1,22 @@
+:root {
+  color: var(--uxp-host-text-color, #f2f2f2);
+  background: var(--uxp-host-background-color, #292929);
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+}
+
+body { margin: 0; }
+main { padding: 16px; }
+header { margin-bottom: 16px; }
+h1 { margin: 0; font-size: 20px; }
+h2 { margin: 18px 0 8px; font-size: 13px; }
+.subtitle { margin: 4px 0 0; color: var(--uxp-host-text-color-secondary, #b7b7b7); }
+button { width: 100%; min-height: 32px; }
+.status { min-height: 18px; color: var(--uxp-host-text-color-secondary, #b7b7b7); }
+.status.error { color: #ff8a80; }
+dl { margin: 0; border-top: 1px solid var(--uxp-host-border-color, #555); }
+dl div { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(100px, 1.4fr); gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--uxp-host-border-color, #555); }
+dt { color: var(--uxp-host-text-color-secondary, #b7b7b7); }
+dd { margin: 0; overflow-wrap: anywhere; }
+details { margin-top: 18px; }
+pre { max-height: 220px; overflow: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); white-space: pre-wrap; }

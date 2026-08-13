@@ -1,0 +1,8 @@
+{
+  "name": "effectpalette-uxp-poc",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "validate": "node scripts/validate.js && node tests/execution-adapter.test.js"
+  }
+}

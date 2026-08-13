@@ -1,0 +1,32 @@
+"use strict";
+
+const assert = require("assert");
+const adapter = require("../execution-adapter.js");
+
+async function run() {
+  assert.strictEqual(adapter.normalizeAction(null).error.code, "INVALID_ACTION");
+  assert.strictEqual(adapter.normalizeAction({}).error.code, "MISSING_ACTION_TYPE");
+  assert.strictEqual(adapter.normalizeAction({ type: "arbitrary.execute" }).error.code, "UNSUPPORTED_ACTION");
+
+  const action = adapter.normalizeAction({
+    type: "diagnostics.read",
+    requestId: "test-request",
+    payload: { readOnly: true }
+  });
+  assert.strictEqual(action.ok, true);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(action)), action);
+
+  const result = await adapter.execute(action.action, {
+    "diagnostics.read": async () => ({ hostVersion: "test" })
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.requestId, "test-request");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(result)), result);
+
+  console.log("Execution adapter tests passed.");
+}
+
+run().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

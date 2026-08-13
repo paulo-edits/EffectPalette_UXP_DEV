@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>FX.palette Diagnostics</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="index.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>FX.palette</h1>
+        <p class="subtitle">UXP capability probe</p>
+      </header>
+
+      <button id="refresh" type="button">Refresh diagnostics</button>
+      <p id="status" class="status" role="status">Waiting for Premiere…</p>
+
+      <section aria-labelledby="environment-heading">
+        <h2 id="environment-heading">Environment</h2>
+        <dl>
+          <div><dt>Host</dt><dd id="host-name">—</dd></div>
+          <div><dt>Premiere</dt><dd id="host-version">—</dd></div>
+          <div><dt>UXP</dt><dd id="uxp-version">—</dd></div>
+        </dl>
+      </section>
+
+      <section aria-labelledby="context-heading">
+        <h2 id="context-heading">Active context</h2>
+        <dl>
+          <div><dt>Project</dt><dd id="project-name">—</dd></div>
+          <div><dt>Project GUID</dt><dd id="project-guid">—</dd></div>
+          <div><dt>Sequence</dt><dd id="sequence-name">—</dd></div>
+          <div><dt>Sequence GUID</dt><dd id="sequence-guid">—</dd></div>
+          <div><dt>Selected timeline items</dt><dd id="selection-count">—</dd></div>
+        </dl>
+      </section>
+
+      <details>
+        <summary>Serializable result</summary>
+        <pre id="serialized-output">{}</pre>
+      </details>
+    </main>
+  </body>
+</html>
