@@ -56,6 +56,8 @@ The official UXP path validates a runtime match name from `TransitionFactory`, c
 
 Premiere 26.3.2 visually mapped `ADBE Additive Dissolve` and `ADBE Film Dissolve` to their **(Legacy)** variants. Adobe's Premiere 26.0 documentation confirms that modern GPU-accelerated Film Impact replacements took over several familiar transition names while historical implementations moved to Legacy. There is no official transition display-name catalog or post-creation display-name method with which to identify the modern implementations, so production mapping remains an explicit capability gap.
 
+The read-only CEP catalog file is generated at runtime by `getEffectsList()` in `scripts/host.jsx`. That function enables the undocumented QE DOM and reads `qe.project.getVideoEffectList()`, `getAudioEffectList()`, `getVideoTransitionList()` and `getAudioTransitionList()`; `bridge.js` then serializes the returned display names to `data/premiere_effects.json`. On the tested host it contained 340 video-transition display names, including both modern and Legacy dissolve names, while official UXP reported 305 transition match names. The CEP file is therefore useful evidence but cannot be imported as an official UXP identity map.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

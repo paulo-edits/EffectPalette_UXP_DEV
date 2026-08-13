@@ -108,6 +108,16 @@ async function resolveVideoEffectCatalog() {
   };
 }
 
+async function readVideoTransitionCatalog() {
+  const matchNames = await premiere.TransitionFactory.getVideoTransitionMatchNames();
+  return {
+    count: matchNames.length,
+    matchNames,
+    displayNamesAvailable: false,
+    positionalMappingAvailable: false
+  };
+}
+
 async function setSelectedProjectItemLabel(action) {
   const allowedLabels = {
     VIOLET: premiere.Constants.ProjectItemColorLabel.VIOLET
@@ -620,6 +630,23 @@ async function runResolveVideoEffectCatalog() {
   if (button) button.disabled = false;
 }
 
+async function runReadVideoTransitionCatalog() {
+  const button = document.getElementById("read-video-transition-catalog");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "catalog.videoTransitions.read",
+      requestId: String(Date.now()),
+      payload: {}
+    },
+    { "catalog.videoTransitions.read": readVideoTransitionCatalog }
+  );
+
+  text("video-transition-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 function wirePanel() {
   const button = document.getElementById("refresh");
   if (button && !button.dataset.wired) {
@@ -650,6 +677,11 @@ function wirePanel() {
   if (catalogButton && !catalogButton.dataset.wired) {
     catalogButton.addEventListener("click", runResolveVideoEffectCatalog);
     catalogButton.dataset.wired = "true";
+  }
+  const transitionCatalogButton = document.getElementById("read-video-transition-catalog");
+  if (transitionCatalogButton && !transitionCatalogButton.dataset.wired) {
+    transitionCatalogButton.addEventListener("click", runReadVideoTransitionCatalog);
+    transitionCatalogButton.dataset.wired = "true";
   }
   document.querySelectorAll(".copy-json").forEach((copyButton) => {
     if (!copyButton.dataset.wired) {

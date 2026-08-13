@@ -4,6 +4,7 @@ const ACTION_SCHEMA_VERSION = 1;
 const SUPPORTED_ACTIONS = Object.freeze([
   "diagnostics.read",
   "catalog.videoEffects.resolve",
+  "catalog.videoTransitions.read",
   "projectItems.setColorLabel",
   "timeline.applyVideoEffect",
   "timeline.applyAudioEffect",
