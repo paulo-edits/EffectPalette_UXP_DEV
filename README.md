@@ -43,7 +43,7 @@ Version 0.11.0 reports:
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
 - counts and samples from the official video-effect, audio-effect and video-transition factories;
-- effect presets as unknown because no corresponding official catalog API has been identified.
+- effect presets as an official reconstruction research track: there is no native catalog/apply API, but documented component/parameter/keyframe actions and user-approved filesystem access provide a testable path (`PRESET_UXP_RESEARCH.md`).
 
 Every JSON output has an adjacent copy button. It uses Premiere UXP's official `navigator.clipboard.setContent()` API and briefly changes its label to `Copied!` or `Copy failed`. The manifest requests only the required `clipboard: readAndWrite` permission; the plugin still requests no network or filesystem access.
 
@@ -51,7 +51,7 @@ It also includes the first mutation probe: `projectItems.setColorLabel`. The pan
 
 The second mutation probe is `timeline.applyVideoEffect`. It accepts an exact `matchName` present in `VideoFilterFactory.getMatchNames()`, creates one `VideoFilterComponent` per selected video clip, and appends the components to their official `VideoComponentChain` objects in one undoable transaction. After the transaction, it reads each newly appended `Component` from the chain and serializes its authoritative `getMatchName()` and `getDisplayName()` values, component counts, and identity check. Verification failure is reported separately from mutation failure because the effect may already have been applied. The diagnostic UI defaults to `PR.ADBE Gamma Correction`, used by Adobe's official Premiere UXP sample.
 
-The third mutation probe is `timeline.applyAudioEffect`. It accepts an exact, runtime-provided display name from `AudioFilterFactory.getDisplayNames()`, selects only audio track items, creates each component with its target `AudioClipTrackItem`, and appends all components in one undoable transaction. It then reads the appended `Component` objects back from their audio chains and verifies their official display and match names. Audio display names can be localized; callers must use a value from the current runtime catalog rather than a remembered English name. Presets remain unsupported.
+The third mutation probe is `timeline.applyAudioEffect`. It accepts an exact, runtime-provided display name from `AudioFilterFactory.getDisplayNames()`, selects only audio track items, creates each component with its target `AudioClipTrackItem`, and appends all components in one undoable transaction. It then reads the appended `Component` objects back from their audio chains and verifies their official display and match names. Audio display names can be localized; callers must use a value from the current runtime catalog rather than a remembered English name. Native preset application is unavailable; an official-only reconstruction path is now documented but not yet host-tested.
 
 The fourth mutation probe is `timeline.applyVideoTransition`. It accepts an exact runtime `matchName`, filters selection to video clips, creates one `VideoTransition` per target, and applies it to the selected start or end edge in one undoable transaction. The proof of concept leaves duration and alignment at Premiere's host defaults. It verifies the transition-item count before and after; transition identity remains visual-only because the official `VideoTransition` class exposes no methods or properties.
 

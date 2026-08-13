@@ -51,6 +51,14 @@ The `catalog.videoEffects.resolve` probe confirmed that an unattached `VideoFilt
 
 The CEP implementation routes audio effects through the undocumented QE DOM. The official UXP path instead resolves an exact localized display name through `AudioFilterFactory`, creates an `AudioFilterComponent` for each selected `AudioClipTrackItem`, and appends it through that clip's `AudioComponentChain` in a single project transaction. As with video, the inserted component is read back after mutation for serialized identity verification.
 
+## Effect preset application
+
+The stable CEP product parses Premiere's `Effect Presets and Custom Items.prfpset` in `bridge.js`, follows its XML object references and writes a normalized `premiere_presets.json`. Its host code does not call a native preset-application API: `applyPresetWithSelection()` adds each filter through QE and `_applyPresetParams()` reconstructs static values and clip-relative keyframes on the resulting standard-DOM component.
+
+The official UXP reference likewise contains no preset catalog or `applyPreset` operation. Unlike the old standard DOM, however, UXP officially exposes parameter actions: enumerate `ComponentParam` objects, create typed values/keyframes, set static values, enable time variation, add keyframes and set interpolation. This provides a credible official-only reconstruction route. The catalog may be read from a user-selected `.prfpset` using UXP filesystem permission `request`; no unrestricted filesystem permission or CEP bridge is inherently required.
+
+This remains a documented design rather than a tested capability. Parameter-index equivalence, control-type conversion, `.prfpset` interpolation mapping, third-party behavior and single-Undo transaction composition require focused host probes. Full measurements and the staged proof plan are in `PRESET_UXP_RESEARCH.md`.
+
 ## Video transition application
 
 The official UXP path validates a runtime match name from `TransitionFactory`, creates a `VideoTransition`, configures the target clip edge with `AddTransitionOptions`, and submits `VideoClipTrackItem.createAddVideoTransitionAction()` in a project transaction. Unlike inserted effect components, `VideoTransition` exposes no readable identity surface, so the proof of concept records catalog validation, transaction acceptance, transition-count change and required visual confirmation without claiming a direct post-insertion identity check.
