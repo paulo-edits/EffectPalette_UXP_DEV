@@ -535,6 +535,15 @@ async function probeAnimatedVideoEffectParameter(action) {
   const secondKeyframe = await parameter.createKeyframe(secondValue);
   firstKeyframe.position = firstTime;
   secondKeyframe.position = secondTime;
+  let interpolationPreparation = null;
+  if (interpolationName !== "DEFAULT") {
+    const interpolationMode = premiere.Constants.InterpolationMode[interpolationName];
+    interpolationPreparation = {
+      method: "Keyframe.setTemporalInterpolationMode",
+      firstSucceeded: await firstKeyframe.setTemporalInterpolationMode(interpolationMode),
+      secondSucceeded: await secondKeyframe.setTemporalInterpolationMode(interpolationMode)
+    };
+  }
   let keyframeTransactionSucceeded = false;
   project.lockedAccess(() => {
     const timeVaryingAction = parameter.createSetTimeVaryingAction(true);
@@ -544,11 +553,6 @@ async function probeAnimatedVideoEffectParameter(action) {
       compoundAction.addAction(timeVaryingAction);
       compoundAction.addAction(firstAction);
       compoundAction.addAction(secondAction);
-      if (interpolationName !== "DEFAULT") {
-        const interpolationMode = premiere.Constants.InterpolationMode[interpolationName];
-        compoundAction.addAction(parameter.createSetInterpolationAtKeyframeAction(firstTime, interpolationMode, true));
-        compoundAction.addAction(parameter.createSetInterpolationAtKeyframeAction(secondTime, interpolationMode, true));
-      }
     }, "FX.palette: Add preset keyframes");
   });
   if (!keyframeTransactionSucceeded) throw new Error("Premiere rejected the keyframe transaction.");
@@ -582,6 +586,7 @@ async function probeAnimatedVideoEffectParameter(action) {
     requestedInterpolationValue: interpolationName === "DEFAULT"
       ? null
       : premiere.Constants.InterpolationMode[interpolationName],
+    interpolationPreparation,
     runtimeInterpolationConstants: {
       LINEAR: premiere.Constants.InterpolationMode.LINEAR,
       HOLD: premiere.Constants.InterpolationMode.HOLD,

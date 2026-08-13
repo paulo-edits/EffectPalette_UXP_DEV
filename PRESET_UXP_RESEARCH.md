@@ -28,7 +28,7 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Set a static value | `ComponentParam.createKeyframe(value)` and `createSetValueAction(keyframe, safeForPlayback)` | Tested with Gamma 10 → 20 in Premiere 26.3.2 |
 | Enable animation | `createSetTimeVaryingAction(true)` | Tested on a normal clip and Adjustment Layer in Premiere 26.3.2 |
 | Add a keyframe | set the typed Keyframe `position`, then `createAddKeyframeAction()` | Tested with exact tick/value readback in Premiere 26.3.2 |
-| Set interpolation | `createSetInterpolationAtKeyframeAction(time, Constants.InterpolationMode.*, updateUI)` | Implemented in 0.20.0; host test and `.prfpset` code mapping pending |
+| Set interpolation | `Keyframe.setTemporalInterpolationMode()` before `createAddKeyframeAction()` | 0.20.0 exposed action-ordering failure; corrected 0.20.1 host retest pending |
 | Typed values | number, string, boolean, `PointF`, or `Color` | Documented; individual control-type mapping pending |
 | Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and a persistent user-granted file/folder token | Documented; permission deliberately not added until the parser probe is implemented |
 
