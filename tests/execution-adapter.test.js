@@ -10,6 +10,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({ type: "projectItems.setColorLabel" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoEffect" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeVideoEffectParameters" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeStaticVideoEffectParameter" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyAudioEffect" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoTransition" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.createSubsequence" }).ok, true);

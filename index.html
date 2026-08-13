@@ -90,6 +90,11 @@
         <h3>Preset parameter surface</h3>
         <p class="hint">Select exactly one video clip. This appends the effect above and reads every official parameter. Undo once after copying the result.</p>
         <button id="probe-video-effect-parameters" type="button">Append effect and inspect parameters</button>
+        <label for="static-parameter-index">Numeric parameter index</label>
+        <input id="static-parameter-index" type="number" min="0" step="1" value="0" />
+        <label for="static-parameter-value">Numeric test value</label>
+        <input id="static-parameter-value" type="number" step="any" value="20" />
+        <button id="probe-static-video-effect-parameter" type="button">Append effect and set static value</button>
         <button class="copy-json" data-copy-target="effect-parameter-output" type="button">Copy parameter probe JSON</button>
         <pre id="effect-parameter-output">No parameter probe executed.</pre>
       </section>

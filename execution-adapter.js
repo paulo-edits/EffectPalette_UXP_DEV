@@ -9,6 +9,7 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "projectItems.setColorLabel",
   "timeline.applyVideoEffect",
   "timeline.probeVideoEffectParameters",
+  "timeline.probeStaticVideoEffectParameter",
   "timeline.applyAudioEffect",
   "timeline.applyVideoTransition",
   "timeline.createSubsequence",

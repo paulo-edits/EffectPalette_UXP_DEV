@@ -385,6 +385,99 @@ async function probeVideoEffectParameters(action) {
   };
 }
 
+async function probeStaticVideoEffectParameter(action) {
+  const matchName = typeof action.payload.matchName === "string" ? action.payload.matchName.trim() : "";
+  const parameterIndex = Number(action.payload.parameterIndex);
+  const requestedValue = Number(action.payload.value);
+  if (!matchName) throw new Error("A video-effect match name is required.");
+  if (!Number.isInteger(parameterIndex) || parameterIndex < 0) {
+    throw new Error("Parameter index must be a non-negative integer.");
+  }
+  if (!Number.isFinite(requestedValue)) throw new Error("This probe requires a finite numeric value.");
+  const availableMatchNames = await premiere.VideoFilterFactory.getMatchNames();
+  if (!availableMatchNames.includes(matchName)) {
+    throw new Error("Video-effect match name was not found in the official runtime catalog.");
+  }
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before probing a static parameter.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before probing a static parameter.");
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const videoMediaTypes = new Set();
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  for (let index = 0; index < videoTrackCount; index += 1) {
+    const track = await sequence.getVideoTrack(index);
+    videoMediaTypes.add(guidToString(await track.getMediaType()));
+  }
+  const selectedVideoClips = [];
+  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
+    if (videoMediaTypes.has(guidToString(await item.getMediaType()))) selectedVideoClips.push(item);
+  }
+  if (selectedVideoClips.length !== 1) {
+    throw new Error("Select exactly one video clip for the static-value probe.");
+  }
+
+  const clip = selectedVideoClips[0];
+  const chain = await clip.getComponentChain();
+  const componentCountBefore = await chain.getComponentCount();
+  const createdComponent = await premiere.VideoFilterFactory.createComponent(matchName);
+  const preInsertionParameterSurfaceAvailable = Boolean(
+    createdComponent && typeof createdComponent.getParam === "function"
+  );
+  let insertionTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const appendAction = chain.createAppendComponentAction(createdComponent);
+    insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(appendAction);
+    }, `FX.palette: Insert effect for static parameter probe`);
+  });
+  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the effect insertion transaction.");
+
+  const component = await chain.getComponentAtIndex(componentCountBefore);
+  const parameterCount = await component.getParamCount();
+  if (parameterIndex >= parameterCount) {
+    throw new Error(`Parameter index ${parameterIndex} is outside the component's ${parameterCount} parameters.`);
+  }
+  const parameter = await component.getParam(parameterIndex);
+  const valueBefore = serializePresetProbeValue(await parameter.getStartValue());
+  const keyframe = await parameter.createKeyframe(requestedValue);
+  let valueTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const setValueAction = parameter.createSetValueAction(keyframe, false);
+    valueTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(setValueAction);
+    }, `FX.palette: Set static preset parameter`);
+  });
+  if (!valueTransactionSucceeded) throw new Error("Premiere rejected the static parameter transaction.");
+  const valueAfter = serializePresetProbeValue(await parameter.getStartValue());
+
+  return {
+    clipName: typeof clip.getName === "function" ? await clip.getName() : null,
+    matchName,
+    displayName: await component.getDisplayName(),
+    componentIndex: componentCountBefore,
+    parameterIndex,
+    parameterDisplayName: parameter.displayName || null,
+    requestedValue,
+    valueBefore,
+    valueAfter,
+    timeVaryingAfter: await parameter.isTimeVarying(),
+    preInsertionParameterSurfaceAvailable,
+    singleTransactionPreparationStatus: preInsertionParameterSurfaceAvailable
+      ? "runtime-extension-detected-not-used"
+      : "unavailable-on-documented-VideoFilterComponent-surface",
+    insertionTransactionSucceeded,
+    valueTransactionSucceeded,
+    verificationRequiresHostValueReview: true,
+    undoModelExpected: [
+      "Undo static parameter value",
+      "Undo diagnostic effect insertion"
+    ]
+  };
+}
+
 async function applyAudioEffectToSelection(action) {
   const requestedDisplayName = typeof action.payload.displayName === "string"
     ? action.payload.displayName.trim()
@@ -1261,6 +1354,28 @@ async function runProbeVideoEffectParameters() {
   if (button) button.disabled = false;
 }
 
+async function runProbeStaticVideoEffectParameter() {
+  const button = document.getElementById("probe-static-video-effect-parameter");
+  const matchNameInput = document.getElementById("video-effect-match-name");
+  const parameterIndexInput = document.getElementById("static-parameter-index");
+  const valueInput = document.getElementById("static-parameter-value");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.probeStaticVideoEffectParameter",
+      requestId: String(Date.now()),
+      payload: {
+        matchName: matchNameInput ? matchNameInput.value : "",
+        parameterIndex: parameterIndexInput ? parameterIndexInput.value : "0",
+        value: valueInput ? valueInput.value : "20"
+      }
+    },
+    { "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter }
+  );
+  text("effect-parameter-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -1464,6 +1579,11 @@ function wirePanel() {
   if (effectParameterButton && !effectParameterButton.dataset.wired) {
     effectParameterButton.addEventListener("click", runProbeVideoEffectParameters);
     effectParameterButton.dataset.wired = "true";
+  }
+  const staticParameterButton = document.getElementById("probe-static-video-effect-parameter");
+  if (staticParameterButton && !staticParameterButton.dataset.wired) {
+    staticParameterButton.addEventListener("click", runProbeStaticVideoEffectParameter);
+    staticParameterButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
