@@ -18,6 +18,7 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.applyImportedTransformPreset",
   "catalog.effectPresets.compareImportedTransform",
   "timeline.inspectSelectedVideoComponents",
+  "timeline.applyImportedStaticVideoPreset",
   "timeline.applyAudioEffect",
   "timeline.applyVideoTransition",
   "timeline.createSubsequence",

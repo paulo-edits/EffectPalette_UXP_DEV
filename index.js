@@ -592,6 +592,20 @@ function parsePrfpsetKeyframes(parameter) {
   });
 }
 
+function parsePrfpsetStaticHostValue(parameter) {
+  if (String(parameter.controlType) !== "5") return createHostValue(parsePrfpsetValue(parameter.value, parameter.controlType));
+  const packed = String(parameter.value || "");
+  if (packed !== "0" && packed !== "18374686479671623680") {
+    throw new Error(`Unverified .prfpset Color encoding '${packed}'; refusing lossy conversion.`);
+  }
+  const color = new premiere.Color();
+  color.red = 0;
+  color.green = 0;
+  color.blue = 0;
+  color.alpha = packed === "0" ? 0 : 1;
+  return color;
+}
+
 function derivePrfpsetPointCurve(sourceKeys) {
   const first = sourceKeys[0];
   const second = sourceKeys[1];
@@ -2369,6 +2383,80 @@ async function inspectSelectedVideoComponents() {
   return { clipName: await clip.getName(), componentCount, components, mutation: "none" };
 }
 
+async function applyImportedStaticVideoPreset(action) {
+  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
+  const requestedName = String(action.payload.name || "").trim();
+  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
+  const matches = importedEffectPresetCatalog.presets.filter((preset) =>
+    preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
+    preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
+  if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
+  const preset = matches[0];
+  if (preset.filters.length < 1) throw new Error("The imported preset contains no video filters.");
+  if (preset.filters.some((filter) => filter.parameters.some((parameter) => parameter.timeVarying || parameter.keyframes))) {
+    throw new Error("This probe accepts static presets only.");
+  }
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying the preset.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying the preset.");
+  const target = await getSingleSelectedVideoClip(sequence);
+  const chain = await target.getComponentChain();
+  const componentCountBefore = await chain.getComponentCount();
+  const runtimeFilters = preset.filters.slice().reverse();
+  const created = [];
+  for (const filter of runtimeFilters) created.push(await premiere.VideoFilterFactory.createComponent(filter.matchName));
+  let insertionTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    insertionTransactionSucceeded = project.executeTransaction((compound) => {
+      created.forEach((component) => compound.addAction(chain.createAppendComponentAction(component)));
+    }, `FX.palette: Insert ${preset.name}`);
+  });
+  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the preset component insertion.");
+  const prepared = [];
+  for (let filterIndex = 0; filterIndex < runtimeFilters.length; filterIndex += 1) {
+    const filter = runtimeFilters[filterIndex];
+    const component = await chain.getComponentAtIndex(componentCountBefore + filterIndex);
+    for (const source of filter.parameters) {
+      const parameter = await component.getParam(source.index);
+      const keyframe = await parameter.createKeyframe(parsePrfpsetStaticHostValue(source));
+      prepared.push({ filter, source, component, parameter, keyframe });
+    }
+  }
+  let parameterTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    parameterTransactionSucceeded = project.executeTransaction((compound) => {
+      prepared.forEach((entry) => compound.addAction(entry.parameter.createSetValueAction(entry.keyframe, false)));
+    }, `FX.palette: Set ${preset.name}`);
+  });
+  if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the preset parameter transaction.");
+  const verification = [];
+  for (let index = 0; index < runtimeFilters.length; index += 1) {
+    const component = await chain.getComponentAtIndex(componentCountBefore + index);
+    const parameters = [];
+    for (let parameterIndex = 0; parameterIndex < await component.getParamCount(); parameterIndex += 1) {
+      const parameter = await component.getParam(parameterIndex);
+      parameters.push({ index: parameterIndex, displayName: parameter.displayName || null, startValue: serializePresetProbeValue(await parameter.getStartValue()) });
+    }
+    verification.push({
+      index: componentCountBefore + index,
+      requestedMatchName: runtimeFilters[index].matchName,
+      resultingMatchName: await component.getMatchName(),
+      displayName: await component.getDisplayName(),
+      parameters
+    });
+  }
+  return {
+    preset: { name: preset.name, category: preset.category }, targetClipName: await target.getName(),
+    sourceFilterOrder: preset.filters.map((filter) => filter.matchName),
+    appliedFilterOrder: runtimeFilters.map((filter) => filter.matchName),
+    componentCountBefore, componentCountAfter: await chain.getComponentCount(),
+    insertionTransactionSucceeded, parameterTransactionSucceeded, verification,
+    colorEncodingScope: "verified-black-alpha-0-or-1-only",
+    undoModelExpected: ["Undo static preset values", "Undo inserted preset effects"]
+  };
+}
+
 async function runCompareImportedTransformPreset() {
   const button = document.getElementById("compare-imported-transform-preset");
   const nameInput = document.getElementById("prfpset-preset-name");
@@ -2389,6 +2477,19 @@ async function runInspectSelectedVideoComponents() {
   const result = await executionAdapter.execute({
     type: "timeline.inspectSelectedVideoComponents", requestId: String(Date.now()), payload: {}
   }, { "timeline.inspectSelectedVideoComponents": inspectSelectedVideoComponents });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
+async function runApplyImportedStaticVideoPreset() {
+  const button = document.getElementById("apply-imported-static-video-preset");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "timeline.applyImportedStaticVideoPreset", requestId: String(Date.now()),
+    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
+  }, { "timeline.applyImportedStaticVideoPreset": applyImportedStaticVideoPreset });
   text("prfpset-catalog-output", JSON.stringify(result, null, 2));
   if (button) button.disabled = false;
 }
@@ -2641,6 +2742,11 @@ function wirePanel() {
   if (inspectComponentsButton && !inspectComponentsButton.dataset.wired) {
     inspectComponentsButton.addEventListener("click", runInspectSelectedVideoComponents);
     inspectComponentsButton.dataset.wired = "true";
+  }
+  const applyStaticPresetButton = document.getElementById("apply-imported-static-video-preset");
+  if (applyStaticPresetButton && !applyStaticPresetButton.dataset.wired) {
+    applyStaticPresetButton.addEventListener("click", runApplyImportedStaticVideoPreset);
+    applyStaticPresetButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
