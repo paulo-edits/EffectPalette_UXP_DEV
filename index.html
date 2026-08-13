@@ -114,6 +114,16 @@
         <pre id="video-transition-action-output">No transition action executed.</pre>
       </section>
 
+      <section aria-labelledby="subsequence-action-heading">
+        <h2 id="subsequence-action-heading">Subsequence / Nest probe</h2>
+        <p class="hint">Select Timeline clips explicitly. This creates a new subsequence; creation Undo behavior is not documented, so use a disposable test project.</p>
+        <label for="subsequence-name">Requested subsequence name</label>
+        <input id="subsequence-name" type="text" value="FX.palette Nest Test" />
+        <button id="create-subsequence" type="button">Create subsequence from selection</button>
+        <button class="copy-json" data-copy-target="subsequence-action-output" type="button">Copy subsequence JSON</button>
+        <pre id="subsequence-action-output">No subsequence action executed.</pre>
+      </section>
+
       <details>
         <summary>Serializable result</summary>
         <button class="copy-json" data-copy-target="serialized-output" type="button">Copy diagnostics JSON</button>

@@ -455,6 +455,68 @@ async function applyVideoTransitionToSelection(action) {
   };
 }
 
+async function createSubsequenceFromSelection(action) {
+  const requestedName = typeof action.payload.name === "string" ? action.payload.name.trim() : "";
+  if (!requestedName) throw new Error("A subsequence name is required.");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before creating a subsequence.");
+  const sourceSequence = await project.getActiveSequence();
+  if (!sourceSequence) throw new Error("Open a sequence before creating a subsequence.");
+
+  const selection = await sourceSequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
+    throw new Error("Select at least one Timeline clip before creating a subsequence.");
+  }
+
+  const sequencesBefore = await project.getSequences();
+  const createdSequence = await sourceSequence.createSubsequence(true);
+  if (!createdSequence) throw new Error("Premiere did not return the created subsequence.");
+
+  const createdProjectItem = await createdSequence.getProjectItem();
+  const generatedName = createdSequence.name || (createdProjectItem && createdProjectItem.name) || null;
+  let renameTransactionSucceeded = false;
+  if (createdProjectItem && typeof createdProjectItem.createSetNameAction === "function") {
+    project.lockedAccess(() => {
+      const renameAction = createdProjectItem.createSetNameAction(requestedName);
+      renameTransactionSucceeded = project.executeTransaction((compoundAction) => {
+        compoundAction.addAction(renameAction);
+      }, `FX.palette: Rename subsequence to ${requestedName}`);
+    });
+  }
+
+  const sequencesAfter = await project.getSequences();
+  return {
+    sourceSequence: {
+      name: sourceSequence.name || null,
+      guid: guidToString(sourceSequence.guid)
+    },
+    selectedItemCount: selectedItems.length,
+    ignoreTrackTargeting: true,
+    sequenceCountBefore: sequencesBefore.length,
+    sequenceCountAfter: sequencesAfter.length,
+    sequenceCountDelta: sequencesAfter.length - sequencesBefore.length,
+    createdSequence: {
+      generatedName,
+      requestedName,
+      sequenceNameAfterRename: createdSequence.name || null,
+      projectItemNameAfterRename: createdProjectItem ? createdProjectItem.name || null : null,
+      guid: guidToString(createdSequence.guid),
+      projectItemId: createdProjectItem && typeof createdProjectItem.getId === "function"
+        ? await createdProjectItem.getId()
+        : null,
+      parentBinName: createdProjectItem && typeof createdProjectItem.getParentBin === "function"
+        ? ((await createdProjectItem.getParentBin()) || {}).name || null
+        : null
+    },
+    renameTransactionSucceeded,
+    creationUndoability: "unknown",
+    creationUndoabilityReason: "Sequence.createSubsequence() returns a Sequence directly, not an Action.",
+    selectionReplacementBehavior: "pending-host-test"
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -618,6 +680,24 @@ async function runApplyVideoTransition() {
   if (button) button.disabled = false;
 }
 
+async function runCreateSubsequence() {
+  const button = document.getElementById("create-subsequence");
+  const input = document.getElementById("subsequence-name");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.createSubsequence",
+      requestId: String(Date.now()),
+      payload: { name: input ? input.value : "" }
+    },
+    { "timeline.createSubsequence": createSubsequenceFromSelection }
+  );
+
+  text("subsequence-action-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
@@ -704,6 +784,11 @@ function wirePanel() {
   if (videoTransitionButton && !videoTransitionButton.dataset.wired) {
     videoTransitionButton.addEventListener("click", runApplyVideoTransition);
     videoTransitionButton.dataset.wired = "true";
+  }
+  const subsequenceButton = document.getElementById("create-subsequence");
+  if (subsequenceButton && !subsequenceButton.dataset.wired) {
+    subsequenceButton.addEventListener("click", runCreateSubsequence);
+    subsequenceButton.dataset.wired = "true";
   }
   const catalogButton = document.getElementById("resolve-video-effect-catalog");
   if (catalogButton && !catalogButton.dataset.wired) {

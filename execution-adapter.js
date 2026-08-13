@@ -9,7 +9,8 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "projectItems.setColorLabel",
   "timeline.applyVideoEffect",
   "timeline.applyAudioEffect",
-  "timeline.applyVideoTransition"
+  "timeline.applyVideoTransition",
+  "timeline.createSubsequence"
 ]);
 
 function failure(code, message, actionType) {

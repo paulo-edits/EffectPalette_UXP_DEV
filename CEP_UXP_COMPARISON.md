@@ -59,6 +59,10 @@ Premiere 26.3.2 visually mapped `ADBE Additive Dissolve` and `ADBE Film Dissolve
 
 The read-only CEP catalog file is generated at runtime by `getEffectsList()` in `scripts/host.jsx`. That function enables the undocumented QE DOM and reads `qe.project.getVideoEffectList()`, `getAudioEffectList()`, `getVideoTransitionList()` and `getAudioTransitionList()`; `bridge.js` then serializes the returned display names to `data/premiere_effects.json`. On the tested host it contained 340 video-transition display names, including both modern and Legacy dissolve names, while official UXP reported 305 transition match names. The CEP file is therefore useful evidence but cannot be imported as an official UXP identity map.
 
+## Nest / subsequence creation
+
+The official UXP surface provides `Sequence.createSubsequence(ignoreTrackTargeting)` directly. The proof of concept requires an explicit current Timeline selection and passes `true`, avoiding dependence on the user's targeted tracks. It renames the returned sequence through its official ProjectItem action. Unlike effect/transition mutations, creation does not expose an Action, so atomic Undo behavior cannot be assumed and must be characterized in the host.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

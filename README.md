@@ -38,7 +38,7 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
 
-Version 0.9.0 reports:
+Version 0.10.0 reports:
 
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
@@ -54,6 +54,8 @@ The second mutation probe is `timeline.applyVideoEffect`. It accepts an exact `m
 The third mutation probe is `timeline.applyAudioEffect`. It accepts an exact, runtime-provided display name from `AudioFilterFactory.getDisplayNames()`, selects only audio track items, creates each component with its target `AudioClipTrackItem`, and appends all components in one undoable transaction. It then reads the appended `Component` objects back from their audio chains and verifies their official display and match names. Audio display names can be localized; callers must use a value from the current runtime catalog rather than a remembered English name. Presets remain unsupported.
 
 The fourth mutation probe is `timeline.applyVideoTransition`. It accepts an exact runtime `matchName`, filters selection to video clips, creates one `VideoTransition` per target, and applies it to the selected start or end edge in one undoable transaction. The proof of concept leaves duration and alignment at Premiere's host defaults. It verifies the transition-item count before and after; transition identity remains visual-only because the official `VideoTransition` class exposes no methods or properties.
+
+The fifth mutation probe is `timeline.createSubsequence`. It requires an explicit Timeline selection and calls official `Sequence.createSubsequence(true)` so track targeting is ignored. The returned sequence's project item is renamed through an undoable `ProjectItem.createSetNameAction()` transaction, and the result serializes sequence counts, generated/requested names, GUID, project-item ID and parent bin. Creation itself is explicitly reported with unknown Undo behavior because `createSubsequence()` returns a `Sequence` directly rather than an `Action`; test only in a disposable project.
 
 In Premiere 26.3.2, `ADBE Additive Dissolve` and `ADBE Film Dissolve` visibly produced their **(Legacy)** variants. Adobe documents that Premiere 26.0 replaced several familiar transitions with modern GPU-accelerated versions originating from Film Impact while preserving the old implementations in the Legacy folder. Full official catalog export plus visual host tests established these modern runtime mappings: `AE.Impact_Additive_Dissolve` → Additive Dissolve, `AE.Impact_Film_Dissolve` → Film Dissolve, and `AE.AE_Impact_Dissolve` → Cross Dissolve. The first is now the diagnostic default. These are tested runtime mappings, not a general display-name API; other transitions still require explicit evidence.
 
