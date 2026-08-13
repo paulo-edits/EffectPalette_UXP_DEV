@@ -67,6 +67,8 @@ Host testing confirmed that `createSubsequence()` creates a project-root sequenc
 
 Version 0.11.0 implements that second stage as an official-only host probe. After `createSubsequence(true)`, a single transaction adds `ProjectItem.createSetNameAction()`, `SequenceEditor.createRemoveItemsAction()` and `SequenceEditor.createOverwriteItemAction()`. The earliest selected start and lowest selected video/audio track indices define the insertion point. This mirrors the observable Nest result without invoking CEP or undocumented commands, but remains pending Premiere host validation and is expected to retain two Undo levels because sequence creation cannot be added to the transaction.
 
+Premiere 26.3.2 testing confirmed creation, replacement, placement and the expected two Undo levels. Naming is only partially equivalent to the stable implementation: UXP can rename the sequence's ProjectItem, but the nested Timeline item continues to show the generated internal `Sequence.name`. That property is read-only and the official `Sequence` class has no rename action, so exact Timeline naming remains an official-API gap.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
