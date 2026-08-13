@@ -13,4 +13,12 @@ Future gates, in order, are panel-region calibration, OCR/result ambiguity detec
 
 Premiere 26.3.2 exposes the Effects search Edit through Windows UI Automation, including its exact current text, but does not expose the visible filtered result row. The result validator must therefore be hybrid: semantic exact-query verification plus visual detection/OCR of the preset row and icon. A pixel-only or UIA-only decision is forbidden.
 
+`inspect_effects_result.ps1` implements the first hybrid read-only gate with the native Windows OCR engine. It requires exactly one visible Premiere search Edit equal to the requested query, OCRs the saved Premiere-window capture, classifies the OCR occurrence overlapping the semantic Edit as the search field, and approves a future dry run only when exactly one other exact-text line remains. It does not yet classify the preset icon or move the pointer.
+
+```powershell
+powershell -NoProfile -File experimental/preset-assist/inspect_effects_result.ps1 `
+  -ImagePath "$env:TEMP\fxpalette-premiere-search-result.png" `
+  -ExpectedQuery "TESTE SUPREMO"
+```
+
 The alias bridge export remains research evidence only. It was rejected as a product workflow because importing generated copies would pollute and desynchronize the user's Presets catalog.
