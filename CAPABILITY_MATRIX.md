@@ -13,8 +13,8 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | --- | --- | --- | --- | --- | --- |
 | Load minimal panel | Tested in Premiere | Available in stable product | Not applicable | Loaded and opened successfully through UDT. Logs supplied contain no message identified with `com.pauloedits.effectpalette.uxp.poc`. | 26.3.2 |
 | Read Premiere and UXP versions | Tested in Premiere | Available | Not applicable | Host and runtime fields populated in Test A. Exact UXP runtime string was not supplied for the written test record. | 26.3.2 |
-| Read active project | Tested in Premiere; GUID fix pending retest | Available | Not applicable | Empty-project state and project name succeeded. `Project.guid` is a native `Guid`; direct JSON serialization produced `{}`. Code now calls the officially documented `Guid.toString()`. | 26.3.2 |
-| Read active sequence | Tested in Premiere; GUID fix pending retest | Available | Not applicable | No-sequence and active-sequence states succeeded. `Sequence.guid` showed the same native-object serialization issue and now uses `Guid.toString()`. | 26.3.2 |
+| Read active project | Tested in Premiere | Available | Not applicable | Empty-project state, project name and project GUID succeeded. Native `Project.guid` is converted with the officially documented `Guid.toString()`. | 26.3.2 |
+| Read active sequence | Tested in Premiere | Available | Not applicable | No-sequence state, active-sequence name and sequence GUID succeeded. Native `Sequence.guid` is converted with `Guid.toString()`. | 26.3.2 |
 | Read timeline selection | Tested in Premiere | Available | Not applicable | Empty selection and one/multiple selected timeline items returned the expected counts. Current panel records count only. | 26.3.2 |
 | Read project-panel selection | Documented, not implemented | Available | Not applicable | Official `ProjectUtils.getSelection(project)` exists since 25.6; deferred to read-only discovery stage. | None |
 | Read effect catalog | Unknown | Available | None selected | No catalog API has yet been confirmed and tested for the product's requirements. | None |
@@ -37,7 +37,7 @@ Add one entry per test session; do not overwrite earlier evidence.
 
 | Date | Premiere version | UXP runtime | UDT version | OS | Project fixture | Result/evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | A: no project; B: project/no sequence; C: active sequence/no selection; D: selected clips | A and D succeeded. B and C succeeded except native `Guid` values serialized as `{}`. Logs contained no error attributable to the FX.palette plugin ID. GUID conversion fix requires a focused B/C retest. |
+| 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | A: no project; B: project/no sequence; C: active sequence/no selection; D: selected clips | A–D succeeded. Initial B/C run exposed native `Guid` values serializing as `{}`; after applying `Guid.toString()`, focused B/C retest displayed both identifiers as strings. Logs contained no error attributable to the FX.palette plugin ID. |
 
 Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent manual host tests above supersede the earlier untested state.
 
