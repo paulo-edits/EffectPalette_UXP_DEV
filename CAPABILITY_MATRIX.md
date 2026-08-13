@@ -35,6 +35,7 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Insert project item into sequence | Documented API surface, not implemented | Available | Existing stable product has routing | `SequenceEditor.createInsertProjectItemAction()` is documented since 25.6; requires transaction and host test. | None |
 | Insert generic item | Unknown | Available | Existing stable product has routing | Product-specific generic item mapping has not been investigated. | None |
 | Serializable execution boundary | Locally validated design; diagnostics only | Existing Python adapter boundary | Not applicable | Allowlisted `diagnostics.read`; no transport, network, Python or arbitrary execution. | None |
+| Copy serialized diagnostic output | Documented; locally validated, pending host test | Browser clipboard path available | Not applicable | Version 0.7.0 uses official `navigator.clipboard.setContent()` with the required manifest permission. Six output-specific buttons provide success/error feedback; no clipboard read is performed. | None |
 
 ## Host test record
 
@@ -48,6 +49,7 @@ Add one entry per test session; do not overwrite earlier evidence.
 | 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | L: no timeline selection; M: one video clip plus Undo; N: multiple video clips plus single Undo; O: audio-only selection | L and O failed closed without mutation. M and N appended the requested video component and Undo removed it from all affected clips as one transaction. `AE.ADBE Mosaic` displayed as Mosaic (Legacy), exposing a catalog-identity limitation rather than an application failure. |
 | 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | P: resolve every video-effect identity without timeline mutation | The catalog was populated, but every attempted `displayName` was `null`. This matches the official `VideoFilterComponent` surface, which has no methods or properties. The diagnostic was subsequently reduced to a concise capability probe. |
 | 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | Q: concise effect-identity capability probe | Probe reported `unsupported-by-official-api`, with 829 match names and 829 display names in 2 ms. Equal array lengths were observed but are not treated as evidence of positional correspondence because the official API does not document that guarantee. |
+| 2026-08-13 | 26.3.2 | Not supplied | Not supplied (2.2+ required) | Windows | R: apply `AE.ADBE Mosaic`, read appended component, then Undo | All expected verification fields matched: append succeeded, component count increased by one, verified match name equaled the request, identity check succeeded, and the component display name was `Mosaic (Legacy)`. One Undo restored the prior state. |
 
 Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent manual host tests above supersede the earlier untested state.
 
@@ -73,3 +75,4 @@ Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent 
 - [TransitionFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transitionfactory)
 - [Constants](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/)
 - [UDT workflows](https://developer.adobe.com/premiere-pro/uxp/plugins/tutorials/udt-deep-dive/plugin-workflows)
+- [Premiere UXP clipboard recipe](https://developer.adobe.com/premiere-pro/uxp/resources/recipes/clipboard/)

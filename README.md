@@ -38,12 +38,14 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
 
-Version 0.6.0 reports:
+Version 0.7.0 reports:
 
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
 - counts and samples from the official video-effect, audio-effect and video-transition factories;
 - effect presets as unknown because no corresponding official catalog API has been identified.
+
+Every JSON output has an adjacent copy button. It uses Premiere UXP's official `navigator.clipboard.setContent()` API and briefly changes its label to `Copied!` or `Copy failed`. The manifest requests only the required `clipboard: readAndWrite` permission; the plugin still requests no network or filesystem access.
 
 It also includes the first mutation probe: `projectItems.setColorLabel`. The panel can set the currently selected Project-panel items to Adobe's `VIOLET` label slot. This constant identifies a palette slot/index; its visible name and color can differ when the user customizes Premiere's Label palette. The action is allowlisted, creates Premiere `Action` objects inside `Project.lockedAccess()`, and submits them as one undoable `Project.executeTransaction()` operation. No other mutation is accepted by the adapter.
 

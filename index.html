@@ -43,8 +43,10 @@
           <div><dt>Timeline items</dt><dd id="timeline-selection-count">—</dd></div>
         </dl>
         <h3>Project panel</h3>
+        <button class="copy-json" data-copy-target="project-selection-output" type="button">Copy project selection JSON</button>
         <pre id="project-selection-output">[]</pre>
         <h3>Timeline</h3>
+        <button class="copy-json" data-copy-target="timeline-selection-output" type="button">Copy timeline selection JSON</button>
         <pre id="timeline-selection-output">[]</pre>
       </section>
 
@@ -59,6 +61,7 @@
         <p class="hint">The serialized result includes the first 20 names from each documented catalog.</p>
         <button id="resolve-video-effect-catalog" type="button">Probe effect identity mapping</button>
         <p id="catalog-resolution-status" class="status">Resolution has not run.</p>
+        <button class="copy-json" data-copy-target="catalog-resolution-output" type="button">Copy catalog probe JSON</button>
         <pre id="catalog-resolution-output">[]</pre>
       </section>
 
@@ -66,6 +69,7 @@
         <h2 id="action-heading">Safe action probe</h2>
         <p class="hint">Select one or more items in the Project panel. This creates one undoable Premiere transaction.</p>
         <button id="set-label-violet" type="button">Set selected items to default Violet label slot</button>
+        <button class="copy-json" data-copy-target="action-output" type="button">Copy label action JSON</button>
         <pre id="action-output">No action executed.</pre>
       </section>
 
@@ -75,11 +79,13 @@
         <label for="video-effect-match-name">Effect match name</label>
         <input id="video-effect-match-name" type="text" value="PR.ADBE Gamma Correction" />
         <button id="apply-video-effect" type="button">Apply video effect to selected clips</button>
+        <button class="copy-json" data-copy-target="effect-action-output" type="button">Copy effect action JSON</button>
         <pre id="effect-action-output">No effect action executed.</pre>
       </section>
 
       <details>
         <summary>Serializable result</summary>
+        <button class="copy-json" data-copy-target="serialized-output" type="button">Copy diagnostics JSON</button>
         <pre id="serialized-output">{}</pre>
       </details>
     </main>

@@ -19,7 +19,12 @@ expect(manifest.host && manifest.host.app === "premierepro", "host.app must be p
 expect(manifest.host && manifest.host.minVersion === "25.6.0", "host.minVersion must be 25.6.0");
 expect(Array.isArray(manifest.entrypoints) && manifest.entrypoints.length > 0, "at least one entrypoint is required");
 expect(manifest.entrypoints.some((item) => item.type === "panel" && item.id === "effectPaletteDiagnostics"), "diagnostics panel entrypoint is required");
-expect(!manifest.requiredPermissions, "PoC must not request permissions");
+expect(
+  manifest.requiredPermissions &&
+    Object.keys(manifest.requiredPermissions).length === 1 &&
+    manifest.requiredPermissions.clipboard === "readAndWrite",
+  "PoC must request only clipboard readAndWrite permission"
+);
 expect(fs.existsSync(path.join(root, manifest.main)), "manifest main file does not exist");
 
 for (const filename of ["index.js", "execution-adapter.js"]) {

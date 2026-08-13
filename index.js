@@ -13,6 +13,22 @@ function guidToString(guid) {
   return guid && typeof guid.toString === "function" ? guid.toString() : null;
 }
 
+async function copyOutput(button) {
+  const target = document.getElementById(button.dataset.copyTarget);
+  if (!target) return;
+  const originalLabel = button.textContent;
+
+  try {
+    await navigator.clipboard.setContent({ "text/plain": target.textContent || "" });
+    button.textContent = "Copied!";
+  } catch (error) {
+    button.textContent = "Copy failed";
+    console.error("Unable to copy diagnostic output:", error);
+  }
+
+  setTimeout(() => { button.textContent = originalLabel; }, 1600);
+}
+
 async function describeProjectItem(item) {
   return {
     name: item.name || null,
@@ -404,6 +420,12 @@ function wirePanel() {
     catalogButton.addEventListener("click", runResolveVideoEffectCatalog);
     catalogButton.dataset.wired = "true";
   }
+  document.querySelectorAll(".copy-json").forEach((copyButton) => {
+    if (!copyButton.dataset.wired) {
+      copyButton.addEventListener("click", () => copyOutput(copyButton));
+      copyButton.dataset.wired = "true";
+    }
+  });
   refresh();
 }
 

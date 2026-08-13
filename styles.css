@@ -13,6 +13,7 @@ h2 { margin: 18px 0 8px; font-size: 13px; }
 h3 { margin: 12px 0 6px; font-size: 12px; font-weight: normal; color: var(--uxp-host-text-color-secondary, #b7b7b7); }
 .subtitle { margin: 4px 0 0; color: var(--uxp-host-text-color-secondary, #b7b7b7); }
 button { width: 100%; min-height: 32px; }
+.copy-json { min-height: 26px; margin-top: 6px; font-size: 11px; }
 input { box-sizing: border-box; width: 100%; min-height: 30px; margin: 6px 0 8px; }
 label { display: block; color: var(--uxp-host-text-color-secondary, #b7b7b7); }
 .status { min-height: 18px; color: var(--uxp-host-text-color-secondary, #b7b7b7); }
