@@ -822,6 +822,21 @@ async function insertGenericItemAcrossSelection(action) {
   const projectItemId = await projectItem.getId();
   const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, rangeStart);
   const editor = premiere.SequenceEditor.getEditor(sequence);
+  let clipProjectItem = null;
+  let sourceInPoint = null;
+  let sourceOutPoint = null;
+  let atomicDurationPrepared = false;
+  try {
+    clipProjectItem = premiere.ClipProjectItem.cast(projectItem);
+    sourceInPoint = await clipProjectItem.getInPoint(premiere.Constants.MediaType.VIDEO);
+    sourceOutPoint = await clipProjectItem.getOutPoint(premiere.Constants.MediaType.VIDEO);
+    atomicDurationPrepared = !!(sourceInPoint && sourceOutPoint);
+  } catch (error) {
+    clipProjectItem = null;
+    atomicDurationPrepared = false;
+  }
+  const rangeDuration = rangeEnd.subtract(rangeStart);
+  const temporaryOutPoint = atomicDurationPrepared ? sourceInPoint.add(rangeDuration) : null;
   let insertionTransactionSucceeded = false;
   project.lockedAccess(() => {
     const insertionAction = editor.createOverwriteItemAction(
@@ -830,8 +845,16 @@ async function insertGenericItemAcrossSelection(action) {
       videoTrackIndex,
       audioTrackIndex
     );
+    const temporaryOutAction = atomicDurationPrepared
+      ? clipProjectItem.createSetOutPointAction(temporaryOutPoint)
+      : null;
+    const restoreOutAction = atomicDurationPrepared
+      ? clipProjectItem.createSetOutPointAction(sourceOutPoint)
+      : null;
     insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      if (temporaryOutAction) compoundAction.addAction(temporaryOutAction);
       compoundAction.addAction(insertionAction);
+      if (restoreOutAction) compoundAction.addAction(restoreOutAction);
     }, `FX.palette: Insert generic item ${projectItem.name || ""}`);
   });
   if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the generic-item insertion transaction.");
@@ -856,20 +879,31 @@ async function insertGenericItemAcrossSelection(action) {
   const isAdjustmentLayer = typeof insertedTrackItem.isAdjustmentLayer === "function"
     ? await insertedTrackItem.isAdjustmentLayer()
     : null;
+  const atomicDurationSucceeded = String(endBefore.ticks) === String(rangeEnd.ticks);
   let durationTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    const setEndAction = insertedTrackItem.createSetEndAction(
-      premiere.TickTime.createWithTicks(String(rangeEnd.ticks))
-    );
-    durationTransactionSucceeded = project.executeTransaction((compoundAction) => {
-      compoundAction.addAction(setEndAction);
-    }, `FX.palette: Match generic item duration ${projectItem.name || ""}`);
-  });
-  if (!durationTransactionSucceeded) {
-    throw new Error("The item was inserted, but Premiere rejected its duration-matching transaction.");
+  if (!atomicDurationSucceeded) {
+    project.lockedAccess(() => {
+      const setEndAction = insertedTrackItem.createSetEndAction(
+        premiere.TickTime.createWithTicks(String(rangeEnd.ticks))
+      );
+      durationTransactionSucceeded = project.executeTransaction((compoundAction) => {
+        compoundAction.addAction(setEndAction);
+      }, `FX.palette: Match generic item duration ${projectItem.name || ""}`);
+    });
+    if (!durationTransactionSucceeded) {
+      throw new Error("The item was inserted, but Premiere rejected its duration-matching transaction.");
+    }
   }
 
   const endAfter = await insertedTrackItem.getEndTime();
+  let sourceOutPointAfter = null;
+  if (clipProjectItem && sourceOutPoint) {
+    try {
+      sourceOutPointAfter = await clipProjectItem.getOutPoint(premiere.Constants.MediaType.VIDEO);
+    } catch (error) {
+      sourceOutPointAfter = null;
+    }
+  }
   const instancesAfter = await findProjectItemInstancesAtTime(sequence, projectItemId, rangeStart);
   return {
     projectItem: { id: projectItemId, name: projectItem.name || null, type: projectItem.type },
@@ -892,12 +926,17 @@ async function insertGenericItemAcrossSelection(action) {
     matchingInstanceCountBefore: instancesBefore.length,
     matchingInstanceCountAfter: instancesAfter.length,
     insertionTransactionSucceeded,
+    atomicDurationPrepared,
+    atomicDurationSucceeded,
+    projectItemOutPointRestored: sourceOutPoint && sourceOutPointAfter
+      ? String(sourceOutPoint.ticks) === String(sourceOutPointAfter.ticks)
+      : null,
     durationTransactionSucceeded,
     verificationSucceeded: String(endAfter.ticks) === String(rangeEnd.ticks),
-    undoModelExpected: [
-      "Undo duration matching",
-      "Undo generic item insertion"
-    ]
+    durationStrategy: atomicDurationSucceeded ? "temporary-project-item-out-point" : "post-insertion-track-item-fallback",
+    undoModelExpected: atomicDurationSucceeded
+      ? ["Undo generic item insertion and duration"]
+      : ["Undo duration matching", "Undo generic item insertion"]
   };
 }
 

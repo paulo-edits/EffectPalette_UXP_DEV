@@ -77,6 +77,8 @@ UXP exposes official Insert and Overwrite actions through `SequenceEditor`. Vers
 
 Version 0.14.0 ports the stable generic-duration rule without QE: derive the earliest start/latest end from selected video clips, overwrite the chosen Project item at that start, resolve the inserted video TrackItem and apply its official `createSetEndAction()` using `TickTime.createWithTicks()`. Asset discovery/import and automatic free-track routing remain separate capabilities.
 
+Version 0.15.0 investigates CEP-equivalent single-Undo behavior using only official actions. A compound transaction temporarily trims the ClipProjectItem to the desired duration, inserts it and restores its original Out Point. The host result reports whether insertion captured that temporary trim; otherwise the proven post-insertion TrackItem trim remains an explicit fallback.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
