@@ -592,6 +592,67 @@ function parsePrfpsetKeyframes(parameter) {
   });
 }
 
+function derivePrfpsetPointCurve(sourceKeys) {
+  const first = sourceKeys[0];
+  const second = sourceKeys[1];
+  const startParts = first.parts;
+  const endParts = second.parts;
+  const x1 = Math.max(0.09, Math.min(1, 0.09 + ((Number(startParts[5]) || 0) * 0.44)));
+  const y1 = Math.min(0.04, Math.max(0.004, (Number(startParts[7]) || 0) * 0.04));
+  const x2 = Math.min(0.36, Math.max(x1 + 0.04, 0.15 + ((Number(endParts[7]) || 0) * 0.18)));
+  const y2 = Math.max(0.96, Math.min(1, 0.94 + ((Number(endParts[5]) || 0) * 0.05)));
+  return { x1, y1, x2, y2, durationSeconds: (second.ticks - first.ticks) / 254016000000 };
+}
+
+function importedPointAtProgress(sourceKeys, curve, progress) {
+  const eased = cubicBezierProgress(progress, curve.x1, curve.y1, curve.x2, curve.y2);
+  return sourceKeys[0].value.value.map((start, index) =>
+    start + ((sourceKeys[1].value.value[index] - start) * eased));
+}
+
+function compareImportedTransformWithCapture(action) {
+  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
+  if (!capturedTransformCurveReference) throw new Error("Capture the manually applied Transform preset from clip A first.");
+  const requestedName = String(action.payload.name || "").trim();
+  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
+  const matches = importedEffectPresetCatalog.presets.filter((preset) =>
+    preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
+    preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
+  if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
+  const transform = matches[0].filters.find((filter) => filter.matchName === "AE.ADBE Geometry2");
+  if (!transform) throw new Error("The imported preset contains no Transform filter.");
+  const source = transform.parameters.find((parameter) => parameter.index === 1 && parameter.timeVarying && parameter.keyframes);
+  const captured = capturedTransformCurveReference.parameters.find((parameter) => parameter.index === 1 && parameter.mode === "animated");
+  if (!source || !captured) throw new Error("Both imported and captured presets must contain animated Transform Position at index 1.");
+  const sourceKeys = parsePrfpsetKeyframes(source);
+  if (sourceKeys.length !== 2 || sourceKeys.some((key) => key.value.type !== "point")) throw new Error("Expected a two-key imported Point curve.");
+  const curve = derivePrfpsetPointCurve(sourceKeys);
+  const samples = captured.samples.map((sample) => {
+    const progress = captured.durationSeconds > 0 ? Math.min(1, sample.offsetSeconds / captured.durationSeconds) : 0;
+    const derived = importedPointAtProgress(sourceKeys, curve, progress);
+    const manual = sample.value.value;
+    const delta = derived.map((value, index) => value - manual[index]);
+    const distance = Math.sqrt(delta.reduce((sum, value) => sum + (value * value), 0));
+    return { offsetSeconds: sample.offsetSeconds, progress, manual, derived, delta, distance };
+  });
+  const sumSquares = samples.reduce((sum, sample) => sum + (sample.distance * sample.distance), 0);
+  const worst = samples.reduce((current, sample) => !current || sample.distance > current.distance ? sample : current, null);
+  return {
+    preset: { name: matches[0].name, category: matches[0].category },
+    parameter: { index: 1, name: source.name },
+    importedDurationSeconds: curve.durationSeconds,
+    capturedDurationSeconds: captured.durationSeconds,
+    curve,
+    sampleCount: samples.length,
+    rootMeanSquareDistance: Math.sqrt(sumSquares / Math.max(1, samples.length)),
+    maximumDistance: worst ? worst.distance : 0,
+    worstSample: worst,
+    samples,
+    mutation: "none",
+    comparisonModel: "manual-host-samples-vs-current-prfpset-heuristic"
+  };
+}
+
 async function applyImportedTransformPreset(action) {
   if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
   const requestedName = String(action.payload.name || "").trim();
@@ -641,22 +702,14 @@ async function applyImportedTransformPreset(action) {
     if (sourceKeys.length !== 2 || sourceKeys.some((key) => key.value.type !== "point")) {
       throw new Error(`The first probe supports a two-key Point curve; parameter ${source.index} differs.`);
     }
-    const first = sourceKeys[0];
-    const second = sourceKeys[1];
-    const durationSeconds = (second.ticks - first.ticks) / 254016000000;
+    const curve = derivePrfpsetPointCurve(sourceKeys);
+    const { x1, y1, x2, y2, durationSeconds } = curve;
     const segments = Math.max(1, Math.round(durationSeconds * fps));
-    const startParts = first.parts;
-    const endParts = second.parts;
-    const x1 = Math.max(0.09, Math.min(1, 0.09 + ((Number(startParts[5]) || 0) * 0.44)));
-    const y1 = Math.min(0.04, Math.max(0.004, (Number(startParts[7]) || 0) * 0.04));
-    const x2 = Math.min(0.36, Math.max(x1 + 0.04, 0.15 + ((Number(endParts[7]) || 0) * 0.18)));
-    const y2 = Math.max(0.96, Math.min(1, 0.94 + ((Number(endParts[5]) || 0) * 0.05)));
     const keys = [];
     let explicitLinearInterpolationCount = 0;
     for (let frame = 0; frame <= segments; frame += 1) {
       const progress = frame / segments;
-      const eased = cubicBezierProgress(progress, x1, y1, x2, y2);
-      const point = first.value.value.map((start, index) => start + ((second.value.value[index] - start) * eased));
+      const point = importedPointAtProgress(sourceKeys, curve, progress);
       const keyframe = await parameter.createKeyframe(createHostValue({ type: "point", value: point }));
       keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(durationSeconds * progress));
       if (typeof keyframe.setTemporalInterpolationMode === "function") {
@@ -2181,6 +2234,20 @@ async function runApplyImportedTransformPreset() {
   if (button) button.disabled = false;
 }
 
+async function runCompareImportedTransformPreset() {
+  const button = document.getElementById("compare-imported-transform-preset");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "catalog.effectPresets.compareImportedTransform",
+    requestId: String(Date.now()),
+    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
+  }, { "catalog.effectPresets.compareImportedTransform": compareImportedTransformWithCapture });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -2419,6 +2486,11 @@ function wirePanel() {
   if (applyImportedPresetButton && !applyImportedPresetButton.dataset.wired) {
     applyImportedPresetButton.addEventListener("click", runApplyImportedTransformPreset);
     applyImportedPresetButton.dataset.wired = "true";
+  }
+  const compareImportedPresetButton = document.getElementById("compare-imported-transform-preset");
+  if (compareImportedPresetButton && !compareImportedPresetButton.dataset.wired) {
+    compareImportedPresetButton.addEventListener("click", runCompareImportedTransformPreset);
+    compareImportedPresetButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
