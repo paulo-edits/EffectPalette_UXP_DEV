@@ -94,8 +94,9 @@ async function setSelectedProjectItemLabel(action) {
   if (!transactionSucceeded) throw new Error("Premiere rejected the color-label transaction.");
   return {
     affectedItemCount: selectedItems.length,
-    labelName,
+    labelConstant: labelName,
     labelIndex,
+    displayColorDependsOnUserPalette: true,
     undoable: true
   };
 }

@@ -6,6 +6,8 @@ This proof of concept establishes actual Premiere UXP capability boundaries with
 
 The production architecture must not require a visible Premiere panel. A panel may remain available for diagnostics and settings, while the operational plugin context should load automatically and run invisibly. This lifecycle requirement must be proven in Premiere before any Python transport is designed.
 
+`paulo-edits/Effect-Palette_DEV` may be consulted as a read-only implementation reference for existing CEP behavior and serialized action semantics. No file, commit, branch or remote in the stable repositories may be changed or published without explicit user authorization. CEP implementation details are evidence of product behavior, not permission to introduce CEP fallbacks here.
+
 ## Architecture boundary
 
 The provisional boundary is `execution-adapter.js`:

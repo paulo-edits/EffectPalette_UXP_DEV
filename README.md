@@ -45,7 +45,7 @@ Version 0.3.0 reports:
 - counts and samples from the official video-effect, audio-effect and video-transition factories;
 - effect presets as unknown because no corresponding official catalog API has been identified.
 
-It also includes the first mutation probe: `projectItems.setColorLabel`. The panel can set the currently selected Project-panel items to Violet. The action is allowlisted, creates Premiere `Action` objects inside `Project.lockedAccess()`, and submits them as one undoable `Project.executeTransaction()` operation. No other mutation is accepted by the adapter.
+It also includes the first mutation probe: `projectItems.setColorLabel`. The panel can set the currently selected Project-panel items to Adobe's `VIOLET` label slot. This constant identifies a palette slot/index; its visible name and color can differ when the user customizes Premiere's Label palette. The action is allowlisted, creates Premiere `Action` objects inside `Project.lockedAccess()`, and submits them as one undoable `Project.executeTransaction()` operation. No other mutation is accepted by the adapter.
 
 The visible panel is a proof-of-concept diagnostic surface, not a production dependency. The future operational plugin must work without requiring this panel to remain open.
 
