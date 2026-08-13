@@ -717,17 +717,17 @@ async function applyImportedTransformPreset(action) {
       continue;
     }
     const sourceKeys = parsePrfpsetKeyframes(source);
-    if (sourceKeys.length !== 2 || sourceKeys.some((key) => key.value.type !== "point")) {
-      throw new Error(`The first probe supports a two-key Point curve; parameter ${source.index} differs.`);
+    if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "point")) {
+      throw new Error(`The direct probe requires a Point curve with at least two keys; parameter ${source.index} differs.`);
     }
-    const curve = derivePrfpsetPointCurve(sourceKeys);
-    const { x1, y1, x2, y2, durationSeconds } = curve;
+    const durationSeconds = (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000;
     const segments = Math.max(1, Math.round(durationSeconds * fps));
     const keys = [];
     let explicitLinearInterpolationCount = 0;
     for (let frame = 0; frame <= segments; frame += 1) {
       const progress = frame / segments;
-      const point = importedPointAtProgress(sourceKeys, curve, progress);
+      const sampled = sampleImportedPointCurve(sourceKeys, durationSeconds * progress);
+      const point = sampled.value;
       const keyframe = await parameter.createKeyframe(createHostValue({ type: "point", value: point }));
       keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(durationSeconds * progress));
       if (typeof keyframe.setTemporalInterpolationMode === "function") {
@@ -738,7 +738,12 @@ async function applyImportedTransformPreset(action) {
     }
     prepared.push({
       source, parameter, staticKeyframe: null, keys,
-      curve: { x1, y1, x2, y2, durationSeconds, explicitLinearInterpolationCount }
+      curve: {
+        sourceKeyframeCount: sourceKeys.length,
+        sourceSegmentCount: sourceKeys.length - 1,
+        durationSeconds,
+        explicitLinearInterpolationCount
+      }
     });
   }
   let parameterTransactionSucceeded = false;
