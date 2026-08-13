@@ -506,7 +506,8 @@ async function probeAnimatedVideoEffectParameter(action) {
     : "DEFAULT";
   const interpolationNames = ["DEFAULT", "LINEAR", "HOLD", "BEZIER", "TIME", "TIME_TRANSITION_START", "TIME_TRANSITION_END"];
   const approximateBezier = action.payload.approximateBezier === true || action.payload.approximateBezier === "true";
-  const approximationSamples = Math.max(3, Math.min(12, Number(action.payload.approximationSamples) || 8));
+  const sampleEveryFrame = action.payload.sampleEveryFrame === true || action.payload.sampleEveryFrame === "true";
+  let approximationSamples = Math.max(3, Math.min(120, Number(action.payload.approximationSamples) || 30));
   const bezierControls = ["x1", "y1", "x2", "y2"].map((key) => Number(action.payload[key]));
   if (!matchName) throw new Error("A video-effect match name is required.");
   if (!Number.isInteger(parameterIndex) || parameterIndex < 0) throw new Error("Parameter index must be a non-negative integer.");
@@ -521,6 +522,17 @@ async function probeAnimatedVideoEffectParameter(action) {
   if (!project) throw new Error("Open a project before probing animated parameters.");
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("Open a sequence before probing animated parameters.");
+  let sequenceFramesPerSecond = null;
+  if (approximateBezier && sampleEveryFrame) {
+    try {
+      const settings = await sequence.getSettings();
+      const frameDuration = settings && settings.videoFrameRate;
+      if (frameDuration && Number(frameDuration.seconds) > 0) {
+        sequenceFramesPerSecond = 1 / Number(frameDuration.seconds);
+        approximationSamples = Math.max(3, Math.min(120, Math.round(sequenceFramesPerSecond)));
+      }
+    } catch (_) { /* Explicit segment count remains the safe fallback. */ }
+  }
   const selection = await sequence.getSelection();
   const selectedItems = selection ? await selection.getTrackItems() : [];
   const videoMediaTypes = new Set();
@@ -632,6 +644,8 @@ async function probeAnimatedVideoEffectParameter(action) {
       controls: { x1: bezierControls[0], y1: bezierControls[1], x2: bezierControls[2], y2: bezierControls[3] },
       segmentSeconds: 1,
       requestedSamples: approximationSamples,
+      sampleEveryFrame,
+      detectedSequenceFramesPerSecond: sequenceFramesPerSecond,
       expectedHelperKeyframes: approximationSamples - 1,
       helperInterpolationPreparationSucceeded: helperKeyframes.every((entry) => entry.interpolationSucceeded === true),
       fidelity: "sampled-approximation-not-native-bezier-handles"
@@ -1561,6 +1575,7 @@ async function runProbeAnimatedVideoEffectParameter() {
   const interpolationInput = document.getElementById("animated-interpolation-mode");
   const approximationInput = document.getElementById("approximate-bezier-easing");
   const approximationSamplesInput = document.getElementById("bezier-approximation-samples");
+  const sampleEveryFrameInput = document.getElementById("bezier-sample-every-frame");
   if (button) button.disabled = true;
   const result = await executionAdapter.execute({
     type: "timeline.probeAnimatedVideoEffectParameter",
@@ -1572,10 +1587,11 @@ async function runProbeAnimatedVideoEffectParameter() {
       secondValue: secondValueInput ? secondValueInput.value : "20",
       interpolationName: interpolationInput ? interpolationInput.value : "DEFAULT",
       approximateBezier: approximationInput ? approximationInput.checked : false,
-      approximationSamples: approximationSamplesInput ? approximationSamplesInput.value : "8",
-      x1: "0.17",
-      y1: "0.01",
-      x2: "0.24",
+      approximationSamples: approximationSamplesInput ? approximationSamplesInput.value : "30",
+      sampleEveryFrame: sampleEveryFrameInput ? sampleEveryFrameInput.checked : true,
+      x1: "0.625",
+      y1: "0",
+      x2: "0.375",
       y2: "1"
     }
   }, { "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter });

@@ -83,7 +83,7 @@
         <h2 id="effect-action-heading">Video effect probe</h2>
         <p class="hint">Select one or more video clips in the Timeline. The match name must exist in the official runtime catalog.</p>
         <label for="video-effect-match-name">Effect match name</label>
-        <input id="video-effect-match-name" type="text" value="PR.ADBE Gamma Correction" />
+        <input id="video-effect-match-name" type="text" value="AE.ADBE Geometry2" />
         <button id="apply-video-effect" type="button">Apply video effect to selected clips</button>
         <button class="copy-json" data-copy-target="effect-action-output" type="button">Copy effect action JSON</button>
         <pre id="effect-action-output">No effect action executed.</pre>
@@ -91,14 +91,14 @@
         <p class="hint">Select exactly one video clip. This appends the effect above and reads every official parameter. Undo once after copying the result.</p>
         <button id="probe-video-effect-parameters" type="button">Append effect and inspect parameters</button>
         <label for="static-parameter-index">Numeric parameter index</label>
-        <input id="static-parameter-index" type="number" min="0" step="1" value="0" />
+        <input id="static-parameter-index" type="number" min="0" step="1" value="3" />
         <label for="static-parameter-value">Numeric test value</label>
         <input id="static-parameter-value" type="number" step="any" value="20" />
         <button id="probe-static-video-effect-parameter" type="button">Append effect and set static value</button>
         <label for="animated-first-value">First keyframe value</label>
-        <input id="animated-first-value" type="number" step="any" value="10" />
+        <input id="animated-first-value" type="number" step="any" value="100" />
         <label for="animated-second-value">Second keyframe value (+1 second)</label>
-        <input id="animated-second-value" type="number" step="any" value="20" />
+        <input id="animated-second-value" type="number" step="any" value="150" />
         <label for="animated-interpolation-mode">Keyframe interpolation</label>
         <select id="animated-interpolation-mode">
           <option value="DEFAULT">Host default</option>
@@ -110,9 +110,10 @@
           <option value="TIME_TRANSITION_END">Time transition end</option>
         </select>
         <label><input id="approximate-bezier-easing" type="checkbox" /> Approximate Bezier easing with linear helper keyframes</label>
-        <label for="bezier-approximation-samples">Approximation segments (3–12)</label>
-        <input id="bezier-approximation-samples" type="number" min="3" max="12" step="1" value="8" />
-        <p class="hint">Experimental scalar-only approximation using cubic controls (0.17, 0.01, 0.24, 1). This creates extra editable keyframes; it does not restore native Bezier handles.</p>
+        <label><input id="bezier-sample-every-frame" type="checkbox" checked /> Sample every sequence frame</label>
+        <label for="bezier-approximation-samples">Fallback segments (3–120)</label>
+        <input id="bezier-approximation-samples" type="number" min="3" max="120" step="1" value="30" />
+        <p class="hint">Experimental Transform Scale test using a strong S-curve (0.625, 0, 0.375, 1). Per-frame sampling follows the independently implemented strategy observed in OpenCurve; these are helper keyframes, not native Bezier handles.</p>
         <button id="probe-animated-video-effect-parameter" type="button">Append effect and add two keyframes</button>
         <button class="copy-json" data-copy-target="effect-parameter-output" type="button">Copy parameter probe JSON</button>
         <pre id="effect-parameter-output">No parameter probe executed.</pre>
