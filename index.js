@@ -537,6 +537,42 @@ async function importPrfpsetCatalog() {
   };
 }
 
+function inspectImportedEffectPreset(action) {
+  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
+  const requestedName = String(action.payload.name || "").trim();
+  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
+  if (!requestedName) throw new Error("Preset name is required.");
+  const named = importedEffectPresetCatalog.presets.filter((preset) => preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase());
+  const exact = named.filter((preset) => preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
+  if (exact.length !== 1) {
+    return {
+      requestedName,
+      requestedCategory,
+      exactMatchCount: exact.length,
+      namedMatchCount: named.length,
+      candidates: named.slice(0, 50).map((preset) => ({ name: preset.name, category: preset.category, filterCount: preset.filters.length })),
+      mutation: "none"
+    };
+  }
+  const preset = exact[0];
+  return {
+    requestedName,
+    requestedCategory,
+    exactMatchCount: 1,
+    preset,
+    summary: {
+      filterCount: preset.filters.length,
+      filters: preset.filters.map((filter) => ({
+        matchName: filter.matchName,
+        displayName: filter.displayName,
+        parameterCount: filter.parameters.length,
+        animatedParameterCount: filter.parameters.filter((parameter) => parameter.timeVarying || parameter.keyframes).length
+      }))
+    },
+    mutation: "none"
+  };
+}
+
 async function captureTransformCurveReference() {
   const matchName = "AE.ADBE Geometry2";
   const project = await premiere.Project.getActiveProject();
@@ -1995,6 +2031,20 @@ async function runImportPrfpsetCatalog() {
   if (button) button.disabled = false;
 }
 
+async function runInspectImportedEffectPreset() {
+  const button = document.getElementById("inspect-imported-prfpset");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "catalog.effectPresets.inspectImported",
+    requestId: String(Date.now()),
+    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
+  }, { "catalog.effectPresets.inspectImported": inspectImportedEffectPreset });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -2223,6 +2273,11 @@ function wirePanel() {
   if (importPrfpsetButton && !importPrfpsetButton.dataset.wired) {
     importPrfpsetButton.addEventListener("click", runImportPrfpsetCatalog);
     importPrfpsetButton.dataset.wired = "true";
+  }
+  const inspectPrfpsetButton = document.getElementById("inspect-imported-prfpset");
+  if (inspectPrfpsetButton && !inspectPrfpsetButton.dataset.wired) {
+    inspectPrfpsetButton.addEventListener("click", runInspectImportedEffectPreset);
+    inspectPrfpsetButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
