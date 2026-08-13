@@ -81,6 +81,8 @@ Version 0.15.0 investigates CEP-equivalent single-Undo behavior using only offic
 
 The first 26.3.2 run showed a documentation/runtime mismatch: `ClipProjectItem.cast()` returned an object without `createSetOutPointAction()`. Version 0.15.1 records this through feature detection and also probes the documented combined `createSetInOutPointsAction()` before falling back, rather than allowing the missing method to abort insertion.
 
+The 0.15.1 host result confirmed that neither action was exposed on the cast object. Version 0.15.2 additionally checks the original ProjectItem selection proxy and serializes both method surfaces; some UXP proxies expose subclass methods without requiring the documented cast wrapper.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

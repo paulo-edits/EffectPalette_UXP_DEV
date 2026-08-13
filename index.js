@@ -823,23 +823,54 @@ async function insertGenericItemAcrossSelection(action) {
   const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, rangeStart);
   const editor = premiere.SequenceEditor.getEditor(sequence);
   let clipProjectItem = null;
+  let atomicActionOwner = null;
   let sourceInPoint = null;
   let sourceOutPoint = null;
   let atomicDurationPrepared = false;
   let atomicActionMethod = null;
+  let atomicActionSource = null;
+  const atomicActionSurface = {
+    projectItem: {
+      getInPoint: typeof projectItem.getInPoint === "function",
+      getOutPoint: typeof projectItem.getOutPoint === "function",
+      createSetOutPointAction: typeof projectItem.createSetOutPointAction === "function",
+      createSetInOutPointsAction: typeof projectItem.createSetInOutPointsAction === "function"
+    },
+    castClipProjectItem: null
+  };
   try {
     clipProjectItem = premiere.ClipProjectItem.cast(projectItem);
-    sourceInPoint = await clipProjectItem.getInPoint(premiere.Constants.MediaType.VIDEO);
-    sourceOutPoint = await clipProjectItem.getOutPoint(premiere.Constants.MediaType.VIDEO);
-    if (typeof clipProjectItem.createSetOutPointAction === "function") {
-      atomicActionMethod = "createSetOutPointAction";
-    } else if (typeof clipProjectItem.createSetInOutPointsAction === "function") {
-      atomicActionMethod = "createSetInOutPointsAction";
-    }
-    atomicDurationPrepared = !!(sourceInPoint && sourceOutPoint && atomicActionMethod);
+    atomicActionSurface.castClipProjectItem = {
+      getInPoint: typeof clipProjectItem.getInPoint === "function",
+      getOutPoint: typeof clipProjectItem.getOutPoint === "function",
+      createSetOutPointAction: typeof clipProjectItem.createSetOutPointAction === "function",
+      createSetInOutPointsAction: typeof clipProjectItem.createSetInOutPointsAction === "function"
+    };
   } catch (error) {
     clipProjectItem = null;
-    atomicDurationPrepared = false;
+  }
+  const atomicCandidates = [
+    { source: "projectItem", value: projectItem },
+    { source: "castClipProjectItem", value: clipProjectItem }
+  ];
+  for (const candidate of atomicCandidates) {
+    if (!candidate.value || typeof candidate.value.getInPoint !== "function" || typeof candidate.value.getOutPoint !== "function") continue;
+    const method = typeof candidate.value.createSetOutPointAction === "function"
+      ? "createSetOutPointAction"
+      : typeof candidate.value.createSetInOutPointsAction === "function"
+        ? "createSetInOutPointsAction"
+        : null;
+    if (!method) continue;
+    try {
+      sourceInPoint = await candidate.value.getInPoint(premiere.Constants.MediaType.VIDEO);
+      sourceOutPoint = await candidate.value.getOutPoint(premiere.Constants.MediaType.VIDEO);
+      if (!sourceInPoint || !sourceOutPoint) continue;
+      atomicActionOwner = candidate.value;
+      atomicActionSource = candidate.source;
+      atomicActionMethod = method;
+      atomicDurationPrepared = true;
+      break;
+    } catch (error) {}
   }
   const rangeDuration = rangeEnd.subtract(rangeStart);
   const temporaryOutPoint = atomicDurationPrepared ? sourceInPoint.add(rangeDuration) : null;
@@ -855,11 +886,11 @@ async function insertGenericItemAcrossSelection(action) {
       let temporaryOutAction = null;
       let restoreOutAction = null;
       if (useAtomicDuration && atomicActionMethod === "createSetOutPointAction") {
-        temporaryOutAction = clipProjectItem.createSetOutPointAction(temporaryOutPoint);
-        restoreOutAction = clipProjectItem.createSetOutPointAction(sourceOutPoint);
+        temporaryOutAction = atomicActionOwner.createSetOutPointAction(temporaryOutPoint);
+        restoreOutAction = atomicActionOwner.createSetOutPointAction(sourceOutPoint);
       } else if (useAtomicDuration && atomicActionMethod === "createSetInOutPointsAction") {
-        temporaryOutAction = clipProjectItem.createSetInOutPointsAction(sourceInPoint, temporaryOutPoint);
-        restoreOutAction = clipProjectItem.createSetInOutPointsAction(sourceInPoint, sourceOutPoint);
+        temporaryOutAction = atomicActionOwner.createSetInOutPointsAction(sourceInPoint, temporaryOutPoint);
+        restoreOutAction = atomicActionOwner.createSetInOutPointsAction(sourceInPoint, sourceOutPoint);
       }
       insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
         if (temporaryOutAction) compoundAction.addAction(temporaryOutAction);
@@ -873,6 +904,7 @@ async function insertGenericItemAcrossSelection(action) {
   } catch (error) {
     atomicDurationPrepared = false;
     atomicActionMethod = null;
+    atomicActionSource = null;
     executeInsertionTransaction(false);
   }
   if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the generic-item insertion transaction.");
@@ -915,9 +947,9 @@ async function insertGenericItemAcrossSelection(action) {
 
   const endAfter = await insertedTrackItem.getEndTime();
   let sourceOutPointAfter = null;
-  if (clipProjectItem && sourceOutPoint) {
+  if (atomicActionOwner && sourceOutPoint) {
     try {
-      sourceOutPointAfter = await clipProjectItem.getOutPoint(premiere.Constants.MediaType.VIDEO);
+      sourceOutPointAfter = await atomicActionOwner.getOutPoint(premiere.Constants.MediaType.VIDEO);
     } catch (error) {
       sourceOutPointAfter = null;
     }
@@ -946,6 +978,8 @@ async function insertGenericItemAcrossSelection(action) {
     insertionTransactionSucceeded,
     atomicDurationPrepared,
     atomicActionMethod,
+    atomicActionSource,
+    atomicActionSurface,
     atomicDurationSucceeded,
     projectItemOutPointRestored: sourceOutPoint && sourceOutPointAfter
       ? String(sourceOutPoint.ticks) === String(sourceOutPointAfter.ticks)
