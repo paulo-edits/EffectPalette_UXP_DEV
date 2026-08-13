@@ -274,6 +274,117 @@ async function applyVideoEffectToSelection(action) {
   };
 }
 
+function serializePresetProbeValue(value) {
+  if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(serializePresetProbeValue);
+
+  const result = {};
+  ["value", "x", "y", "red", "green", "blue", "alpha", "ticks", "seconds"].forEach((key) => {
+    try {
+      if (value[key] !== undefined && value[key] !== value) {
+        result[key] = serializePresetProbeValue(value[key]);
+      }
+    } catch (_) { /* Some host proxy properties can throw when read. */ }
+  });
+  return Object.keys(result).length > 0
+    ? result
+    : { hostType: value.constructor && value.constructor.name ? value.constructor.name : typeof value };
+}
+
+async function probeVideoEffectParameters(action) {
+  const requestedMatchName = typeof action.payload.matchName === "string"
+    ? action.payload.matchName.trim()
+    : "";
+  if (!requestedMatchName) throw new Error("A video-effect match name is required.");
+
+  const availableMatchNames = await premiere.VideoFilterFactory.getMatchNames();
+  if (!availableMatchNames.includes(requestedMatchName)) {
+    throw new Error("Video-effect match name was not found in the official runtime catalog.");
+  }
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before probing effect parameters.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before probing effect parameters.");
+
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const videoMediaTypes = new Set();
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  for (let index = 0; index < videoTrackCount; index += 1) {
+    const track = await sequence.getVideoTrack(index);
+    videoMediaTypes.add(guidToString(await track.getMediaType()));
+  }
+  const selectedVideoClips = [];
+  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
+    if (videoMediaTypes.has(guidToString(await item.getMediaType()))) selectedVideoClips.push(item);
+  }
+  if (selectedVideoClips.length !== 1) {
+    throw new Error("Select exactly one video clip for the parameter probe.");
+  }
+
+  const clip = selectedVideoClips[0];
+  const chain = await clip.getComponentChain();
+  const componentCountBefore = await chain.getComponentCount();
+  const createdComponent = await premiere.VideoFilterFactory.createComponent(requestedMatchName);
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const appendAction = chain.createAppendComponentAction(createdComponent);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(appendAction);
+    }, `FX.palette: Probe parameters for ${requestedMatchName}`);
+  });
+  if (!transactionSucceeded) throw new Error("Premiere rejected the parameter-probe insertion transaction.");
+
+  const componentCountAfter = await chain.getComponentCount();
+  if (componentCountAfter !== componentCountBefore + 1) {
+    throw new Error("Effect insertion could not be verified before parameter inspection.");
+  }
+  const component = await chain.getComponentAtIndex(componentCountBefore);
+  const parameterCount = await component.getParamCount();
+  const parameters = [];
+  for (let index = 0; index < parameterCount; index += 1) {
+    const parameter = await component.getParam(index);
+    const entry = {
+      index,
+      displayName: parameter.displayName || null,
+      keyframesSupported: null,
+      timeVarying: null,
+      startValue: null,
+      startValueReadSucceeded: false
+    };
+    try { entry.keyframesSupported = await parameter.areKeyframesSupported(); } catch (error) {
+      entry.keyframeSupportError = error && error.message ? error.message : String(error);
+    }
+    try { entry.timeVarying = await parameter.isTimeVarying(); } catch (error) {
+      entry.timeVaryingError = error && error.message ? error.message : String(error);
+    }
+    try {
+      entry.startValue = serializePresetProbeValue(await parameter.getStartValue());
+      entry.startValueReadSucceeded = true;
+    } catch (error) {
+      entry.startValueError = error && error.message ? error.message : String(error);
+    }
+    parameters.push(entry);
+  }
+
+  return {
+    clipName: typeof clip.getName === "function" ? await clip.getName() : null,
+    requestedMatchName,
+    verifiedMatchName: await component.getMatchName(),
+    displayName: await component.getDisplayName(),
+    componentIndex: componentCountBefore,
+    componentCountBefore,
+    componentCountAfter,
+    parameterCount,
+    parameters,
+    mutation: "effect-appended-for-inspection",
+    undoModelExpected: ["Undo parameter-probe effect insertion"]
+  };
+}
+
 async function applyAudioEffectToSelection(action) {
   const requestedDisplayName = typeof action.payload.displayName === "string"
     ? action.payload.displayName.trim()
@@ -1134,6 +1245,22 @@ async function runApplyVideoEffect() {
   if (button) button.disabled = false;
 }
 
+async function runProbeVideoEffectParameters() {
+  const button = document.getElementById("probe-video-effect-parameters");
+  const input = document.getElementById("video-effect-match-name");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.probeVideoEffectParameters",
+      requestId: String(Date.now()),
+      payload: { matchName: input ? input.value : "" }
+    },
+    { "timeline.probeVideoEffectParameters": probeVideoEffectParameters }
+  );
+  text("effect-parameter-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -1332,6 +1459,11 @@ function wirePanel() {
   if (effectButton && !effectButton.dataset.wired) {
     effectButton.addEventListener("click", runApplyVideoEffect);
     effectButton.dataset.wired = "true";
+  }
+  const effectParameterButton = document.getElementById("probe-video-effect-parameters");
+  if (effectParameterButton && !effectParameterButton.dataset.wired) {
+    effectParameterButton.addEventListener("click", runProbeVideoEffectParameters);
+    effectParameterButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {

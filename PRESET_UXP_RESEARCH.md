@@ -23,7 +23,7 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Need | Official surface | Evidence status |
 | --- | --- | --- |
 | Create video/audio effects | `VideoFilterFactory` / `AudioFilterFactory` and component-chain append/insert actions | Already tested in Premiere 26.3.2 in this PoC |
-| Enumerate parameters | `Component.getParamCount()` and `Component.getParam(index)` | Documented; preset-specific probe pending |
+| Enumerate parameters | `Component.getParamCount()` and `Component.getParam(index)` | Implemented in the 0.17.0 probe; Premiere host test pending |
 | Read parameter identity | `ComponentParam.displayName` | Documented; names are localized and must not be the primary key |
 | Set a static value | `ComponentParam.createKeyframe(value)` and `createSetValueAction(keyframe, safeForPlayback)` | Documented; host probe pending |
 | Enable animation | `createSetTimeVaryingAction(true)` | Documented; host probe pending |
