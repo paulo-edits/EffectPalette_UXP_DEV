@@ -85,6 +85,8 @@ The 0.15.1 host result confirmed that neither action was exposed on the cast obj
 
 The more detailed 0.15.2 result corrected that interpretation: both methods were visible on the cast surface, but invoking the preferred wrapper failed internally. Version 0.15.3 isolates both action attempts and records their errors before using the known-good TrackItem fallback.
 
+Host testing of 0.15.3 showed that `createSetInOutPointsAction()` is callable but overwrite does not snapshot its temporary duration when both actions are composed together; the new TrackItem still has the source's original duration. CEP can assign `insertedClip.end` directly after insertion without the same explicit UXP transaction boundary. Under the currently tested official UXP action model, exact duration plus source preservation therefore yields two Undo entries.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
