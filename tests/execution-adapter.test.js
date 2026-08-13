@@ -18,6 +18,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.inspectImported" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyImportedTransformPreset" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.compareImportedTransform" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "timeline.inspectSelectedVideoComponents" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyAudioEffect" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoTransition" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.createSubsequence" }).ok, true);

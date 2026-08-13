@@ -2336,6 +2336,39 @@ async function runApplyImportedTransformPreset() {
   if (button) button.disabled = false;
 }
 
+async function inspectSelectedVideoComponents() {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before inspecting components.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before inspecting components.");
+  const clip = await getSingleSelectedVideoClip(sequence);
+  const chain = await clip.getComponentChain();
+  const componentCount = await chain.getComponentCount();
+  const components = [];
+  for (let componentIndex = 0; componentIndex < componentCount; componentIndex += 1) {
+    const component = await chain.getComponentAtIndex(componentIndex);
+    const parameterCount = await component.getParamCount();
+    const parameters = [];
+    for (let parameterIndex = 0; parameterIndex < parameterCount; parameterIndex += 1) {
+      const parameter = await component.getParam(parameterIndex);
+      parameters.push({
+        index: parameterIndex,
+        displayName: parameter.displayName || null,
+        timeVarying: await parameter.isTimeVarying(),
+        startValue: serializePresetProbeValue(await parameter.getStartValue())
+      });
+    }
+    components.push({
+      index: componentIndex,
+      matchName: typeof component.getMatchName === "function" ? await component.getMatchName() : null,
+      displayName: typeof component.getDisplayName === "function" ? await component.getDisplayName() : null,
+      parameterCount,
+      parameters
+    });
+  }
+  return { clipName: await clip.getName(), componentCount, components, mutation: "none" };
+}
+
 async function runCompareImportedTransformPreset() {
   const button = document.getElementById("compare-imported-transform-preset");
   const nameInput = document.getElementById("prfpset-preset-name");
@@ -2346,6 +2379,16 @@ async function runCompareImportedTransformPreset() {
     requestId: String(Date.now()),
     payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
   }, { "catalog.effectPresets.compareImportedTransform": compareImportedTransformWithCapture });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
+async function runInspectSelectedVideoComponents() {
+  const button = document.getElementById("inspect-selected-video-components");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "timeline.inspectSelectedVideoComponents", requestId: String(Date.now()), payload: {}
+  }, { "timeline.inspectSelectedVideoComponents": inspectSelectedVideoComponents });
   text("prfpset-catalog-output", JSON.stringify(result, null, 2));
   if (button) button.disabled = false;
 }
@@ -2593,6 +2636,11 @@ function wirePanel() {
   if (compareImportedPresetButton && !compareImportedPresetButton.dataset.wired) {
     compareImportedPresetButton.addEventListener("click", runCompareImportedTransformPreset);
     compareImportedPresetButton.dataset.wired = "true";
+  }
+  const inspectComponentsButton = document.getElementById("inspect-selected-video-components");
+  if (inspectComponentsButton && !inspectComponentsButton.dataset.wired) {
+    inspectComponentsButton.addEventListener("click", runInspectSelectedVideoComponents);
+    inspectComponentsButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {
