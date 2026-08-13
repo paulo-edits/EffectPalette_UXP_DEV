@@ -64,6 +64,42 @@ async function readCatalogs() {
   };
 }
 
+async function setSelectedProjectItemLabel(action) {
+  const allowedLabels = {
+    VIOLET: premiere.Constants.ProjectItemColorLabel.VIOLET
+  };
+  const labelName = action.payload.labelName;
+  const labelIndex = allowedLabels[labelName];
+  if (typeof labelIndex !== "number") {
+    throw new Error("Requested color label is not allowlisted.");
+  }
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before setting a color label.");
+
+  const selection = await premiere.ProjectUtils.getSelection(project);
+  const selectedItems = selection ? await selection.getItems() : [];
+  if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
+    throw new Error("Select at least one item in the Project panel.");
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const actions = selectedItems.map((item) => item.createSetColorLabelAction(labelIndex));
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      actions.forEach((itemAction) => compoundAction.addAction(itemAction));
+    }, "FX.palette: Set project item label to Violet");
+  });
+
+  if (!transactionSucceeded) throw new Error("Premiere rejected the color-label transaction.");
+  return {
+    affectedItemCount: selectedItems.length,
+    labelName,
+    labelIndex,
+    undoable: true
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -151,11 +187,34 @@ async function refresh() {
   if (button) button.disabled = false;
 }
 
+async function runSetVioletLabel() {
+  const button = document.getElementById("set-label-violet");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "projectItems.setColorLabel",
+      requestId: String(Date.now()),
+      payload: { labelName: "VIOLET" }
+    },
+    { "projectItems.setColorLabel": setSelectedProjectItemLabel }
+  );
+
+  if (result.ok) await refresh();
+  text("action-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 function wirePanel() {
   const button = document.getElementById("refresh");
   if (button && !button.dataset.wired) {
     button.addEventListener("click", refresh);
     button.dataset.wired = "true";
+  }
+  const labelButton = document.getElementById("set-label-violet");
+  if (labelButton && !labelButton.dataset.wired) {
+    labelButton.addEventListener("click", runSetVioletLabel);
+    labelButton.dataset.wired = "true";
   }
   refresh();
 }

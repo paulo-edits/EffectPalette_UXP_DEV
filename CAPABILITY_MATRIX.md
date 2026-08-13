@@ -25,7 +25,8 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Apply video/audio effect | Unknown | Available | Existing stable product may use native routing | Mutation intentionally deferred; requires documented catalog lookup, component action and undoable transaction evidence. | None |
 | Apply preset | Unknown | Available | Existing stable product has routing | Mutation intentionally deferred. | None |
 | Apply transition | Documented API surface, not implemented | Available | Existing stable product has routing | Track-item transition actions are documented, but catalog lookup and real behavior remain untested. | None |
-| Read/set project-item label | Documented API surface, not implemented | Available | Existing stable product has routing | `ProjectItemColorLabel` constants are documented; complete product behavior and label-group semantics remain untested. | None |
+| Read project-item label | Tested in Premiere | Available | Existing stable product has routing | Project selection probe returned `getColorLabelIndex()` values in Test F. Mapping every numeric index to localized display names remains out of scope. | 26.3.2 |
+| Set project-item label | Documented; implemented, pending host test | Available | Existing stable product has routing | Allowlisted Violet action uses `createSetColorLabelAction()` within `lockedAccess()` and one undoable transaction for all selected project items. | None |
 | Select Label group | Unknown | Available | Existing stable product has native routing | No official end-to-end UXP operation has yet been established. | None |
 | Create Nest/subsequence | Partially documented, not implemented | Available | Existing stable product has native routing | `Sequence.createSubsequence()` is documented since 25.6; selection rules, naming and `Nested Sequences` organization remain untested. | None |
 | Name Nest | Unknown | Available | Existing stable product has routing | Must verify official rename action and resulting project-item/sequence behavior. | None |
@@ -56,6 +57,7 @@ Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent 
 - [Guid class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/guid)
 - [TrackItemSelection class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/trackitemselection)
 - [ProjectUtils class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/projectutils)
+- [ProjectItem class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/projectitem)
 - [SequenceEditor class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequenceeditor)
 - [VideoFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videofilterfactory)
 - [AudioFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiofilterfactory)

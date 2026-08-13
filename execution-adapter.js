@@ -1,7 +1,10 @@
 "use strict";
 
 const ACTION_SCHEMA_VERSION = 1;
-const SUPPORTED_ACTIONS = Object.freeze(["diagnostics.read"]);
+const SUPPORTED_ACTIONS = Object.freeze([
+  "diagnostics.read",
+  "projectItems.setColorLabel"
+]);
 
 function failure(code, message, actionType) {
   return {

@@ -38,12 +38,14 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
 
-Version 0.2.0 remains read-only. It reports:
+Version 0.3.0 reports:
 
 - selected project-item name, type, ID and color-label index;
 - selected timeline-item name, type, track index, media type and linked project item;
 - counts and samples from the official video-effect, audio-effect and video-transition factories;
 - effect presets as unknown because no corresponding official catalog API has been identified.
+
+It also includes the first mutation probe: `projectItems.setColorLabel`. The panel can set the currently selected Project-panel items to Violet. The action is allowlisted, creates Premiere `Action` objects inside `Project.lockedAccess()`, and submits them as one undoable `Project.executeTransaction()` operation. No other mutation is accepted by the adapter.
 
 The visible panel is a proof-of-concept diagnostic surface, not a production dependency. The future operational plugin must work without requiring this panel to remain open.
 
