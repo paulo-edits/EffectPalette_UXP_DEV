@@ -594,15 +594,29 @@ function parsePrfpsetKeyframes(parameter) {
 
 function parsePrfpsetStaticHostValue(parameter) {
   if (String(parameter.controlType) !== "5") return createHostValue(parsePrfpsetValue(parameter.value, parameter.controlType));
-  const packed = String(parameter.value || "");
-  if (packed !== "0" && packed !== "18374686479671623680") {
-    throw new Error(`Unverified .prfpset Color encoding '${packed}'; refusing lossy conversion.`);
+  let decimal = String(parameter.value || "").replace(/^0+/, "") || "0";
+  if (!/^\d+$/.test(decimal)) throw new Error(`Invalid packed .prfpset Color '${decimal}'.`);
+  const wordsLowToHigh = [];
+  for (let wordIndex = 0; wordIndex < 4; wordIndex += 1) {
+    let quotient = "";
+    let remainder = 0;
+    for (const digit of decimal) {
+      const current = (remainder * 10) + Number(digit);
+      const quotientDigit = Math.floor(current / 65536);
+      remainder = current % 65536;
+      if (quotient || quotientDigit) quotient += String(quotientDigit);
+    }
+    wordsLowToHigh.push(remainder);
+    decimal = quotient || "0";
   }
+  if (decimal !== "0") throw new Error("Packed .prfpset Color exceeds 64 bits.");
+  const [blueWord, greenWord, redWord, alphaWord] = wordsLowToHigh;
+  const normalize = (word) => Math.max(0, Math.min(1, word / 65280));
   const color = new premiere.Color();
-  color.red = 0;
-  color.green = 0;
-  color.blue = 0;
-  color.alpha = packed === "0" ? 0 : 1;
+  color.red = normalize(redWord);
+  color.green = normalize(greenWord);
+  color.blue = normalize(blueWord);
+  color.alpha = normalize(alphaWord);
   return color;
 }
 
@@ -2452,7 +2466,7 @@ async function applyImportedStaticVideoPreset(action) {
     appliedFilterOrder: runtimeFilters.map((filter) => filter.matchName),
     componentCountBefore, componentCountAfter: await chain.getComponentCount(),
     insertionTransactionSucceeded, parameterTransactionSucceeded, verification,
-    colorEncodingScope: "verified-black-alpha-0-or-1-only",
+    colorEncodingScope: "verified-64-bit-ARGB-channel-order",
     undoModelExpected: ["Undo static preset values", "Undo inserted preset effects"]
   };
 }
