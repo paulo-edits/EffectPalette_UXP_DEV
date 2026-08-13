@@ -293,6 +293,24 @@ function serializePresetProbeValue(value) {
     : { hostType: value.constructor && value.constructor.name ? value.constructor.name : typeof value };
 }
 
+function cubicBezierCoordinate(t, firstControl, secondControl) {
+  const inverse = 1 - t;
+  return (3 * inverse * inverse * t * firstControl) + (3 * inverse * t * t * secondControl) + (t * t * t);
+}
+
+function cubicBezierProgress(progress, x1, y1, x2, y2) {
+  let low = 0;
+  let high = 1;
+  let parameter = progress;
+  for (let index = 0; index < 18; index += 1) {
+    parameter = (low + high) / 2;
+    const x = cubicBezierCoordinate(parameter, x1, x2);
+    if (x < progress) low = parameter;
+    else high = parameter;
+  }
+  return cubicBezierCoordinate(parameter, y1, y2);
+}
+
 async function probeVideoEffectParameters(action) {
   const requestedMatchName = typeof action.payload.matchName === "string"
     ? action.payload.matchName.trim()
@@ -487,10 +505,16 @@ async function probeAnimatedVideoEffectParameter(action) {
     ? action.payload.interpolationName.trim().toUpperCase()
     : "DEFAULT";
   const interpolationNames = ["DEFAULT", "LINEAR", "HOLD", "BEZIER", "TIME", "TIME_TRANSITION_START", "TIME_TRANSITION_END"];
+  const approximateBezier = action.payload.approximateBezier === true || action.payload.approximateBezier === "true";
+  const approximationSamples = Math.max(3, Math.min(12, Number(action.payload.approximationSamples) || 8));
+  const bezierControls = ["x1", "y1", "x2", "y2"].map((key) => Number(action.payload[key]));
   if (!matchName) throw new Error("A video-effect match name is required.");
   if (!Number.isInteger(parameterIndex) || parameterIndex < 0) throw new Error("Parameter index must be a non-negative integer.");
   if (!Number.isFinite(firstValue) || !Number.isFinite(secondValue)) throw new Error("Both keyframe values must be finite numbers.");
   if (!interpolationNames.includes(interpolationName)) throw new Error("Interpolation mode is not allowlisted.");
+  if (approximateBezier && (interpolationName !== "BEZIER" || bezierControls.some((value) => !Number.isFinite(value)))) {
+    throw new Error("Bezier approximation requires BEZIER mode and four finite control values.");
+  }
   if (!(await premiere.VideoFilterFactory.getMatchNames()).includes(matchName)) throw new Error("Video-effect match name was not found in the official runtime catalog.");
 
   const project = await premiere.Project.getActiveProject();
@@ -537,21 +561,37 @@ async function probeAnimatedVideoEffectParameter(action) {
   secondKeyframe.position = secondTime;
   let interpolationPreparation = null;
   if (interpolationName !== "DEFAULT") {
-    const interpolationMode = premiere.Constants.InterpolationMode[interpolationName];
+    const interpolationMode = approximateBezier
+      ? premiere.Constants.InterpolationMode.LINEAR
+      : premiere.Constants.InterpolationMode[interpolationName];
     interpolationPreparation = {
       method: "Keyframe.setTemporalInterpolationMode",
       firstSucceeded: await firstKeyframe.setTemporalInterpolationMode(interpolationMode),
       secondSucceeded: await secondKeyframe.setTemporalInterpolationMode(interpolationMode)
     };
   }
+  const helperKeyframes = [];
+  if (approximateBezier) {
+    const [x1, y1, x2, y2] = bezierControls;
+    for (let sample = 1; sample < approximationSamples; sample += 1) {
+      const linearProgress = sample / approximationSamples;
+      const easedProgress = cubicBezierProgress(linearProgress, x1, y1, x2, y2);
+      const helper = await parameter.createKeyframe(firstValue + ((secondValue - firstValue) * easedProgress));
+      helper.position = firstTime.add(premiere.TickTime.createWithSeconds(linearProgress));
+      const interpolationSucceeded = await helper.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+      helperKeyframes.push({ helper, interpolationSucceeded });
+    }
+  }
   let keyframeTransactionSucceeded = false;
   project.lockedAccess(() => {
     const timeVaryingAction = parameter.createSetTimeVaryingAction(true);
     const firstAction = parameter.createAddKeyframeAction(firstKeyframe);
     const secondAction = parameter.createAddKeyframeAction(secondKeyframe);
+    const helperActions = helperKeyframes.map((entry) => parameter.createAddKeyframeAction(entry.helper));
     keyframeTransactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(timeVaryingAction);
       compoundAction.addAction(firstAction);
+      helperActions.forEach((helperAction) => compoundAction.addAction(helperAction));
       compoundAction.addAction(secondAction);
     }, "FX.palette: Add preset keyframes");
   });
@@ -587,6 +627,15 @@ async function probeAnimatedVideoEffectParameter(action) {
       ? null
       : premiere.Constants.InterpolationMode[interpolationName],
     interpolationPreparation,
+    bezierApproximation: approximateBezier ? {
+      strategy: "linear-helper-keyframes",
+      controls: { x1: bezierControls[0], y1: bezierControls[1], x2: bezierControls[2], y2: bezierControls[3] },
+      segmentSeconds: 1,
+      requestedSamples: approximationSamples,
+      expectedHelperKeyframes: approximationSamples - 1,
+      helperInterpolationPreparationSucceeded: helperKeyframes.every((entry) => entry.interpolationSucceeded === true),
+      fidelity: "sampled-approximation-not-native-bezier-handles"
+    } : null,
     runtimeInterpolationConstants: {
       LINEAR: premiere.Constants.InterpolationMode.LINEAR,
       HOLD: premiere.Constants.InterpolationMode.HOLD,
@@ -1510,6 +1559,8 @@ async function runProbeAnimatedVideoEffectParameter() {
   const firstValueInput = document.getElementById("animated-first-value");
   const secondValueInput = document.getElementById("animated-second-value");
   const interpolationInput = document.getElementById("animated-interpolation-mode");
+  const approximationInput = document.getElementById("approximate-bezier-easing");
+  const approximationSamplesInput = document.getElementById("bezier-approximation-samples");
   if (button) button.disabled = true;
   const result = await executionAdapter.execute({
     type: "timeline.probeAnimatedVideoEffectParameter",
@@ -1519,7 +1570,13 @@ async function runProbeAnimatedVideoEffectParameter() {
       parameterIndex: parameterIndexInput ? parameterIndexInput.value : "0",
       firstValue: firstValueInput ? firstValueInput.value : "10",
       secondValue: secondValueInput ? secondValueInput.value : "20",
-      interpolationName: interpolationInput ? interpolationInput.value : "DEFAULT"
+      interpolationName: interpolationInput ? interpolationInput.value : "DEFAULT",
+      approximateBezier: approximationInput ? approximationInput.checked : false,
+      approximationSamples: approximationSamplesInput ? approximationSamplesInput.value : "8",
+      x1: "0.17",
+      y1: "0.01",
+      x2: "0.24",
+      y2: "1"
     }
   }, { "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter });
   text("effect-parameter-output", JSON.stringify(result, null, 2));

@@ -30,6 +30,7 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Add a keyframe | set the typed Keyframe `position`, then `createAddKeyframeAction()` | Tested with exact tick/value readback in Premiere 26.3.2 |
 | Set interpolation mode | `Keyframe.setTemporalInterpolationMode()` before `createAddKeyframeAction()` | Hold=4 and Bezier=5 tested with exact readback in Premiere 26.3.2 |
 | Preserve exact Bezier easing | No official tangent/influence/velocity/handle surface exists on `Keyframe` | Unsupported by the reviewed official API; do not claim curve fidelity |
+| Approximate scalar easing | Sample a cubic curve into official Linear helper Keyframes | Implemented as an opt-in 0.21.0 experiment; Point/Position excluded; host comparison pending |
 | Typed values | number, string, boolean, `PointF`, or `Color` | Documented; individual control-type mapping pending |
 | Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and a persistent user-granted file/folder token | Documented; permission deliberately not added until the parser probe is implemented |
 
