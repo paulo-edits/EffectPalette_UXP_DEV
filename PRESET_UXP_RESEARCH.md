@@ -25,9 +25,9 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Create video/audio effects | `VideoFilterFactory` / `AudioFilterFactory` and component-chain append/insert actions | Already tested in Premiere 26.3.2 in this PoC |
 | Enumerate parameters | `Component.getParamCount()` and `Component.getParam(index)` | Implemented in the 0.17.0 probe; Premiere host test pending |
 | Read parameter identity | `ComponentParam.displayName` | Documented; names are localized and must not be the primary key |
-| Set a static value | `ComponentParam.createKeyframe(value)` and `createSetValueAction(keyframe, safeForPlayback)` | Implemented as a focused numeric probe in 0.18.0; Premiere host test pending |
-| Enable animation | `createSetTimeVaryingAction(true)` | Documented; host probe pending |
-| Add a keyframe | set the typed Keyframe `position`, then `createAddKeyframeAction()` | Documented; host probe pending |
+| Set a static value | `ComponentParam.createKeyframe(value)` and `createSetValueAction(keyframe, safeForPlayback)` | Tested with Gamma 10 → 20 in Premiere 26.3.2 |
+| Enable animation | `createSetTimeVaryingAction(true)` | Implemented in 0.19.0; Premiere host test pending |
+| Add a keyframe | set the typed Keyframe `position`, then `createAddKeyframeAction()` | Implemented in 0.19.0; Premiere host test pending |
 | Set interpolation | `createSetInterpolationAtKeyframeAction(time, Constants.InterpolationMode.*, updateUI)` | Documented; `.prfpset` code mapping is unknown |
 | Typed values | number, string, boolean, `PointF`, or `Color` | Documented; individual control-type mapping pending |
 | Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and a persistent user-granted file/folder token | Documented; permission deliberately not added until the parser probe is implemented |
