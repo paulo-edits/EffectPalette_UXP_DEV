@@ -143,6 +143,9 @@ async function applyVideoEffectToSelection(action) {
   const components = await Promise.all(
     selectedVideoClips.map(() => premiere.VideoFilterFactory.createComponent(matchName))
   );
+  const resolvedDisplayName = components.length > 0 && typeof components[0].getDisplayName === "function"
+    ? await components[0].getDisplayName()
+    : null;
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
@@ -158,6 +161,7 @@ async function applyVideoEffectToSelection(action) {
   return {
     affectedItemCount: selectedVideoClips.length,
     matchName,
+    resolvedDisplayName,
     undoable: true
   };
 }

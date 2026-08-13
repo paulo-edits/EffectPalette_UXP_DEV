@@ -41,6 +41,7 @@ The production adapter should resolve product search results to exact UXP match 
 - The current CEP path supports video and audio effects; the first UXP probe is video-only.
 - Preset application remains unknown because no official effect-preset catalog/application API has been identified.
 - Locale/display-name behavior should be separated from match-name identity.
+- On Premiere 26.3.2, `AE.ADBE Mosaic` resolved to **Mosaic (Legacy)**, not the modern Mosaic effect expected from the remembered name. Resolve and record `Component.getDisplayName()` rather than inferring identity.
 - Duplicate-effect behavior and multi-clip partial failure behavior require host tests.
 
 ## Reference locations (read-only)
