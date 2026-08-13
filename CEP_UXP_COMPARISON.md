@@ -95,7 +95,9 @@ Premiere 26.3.2 host testing confirmed that the command executes successfully wh
 
 ## Timeline Labels
 
-The stable CEP implementation changes selected Timeline Labels through the locale-independent internal command key `cmd.sequence.edit.label.<index>`. Its older fallback changes the source ProjectItem Label and replaces each TrackItem while restoring trim, duration and components; the stable bridge intentionally no longer calls that destructive path. Current official UXP TrackItem classes expose neither Label access nor an equivalent documented menu-command executor. The CEP behavior therefore remains a valid product capability but is not ported into this official-only proof of concept.
+The stable product's user-facing Timeline Label route is a Python/native-keyboard workaround, not the CEP handler previously identified. Python reads the active Premiere `.kys` profile, resolves `cmd.edit.label.<index>` for changing selected Timeline Labels or `cmd.edit.labelgroup` for selecting a Label group, restores focus to Premiere and sends that configured Windows shortcut. This invokes Premiere's native command and preserves TrackItems.
+
+The CEP host still contains `setClipLabelColorNative()` using an internal `app.executeCommand()` key and an older destructive replace-and-restore fallback, but the current UI route does not call either for normal Label actions. Official UXP TrackItems expose no Label API. The future adapter can therefore retain the already proven Python-side native-shortcut backend for these two actions while using UXP for supported operations; no CEP fallback is added to this repository.
 
 ## Reference locations (read-only)
 
