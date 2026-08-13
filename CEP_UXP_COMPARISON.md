@@ -91,6 +91,12 @@ Host testing of 0.15.3 showed that `createSetInOutPointsAction()` is callable bu
 
 UXP command entrypoints run discrete handlers without a persistent panel. Version 0.16.0 exposes the already validated ProjectItem Label action as a command so the panel can be closed throughout execution. This establishes the UI-lifecycle boundary needed by the future architecture, while transport from the Python companion remains deliberately unimplemented.
 
+Premiere 26.3.2 host testing confirmed that the command executes successfully while the panel is closed and does not reopen it.
+
+## Timeline Labels
+
+The stable CEP implementation changes selected Timeline Labels through the locale-independent internal command key `cmd.sequence.edit.label.<index>`. Its older fallback changes the source ProjectItem Label and replaces each TrackItem while restoring trim, duration and components; the stable bridge intentionally no longer calls that destructive path. Current official UXP TrackItem classes expose neither Label access nor an equivalent documented menu-command executor. The CEP behavior therefore remains a valid product capability but is not ported into this official-only proof of concept.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
