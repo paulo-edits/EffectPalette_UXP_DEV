@@ -826,11 +826,17 @@ async function insertGenericItemAcrossSelection(action) {
   let sourceInPoint = null;
   let sourceOutPoint = null;
   let atomicDurationPrepared = false;
+  let atomicActionMethod = null;
   try {
     clipProjectItem = premiere.ClipProjectItem.cast(projectItem);
     sourceInPoint = await clipProjectItem.getInPoint(premiere.Constants.MediaType.VIDEO);
     sourceOutPoint = await clipProjectItem.getOutPoint(premiere.Constants.MediaType.VIDEO);
-    atomicDurationPrepared = !!(sourceInPoint && sourceOutPoint);
+    if (typeof clipProjectItem.createSetOutPointAction === "function") {
+      atomicActionMethod = "createSetOutPointAction";
+    } else if (typeof clipProjectItem.createSetInOutPointsAction === "function") {
+      atomicActionMethod = "createSetInOutPointsAction";
+    }
+    atomicDurationPrepared = !!(sourceInPoint && sourceOutPoint && atomicActionMethod);
   } catch (error) {
     clipProjectItem = null;
     atomicDurationPrepared = false;
@@ -838,25 +844,37 @@ async function insertGenericItemAcrossSelection(action) {
   const rangeDuration = rangeEnd.subtract(rangeStart);
   const temporaryOutPoint = atomicDurationPrepared ? sourceInPoint.add(rangeDuration) : null;
   let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    const insertionAction = editor.createOverwriteItemAction(
-      projectItem,
-      rangeStart,
-      videoTrackIndex,
-      audioTrackIndex
-    );
-    const temporaryOutAction = atomicDurationPrepared
-      ? clipProjectItem.createSetOutPointAction(temporaryOutPoint)
-      : null;
-    const restoreOutAction = atomicDurationPrepared
-      ? clipProjectItem.createSetOutPointAction(sourceOutPoint)
-      : null;
-    insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
-      if (temporaryOutAction) compoundAction.addAction(temporaryOutAction);
-      compoundAction.addAction(insertionAction);
-      if (restoreOutAction) compoundAction.addAction(restoreOutAction);
-    }, `FX.palette: Insert generic item ${projectItem.name || ""}`);
-  });
+  const executeInsertionTransaction = (useAtomicDuration) => {
+    project.lockedAccess(() => {
+      const insertionAction = editor.createOverwriteItemAction(
+        projectItem,
+        rangeStart,
+        videoTrackIndex,
+        audioTrackIndex
+      );
+      let temporaryOutAction = null;
+      let restoreOutAction = null;
+      if (useAtomicDuration && atomicActionMethod === "createSetOutPointAction") {
+        temporaryOutAction = clipProjectItem.createSetOutPointAction(temporaryOutPoint);
+        restoreOutAction = clipProjectItem.createSetOutPointAction(sourceOutPoint);
+      } else if (useAtomicDuration && atomicActionMethod === "createSetInOutPointsAction") {
+        temporaryOutAction = clipProjectItem.createSetInOutPointsAction(sourceInPoint, temporaryOutPoint);
+        restoreOutAction = clipProjectItem.createSetInOutPointsAction(sourceInPoint, sourceOutPoint);
+      }
+      insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
+        if (temporaryOutAction) compoundAction.addAction(temporaryOutAction);
+        compoundAction.addAction(insertionAction);
+        if (restoreOutAction) compoundAction.addAction(restoreOutAction);
+      }, `FX.palette: Insert generic item ${projectItem.name || ""}`);
+    });
+  };
+  try {
+    executeInsertionTransaction(atomicDurationPrepared);
+  } catch (error) {
+    atomicDurationPrepared = false;
+    atomicActionMethod = null;
+    executeInsertionTransaction(false);
+  }
   if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the generic-item insertion transaction.");
 
   const destinationTrack = await sequence.getVideoTrack(videoTrackIndex);
@@ -927,6 +945,7 @@ async function insertGenericItemAcrossSelection(action) {
     matchingInstanceCountAfter: instancesAfter.length,
     insertionTransactionSucceeded,
     atomicDurationPrepared,
+    atomicActionMethod,
     atomicDurationSucceeded,
     projectItemOutPointRestored: sourceOutPoint && sourceOutPointAfter
       ? String(sourceOutPoint.ticks) === String(sourceOutPointAfter.ticks)

@@ -79,6 +79,8 @@ Version 0.14.0 ports the stable generic-duration rule without QE: derive the ear
 
 Version 0.15.0 investigates CEP-equivalent single-Undo behavior using only official actions. A compound transaction temporarily trims the ClipProjectItem to the desired duration, inserts it and restores its original Out Point. The host result reports whether insertion captured that temporary trim; otherwise the proven post-insertion TrackItem trim remains an explicit fallback.
 
+The first 26.3.2 run showed a documentation/runtime mismatch: `ClipProjectItem.cast()` returned an object without `createSetOutPointAction()`. Version 0.15.1 records this through feature detection and also probes the documented combined `createSetInOutPointsAction()` before falling back, rather than allowing the missing method to abort insertion.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.
