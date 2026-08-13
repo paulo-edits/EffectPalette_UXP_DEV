@@ -4,6 +4,7 @@ const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
 const executionAdapter = require("./execution-adapter.js");
 let capturedTransformCurveReference = null;
+let importedEffectPresetCatalog = null;
 
 function text(id, value) {
   const node = document.getElementById(id);
@@ -378,6 +379,99 @@ function createHostValue(captured) {
   if (captured.type === "point") return new premiere.PointF(captured.value[0], captured.value[1]);
   if (["number", "boolean", "string"].includes(captured.type)) return captured.value;
   throw new Error(`Unsupported captured value type: ${captured.type}`);
+}
+
+function parsePrfpsetCatalog(xml) {
+  const documentNode = new DOMParser().parseFromString(xml, "text/xml");
+  const objectIndex = {};
+  Array.from(documentNode.querySelectorAll("[ObjectID]")).forEach((element) => {
+    objectIndex[element.getAttribute("ObjectID")] = element;
+  });
+  const getText = (element) => element ? String(element.textContent || "").trim() : "";
+  let rootBin = null;
+  for (const bin of Array.from(documentNode.querySelectorAll("BinTreeItem"))) {
+    if (getText(bin.querySelector("TreeItemBase > Name")) === "Presets") { rootBin = bin; break; }
+  }
+  if (!rootBin) throw new Error("The selected file contains no root Presets bin.");
+  const presets = [];
+  function traverse(binElement, categoryParts) {
+    const itemsContainer = Array.from(binElement.children || []).find((child) => child.tagName === "Items");
+    const items = itemsContainer ? Array.from(itemsContainer.children || []).filter((child) => child.tagName === "Item") : [];
+    items.forEach((item) => {
+      const element = objectIndex[item.getAttribute("ObjectRef")];
+      if (!element) return;
+      if (element.tagName === "BinTreeItem") {
+        traverse(element, categoryParts.concat(getText(element.querySelector("TreeItemBase > Name")) || "?"));
+        return;
+      }
+      if (element.tagName !== "TreeItem") return;
+      const dataRef = element.querySelector("TreeItemBase > Data");
+      const dataElement = dataRef ? objectIndex[dataRef.getAttribute("ObjectRef")] : null;
+      if (!dataElement) return;
+      const filters = [];
+      Array.from(dataElement.querySelectorAll("FilterPresets > FilterPreset")).forEach((filterReference) => {
+        const filterElement = objectIndex[filterReference.getAttribute("ObjectRef")];
+        if (!filterElement) return;
+        const componentReference = filterElement.querySelector("Component");
+        const componentElement = componentReference ? objectIndex[componentReference.getAttribute("ObjectRef")] : null;
+        if (!componentElement) return;
+        const parameters = [];
+        Array.from(componentElement.querySelectorAll("Params > Param")).forEach((parameterReference) => {
+          const parameterElement = objectIndex[parameterReference.getAttribute("ObjectRef")];
+          if (!parameterElement) return;
+          const startKeyframe = getText(parameterElement.querySelector("StartKeyframe"));
+          const startParts = startKeyframe ? startKeyframe.split(",") : [];
+          parameters.push({
+            index: Number(parameterReference.getAttribute("Index")),
+            name: getText(parameterElement.querySelector("Name")) || null,
+            parameterId: getText(parameterElement.querySelector("ParameterID")) || null,
+            controlType: getText(parameterElement.querySelector("ParameterControlType")) || null,
+            timeVarying: getText(parameterElement.querySelector("IsTimeVarying")) === "true",
+            value: startParts.length > 1 ? startParts[1].trim() : null,
+            startKeyframe,
+            keyframes: getText(parameterElement.querySelector("Keyframes")) || null
+          });
+        });
+        filters.push({
+          matchName: getText(filterElement.querySelector("FilterMatchName")),
+          displayName: getText(componentElement.querySelector("DisplayName")),
+          mediaType: getText(filterElement.querySelector("MediaType")),
+          parameters
+        });
+      });
+      presets.push({
+        name: getText(element.querySelector("TreeItemBase > Name")) || "?",
+        category: categoryParts.join(" > "),
+        filters
+      });
+    });
+  }
+  traverse(rootBin, []);
+  return presets;
+}
+
+async function importPrfpsetCatalog() {
+  const { localFileSystem } = require("uxp").storage;
+  const file = await localFileSystem.getFileForOpening({ types: ["prfpset"] });
+  if (!file) throw new Error("No .prfpset file was selected.");
+  const xml = await file.read();
+  const presets = parsePrfpsetCatalog(xml);
+  importedEffectPresetCatalog = { schemaVersion: 1, fileName: file.name, presets };
+  const transformPresets = presets.filter((preset) => preset.filters.some((filter) => filter.matchName === "AE.ADBE Geometry2"));
+  return {
+    fileName: file.name,
+    presetCount: presets.length,
+    filterCount: presets.reduce((total, preset) => total + preset.filters.length, 0),
+    transformPresetCount: transformPresets.length,
+    transformPresets: transformPresets.slice(0, 200).map((preset) => ({
+      name: preset.name,
+      category: preset.category,
+      transformParameterCount: preset.filters.find((filter) => filter.matchName === "AE.ADBE Geometry2").parameters.length
+    })),
+    truncated: transformPresets.length > 200,
+    catalogStorage: "in-memory-until-plugin-reload",
+    mutation: "none"
+  };
 }
 
 async function captureTransformCurveReference() {
@@ -1828,6 +1922,16 @@ async function runApplyTransformCurveReference() {
   if (button) button.disabled = false;
 }
 
+async function runImportPrfpsetCatalog() {
+  const button = document.getElementById("import-prfpset-catalog");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "catalog.effectPresets.importPrfpset", requestId: String(Date.now()), payload: {}
+  }, { "catalog.effectPresets.importPrfpset": importPrfpsetCatalog });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -2051,6 +2155,11 @@ function wirePanel() {
   if (applyTransformButton && !applyTransformButton.dataset.wired) {
     applyTransformButton.addEventListener("click", runApplyTransformCurveReference);
     applyTransformButton.dataset.wired = "true";
+  }
+  const importPrfpsetButton = document.getElementById("import-prfpset-catalog");
+  if (importPrfpsetButton && !importPrfpsetButton.dataset.wired) {
+    importPrfpsetButton.addEventListener("click", runImportPrfpsetCatalog);
+    importPrfpsetButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {

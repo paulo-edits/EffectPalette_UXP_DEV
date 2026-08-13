@@ -35,7 +35,7 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Manual-preset A/B oracle | Sample manual clip A through `getValueAtTime()`, replay exact samples on clip B | Implemented for Transform Scale Height in 0.23.0; host comparison pending |
 | Complete Transform A/B oracle | Copy all supported static values and independently sample every animated number/Point parameter | Implemented in 0.24.0; real-preset host test pending |
 | Typed values | number, string, boolean, `PointF`, or `Color` | Documented; individual control-type mapping pending |
-| Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and a persistent user-granted file/folder token | Documented; permission deliberately not added until the parser probe is implemented |
+| Read `.prfpset` | UXP filesystem with `localFileSystem: "request"` and native XML parsing | Implemented in 0.25.0 with an explicit file picker and in-memory catalog; Premiere host test pending |
 
 Official references:
 

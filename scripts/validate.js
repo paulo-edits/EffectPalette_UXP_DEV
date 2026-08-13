@@ -23,9 +23,10 @@ expect(manifest.entrypoints.some((item) => item.type === "panel" && item.id === 
 expect(manifest.entrypoints.some((item) => item.type === "command" && item.id === "headlessSetVioletLabel"), "headless command entrypoint is required");
 expect(
   manifest.requiredPermissions &&
-    Object.keys(manifest.requiredPermissions).length === 1 &&
-    manifest.requiredPermissions.clipboard === "readAndWrite",
-  "PoC must request only clipboard readAndWrite permission"
+    Object.keys(manifest.requiredPermissions).length === 2 &&
+    manifest.requiredPermissions.clipboard === "readAndWrite" &&
+    manifest.requiredPermissions.localFileSystem === "request",
+  "PoC must request only clipboard readAndWrite and user-requested localFileSystem permissions"
 );
 expect(fs.existsSync(path.join(root, manifest.main)), "manifest main file does not exist");
 expect(fs.existsSync(identityMatrixPath), "EFFECT_IDENTITY_MATRIX.json is required");
