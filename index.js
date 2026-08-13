@@ -610,6 +610,20 @@ function importedPointAtProgress(sourceKeys, curve, progress) {
     start + ((sourceKeys[1].value.value[index] - start) * eased));
 }
 
+function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
+  const originTicks = sourceKeys[0].ticks;
+  const requestedTicks = originTicks + (Math.max(0, offsetSeconds) * 254016000000);
+  let segmentIndex = sourceKeys.length - 2;
+  for (let index = 0; index < sourceKeys.length - 1; index += 1) {
+    if (requestedTicks <= sourceKeys[index + 1].ticks) { segmentIndex = index; break; }
+  }
+  const segmentKeys = [sourceKeys[segmentIndex], sourceKeys[segmentIndex + 1]];
+  const curve = derivePrfpsetPointCurve(segmentKeys);
+  const segmentTicks = segmentKeys[1].ticks - segmentKeys[0].ticks;
+  const progress = segmentTicks > 0 ? Math.max(0, Math.min(1, (requestedTicks - segmentKeys[0].ticks) / segmentTicks)) : 0;
+  return { value: importedPointAtProgress(segmentKeys, curve, progress), segmentIndex, segmentProgress: progress, curve };
+}
+
 function compareImportedTransformWithCapture(action) {
   if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
   if (!capturedTransformCurveReference) throw new Error("Capture the manually applied Transform preset from clip A first.");
@@ -625,24 +639,28 @@ function compareImportedTransformWithCapture(action) {
   const captured = capturedTransformCurveReference.parameters.find((parameter) => parameter.index === 1 && parameter.mode === "animated");
   if (!source || !captured) throw new Error("Both imported and captured presets must contain animated Transform Position at index 1.");
   const sourceKeys = parsePrfpsetKeyframes(source);
-  if (sourceKeys.length !== 2 || sourceKeys.some((key) => key.value.type !== "point")) throw new Error("Expected a two-key imported Point curve.");
-  const curve = derivePrfpsetPointCurve(sourceKeys);
+  if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "point")) throw new Error("Expected an imported Point curve with at least two keys.");
+  const importedDurationSeconds = (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000;
+  const segmentCurves = sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetPointCurve([sourceKeys[index], sourceKeys[index + 1]]));
   const samples = captured.samples.map((sample) => {
     const progress = captured.durationSeconds > 0 ? Math.min(1, sample.offsetSeconds / captured.durationSeconds) : 0;
-    const derived = importedPointAtProgress(sourceKeys, curve, progress);
+    const sampled = sampleImportedPointCurve(sourceKeys, sample.offsetSeconds);
+    const derived = sampled.value;
     const manual = sample.value.value;
     const delta = derived.map((value, index) => value - manual[index]);
     const distance = Math.sqrt(delta.reduce((sum, value) => sum + (value * value), 0));
-    return { offsetSeconds: sample.offsetSeconds, progress, manual, derived, delta, distance };
+    return { offsetSeconds: sample.offsetSeconds, progress, segmentIndex: sampled.segmentIndex, segmentProgress: sampled.segmentProgress, manual, derived, delta, distance };
   });
   const sumSquares = samples.reduce((sum, sample) => sum + (sample.distance * sample.distance), 0);
   const worst = samples.reduce((current, sample) => !current || sample.distance > current.distance ? sample : current, null);
   return {
     preset: { name: matches[0].name, category: matches[0].category },
     parameter: { index: 1, name: source.name },
-    importedDurationSeconds: curve.durationSeconds,
+    importedDurationSeconds,
     capturedDurationSeconds: captured.durationSeconds,
-    curve,
+    importedKeyframeCount: sourceKeys.length,
+    segmentCount: segmentCurves.length,
+    segmentCurves,
     sampleCount: samples.length,
     rootMeanSquareDistance: Math.sqrt(sumSquares / Math.max(1, samples.length)),
     maximumDistance: worst ? worst.distance : 0,
