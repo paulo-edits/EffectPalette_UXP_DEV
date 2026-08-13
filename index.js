@@ -13,6 +13,57 @@ function guidToString(guid) {
   return guid && typeof guid.toString === "function" ? guid.toString() : null;
 }
 
+async function describeProjectItem(item) {
+  return {
+    name: item.name || null,
+    type: typeof item.type === "number" ? item.type : null,
+    id: typeof item.getId === "function" ? await item.getId() : null,
+    colorLabelIndex: typeof item.getColorLabelIndex === "function" ? await item.getColorLabelIndex() : null
+  };
+}
+
+async function describeTrackItem(item) {
+  const projectItem = typeof item.getProjectItem === "function" ? await item.getProjectItem() : null;
+  return {
+    name: typeof item.getName === "function" ? await item.getName() : null,
+    type: typeof item.getType === "function" ? await item.getType() : null,
+    trackIndex: typeof item.getTrackIndex === "function" ? await item.getTrackIndex() : null,
+    mediaType: typeof item.getMediaType === "function" ? guidToString(await item.getMediaType()) : null,
+    projectItem: projectItem ? {
+      name: projectItem.name || null,
+      id: typeof projectItem.getId === "function" ? await projectItem.getId() : null
+    } : null
+  };
+}
+
+async function readCatalogs() {
+  const videoDisplayNames = await premiere.VideoFilterFactory.getDisplayNames();
+  const videoMatchNames = await premiere.VideoFilterFactory.getMatchNames();
+  const audioDisplayNames = await premiere.AudioFilterFactory.getDisplayNames();
+  const videoTransitionMatchNames = await premiere.TransitionFactory.getVideoTransitionMatchNames();
+
+  return {
+    videoEffects: {
+      count: videoMatchNames.length,
+      displayNameCount: videoDisplayNames.length,
+      sampleDisplayNames: videoDisplayNames.slice(0, 20),
+      sampleMatchNames: videoMatchNames.slice(0, 20)
+    },
+    audioEffects: {
+      count: audioDisplayNames.length,
+      sampleDisplayNames: audioDisplayNames.slice(0, 20)
+    },
+    videoTransitions: {
+      count: videoTransitionMatchNames.length,
+      sampleMatchNames: videoTransitionMatchNames.slice(0, 20)
+    },
+    effectPresets: {
+      status: "unknown",
+      reason: "No official effect-preset catalog API identified in the current Premiere UXP reference."
+    }
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -23,7 +74,9 @@ async function readDiagnostics() {
     },
     project: null,
     sequence: null,
-    timelineSelection: { count: 0 }
+    projectSelection: { count: 0, items: [] },
+    timelineSelection: { count: 0, items: [] },
+    catalogs: await readCatalogs()
   };
 
   const project = await premiere.Project.getActiveProject();
@@ -33,6 +86,13 @@ async function readDiagnostics() {
     name: project.name || null,
     guid: guidToString(project.guid)
   };
+
+  const projectSelection = await premiere.ProjectUtils.getSelection(project);
+  if (projectSelection) {
+    const projectItems = await projectSelection.getItems();
+    result.projectSelection.items = await Promise.all(projectItems.map(describeProjectItem));
+    result.projectSelection.count = result.projectSelection.items.length;
+  }
 
   const sequence = await project.getActiveSequence();
   if (!sequence) return result;
@@ -45,7 +105,9 @@ async function readDiagnostics() {
   const selection = await sequence.getSelection();
   if (selection) {
     const trackItems = await selection.getTrackItems();
-    result.timelineSelection.count = Array.isArray(trackItems) ? trackItems.length : 0;
+    const selectedTrackItems = Array.isArray(trackItems) ? trackItems : [];
+    result.timelineSelection.count = selectedTrackItems.length;
+    result.timelineSelection.items = await Promise.all(selectedTrackItems.map(describeTrackItem));
   }
 
   return result;
@@ -61,6 +123,13 @@ function render(result) {
   text("sequence-name", data && data.sequence && data.sequence.name);
   text("sequence-guid", data && data.sequence && data.sequence.guid);
   text("selection-count", data && data.timelineSelection.count);
+  text("project-selection-count", data && data.projectSelection.count);
+  text("timeline-selection-count", data && data.timelineSelection.count);
+  text("project-selection-output", JSON.stringify(data ? data.projectSelection.items : [], null, 2));
+  text("timeline-selection-output", JSON.stringify(data ? data.timelineSelection.items : [], null, 2));
+  text("video-effect-count", data && data.catalogs.videoEffects.count);
+  text("audio-effect-count", data && data.catalogs.audioEffects.count);
+  text("video-transition-count", data && data.catalogs.videoTransitions.count);
   text("serialized-output", JSON.stringify(result, null, 2));
 
   const status = document.getElementById("status");

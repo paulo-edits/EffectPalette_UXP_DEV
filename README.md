@@ -36,7 +36,16 @@ Manifest changes require **Unload**, followed by **Load & Watch**. JavaScript/HT
 
 ## Expected diagnostic output
 
-The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, and selected timeline item count. It also displays the complete serializable adapter result.
+The panel reads host name, Premiere version, UXP runtime version, active project name/GUID, active sequence name/GUID, project-panel selection, detailed timeline selection, and documented effect/transition catalogs. It also displays the complete serializable adapter result.
+
+Version 0.2.0 remains read-only. It reports:
+
+- selected project-item name, type, ID and color-label index;
+- selected timeline-item name, type, track index, media type and linked project item;
+- counts and samples from the official video-effect, audio-effect and video-transition factories;
+- effect presets as unknown because no corresponding official catalog API has been identified.
+
+The visible panel is a proof-of-concept diagnostic surface, not a production dependency. The future operational plugin must work without requiring this panel to remain open.
 
 No status should be promoted to **Tested in Premiere** until the exact Premiere version and evidence are recorded in the capability matrix.
 

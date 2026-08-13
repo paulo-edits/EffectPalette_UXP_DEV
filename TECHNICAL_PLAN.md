@@ -4,6 +4,8 @@
 
 This proof of concept establishes actual Premiere UXP capability boundaries without changing the stable Python + CEP product. It uses only official UXP and Premiere DOM APIs. It does not contain CEP, ExtendScript, native shortcuts, a network listener, Python communication, arbitrary script execution, or filesystem permissions.
 
+The production architecture must not require a visible Premiere panel. A panel may remain available for diagnostics and settings, while the operational plugin context should load automatically and run invisibly. This lifecycle requirement must be proven in Premiere before any Python transport is designed.
+
 ## Architecture boundary
 
 The provisional boundary is `execution-adapter.js`:
@@ -22,7 +24,7 @@ Responses are plain serializable objects with `ok`, `schemaVersion`, `actionType
 ## Delivery stages
 
 1. **Bootstrap and diagnostics** — loadable Manifest v5 panel; host, UXP, project, sequence and timeline-selection reads.
-2. **Read-only discovery** — investigate effect/preset/transition catalogs, project selection, labels, and project items using documented APIs; add probes only when an official API is identified.
+2. **Read-only discovery** — inspect project/timeline selection and documented video-effect, audio-effect and video-transition catalogs. Keep effect presets unknown until an official catalog API is identified.
 3. **Safe mutation experiments** — one isolated, undoable action at a time through `Project.executeTransaction()` and the adapter. Record exact setup, version and outcome.
 4. **Architecture decision** — compare verified UXP coverage with existing CEP and native-shortcut behavior. Define which operations can migrate and which remain outside UXP.
 5. **Optional transport design** — only after capability boundaries are known: localhost-only, token-authenticated, schema-validated, no arbitrary commands.
@@ -33,6 +35,7 @@ Responses are plain serializable objects with `ok`, `schemaVersion`, `actionType
 - UDT 2.2+ accepts `manifest.json` and reports a successful load against Premiere 25.6+.
 - Panel opens from **Window > UXP Plugins**.
 - Diagnostics work across empty/project/sequence/selection states without uncaught errors.
+- Read-only catalog and selection probes work with the diagnostics panel visible; later lifecycle tests must prove that production execution does not depend on panel visibility.
 - UDT and Premiere App Logs contain no plugin errors during the test.
 - The matrix distinguishes local validation, official documentation and actual Premiere evidence.
 

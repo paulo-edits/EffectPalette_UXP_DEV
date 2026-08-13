@@ -16,10 +16,12 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Read active project | Tested in Premiere | Available | Not applicable | Empty-project state, project name and project GUID succeeded. Native `Project.guid` is converted with the officially documented `Guid.toString()`. | 26.3.2 |
 | Read active sequence | Tested in Premiere | Available | Not applicable | No-sequence state, active-sequence name and sequence GUID succeeded. Native `Sequence.guid` is converted with `Guid.toString()`. | 26.3.2 |
 | Read timeline selection | Tested in Premiere | Available | Not applicable | Empty selection and one/multiple selected timeline items returned the expected counts. Current panel records count only. | 26.3.2 |
-| Read project-panel selection | Documented, not implemented | Available | Not applicable | Official `ProjectUtils.getSelection(project)` exists since 25.6; deferred to read-only discovery stage. | None |
-| Read effect catalog | Unknown | Available | None selected | No catalog API has yet been confirmed and tested for the product's requirements. | None |
-| Read preset catalog | Unknown | Available | None selected | No catalog API has yet been confirmed and tested for the product's requirements. | None |
-| Read transition catalog | Unknown | Available | None selected | No catalog API has yet been confirmed and tested for the product's requirements. | None |
+| Read project-panel selection | Documented; implemented, pending host test | Available | Not applicable | Uses official `ProjectUtils.getSelection(project)` and `ProjectItemSelection.getItems()` plus item name, type, ID and label index. | None |
+| Read video effect catalog | Documented; implemented, pending host test | Available | None selected | `VideoFilterFactory.getDisplayNames()` and `getMatchNames()` are documented since 25.6. Probe returns counts and samples only. | None |
+| Read audio effect catalog | Documented; implemented, pending host test | Available | None selected | `AudioFilterFactory.getDisplayNames()` is documented since 25.6. Probe returns count and sample names. | None |
+| Read preset catalog | Unknown | Available | None selected | No official effect-preset catalog API was identified in the current Premiere UXP reference. Sequence/export presets are separate concepts. | None |
+| Read video transition catalog | Documented; implemented, pending host test | Available | None selected | `TransitionFactory.getVideoTransitionMatchNames()` is documented since 25.6. Audio-transition catalog coverage remains unknown. | None |
+| Operate without visible panel | Documented concept; not implemented or tested | CEP worker can run headless | Not applicable | Adobe documents invisible plugins using `hostUIContext.hideFromMenu`; lifecycle persistence and future authenticated transport must be proven in Premiere. | None |
 | Apply video/audio effect | Unknown | Available | Existing stable product may use native routing | Mutation intentionally deferred; requires documented catalog lookup, component action and undoable transaction evidence. | None |
 | Apply preset | Unknown | Available | Existing stable product has routing | Mutation intentionally deferred. | None |
 | Apply transition | Documented API surface, not implemented | Available | Existing stable product has routing | Track-item transition actions are documented, but catalog lookup and real behavior remain untested. | None |
@@ -54,5 +56,8 @@ Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent 
 - [TrackItemSelection class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/trackitemselection)
 - [ProjectUtils class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/projectutils)
 - [SequenceEditor class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequenceeditor)
+- [VideoFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videofilterfactory)
+- [AudioFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiofilterfactory)
+- [TransitionFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transitionfactory)
 - [Constants](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/)
 - [UDT workflows](https://developer.adobe.com/premiere-pro/uxp/plugins/tutorials/udt-deep-dive/plugin-workflows)
