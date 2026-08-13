@@ -3,7 +3,8 @@
 const ACTION_SCHEMA_VERSION = 1;
 const SUPPORTED_ACTIONS = Object.freeze([
   "diagnostics.read",
-  "projectItems.setColorLabel"
+  "projectItems.setColorLabel",
+  "timeline.applyVideoEffect"
 ]);
 
 function failure(code, message, actionType) {

@@ -22,7 +22,8 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Read preset catalog | Unknown | Available | None selected | No official effect-preset catalog API was identified in the current Premiere UXP reference. Sequence/export presets are separate concepts. | None |
 | Read video transition catalog | Tested in Premiere | Available | None selected | Official video-transition factory returned a non-empty match-name catalog. Audio-transition catalog coverage remains unknown. | 26.3.2 |
 | Operate without visible panel | Documented concept; not implemented or tested | CEP worker can run headless | Not applicable | Adobe documents invisible plugins using `hostUIContext.hideFromMenu`; lifecycle persistence and future authenticated transport must be proven in Premiere. | None |
-| Apply video/audio effect | Unknown | Available | Existing stable product may use native routing | Mutation intentionally deferred; requires documented catalog lookup, component action and undoable transaction evidence. | None |
+| Apply video effect | Documented; implemented, pending host test | Available through undocumented QE DOM | Existing stable product may use native routing | Exact runtime-catalog match name; one component per selected video clip; official component-chain append actions grouped in one locked, undoable transaction. | None |
+| Apply audio effect | Documented factory surface; not implemented | Available through undocumented QE DOM | Existing stable product may use native routing | `AudioFilterFactory` creates a component using display name plus an audio clip, but the complete official append/transaction path still requires investigation. | None |
 | Apply preset | Unknown | Available | Existing stable product has routing | Mutation intentionally deferred. | None |
 | Apply transition | Documented API surface, not implemented | Available | Existing stable product has routing | Track-item transition actions are documented, but catalog lookup and real behavior remain untested. | None |
 | Read project-item label | Tested in Premiere | Available | Existing stable product has routing | Project selection probe returned `getColorLabelIndex()` values in Test F. Mapping every numeric index to localized display names remains out of scope. | 26.3.2 |
@@ -61,6 +62,7 @@ Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent 
 - [ProjectItem class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/projectitem)
 - [SequenceEditor class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequenceeditor)
 - [VideoFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videofilterfactory)
+- [VideoComponentChain class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videocomponentchain)
 - [AudioFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiofilterfactory)
 - [TransitionFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transitionfactory)
 - [Constants](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/)

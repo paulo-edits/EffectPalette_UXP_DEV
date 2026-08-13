@@ -101,6 +101,67 @@ async function setSelectedProjectItemLabel(action) {
   };
 }
 
+async function applyVideoEffectToSelection(action) {
+  const requestedMatchName = typeof action.payload.matchName === "string"
+    ? action.payload.matchName.trim()
+    : "";
+  if (!requestedMatchName) throw new Error("A video-effect match name is required.");
+
+  const availableMatchNames = await premiere.VideoFilterFactory.getMatchNames();
+  const matchName = availableMatchNames.find((candidate) => candidate === requestedMatchName);
+  if (!matchName) throw new Error("Video-effect match name was not found in the official runtime catalog.");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying a video effect.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying a video effect.");
+
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const videoMediaTypes = new Set();
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  for (let trackIndex = 0; trackIndex < videoTrackCount; trackIndex += 1) {
+    const videoTrack = await sequence.getVideoTrack(trackIndex);
+    videoMediaTypes.add(guidToString(await videoTrack.getMediaType()));
+  }
+  const selectedItemsWithMediaType = await Promise.all(
+    (Array.isArray(selectedItems) ? selectedItems : []).map(async (item) => ({
+      item,
+      mediaType: guidToString(await item.getMediaType())
+    }))
+  );
+  const selectedVideoClips = selectedItemsWithMediaType
+    .filter((entry) => videoMediaTypes.has(entry.mediaType))
+    .map((entry) => entry.item);
+  if (selectedVideoClips.length === 0) {
+    throw new Error("Select at least one video clip in the Timeline.");
+  }
+
+  const componentChains = await Promise.all(
+    selectedVideoClips.map((item) => item.getComponentChain())
+  );
+  const components = await Promise.all(
+    selectedVideoClips.map(() => premiere.VideoFilterFactory.createComponent(matchName))
+  );
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const actions = componentChains.map((chain, index) =>
+      chain.createAppendComponentAction(components[index])
+    );
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      actions.forEach((itemAction) => compoundAction.addAction(itemAction));
+    }, `FX.palette: Apply video effect ${matchName}`);
+  });
+
+  if (!transactionSucceeded) throw new Error("Premiere rejected the video-effect transaction.");
+  return {
+    affectedItemCount: selectedVideoClips.length,
+    matchName,
+    undoable: true
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -206,6 +267,24 @@ async function runSetVioletLabel() {
   if (button) button.disabled = false;
 }
 
+async function runApplyVideoEffect() {
+  const button = document.getElementById("apply-video-effect");
+  const input = document.getElementById("video-effect-match-name");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.applyVideoEffect",
+      requestId: String(Date.now()),
+      payload: { matchName: input ? input.value : "" }
+    },
+    { "timeline.applyVideoEffect": applyVideoEffectToSelection }
+  );
+
+  text("effect-action-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 function wirePanel() {
   const button = document.getElementById("refresh");
   if (button && !button.dataset.wired) {
@@ -216,6 +295,11 @@ function wirePanel() {
   if (labelButton && !labelButton.dataset.wired) {
     labelButton.addEventListener("click", runSetVioletLabel);
     labelButton.dataset.wired = "true";
+  }
+  const effectButton = document.getElementById("apply-video-effect");
+  if (effectButton && !effectButton.dataset.wired) {
+    effectButton.addEventListener("click", runApplyVideoEffect);
+    effectButton.dataset.wired = "true";
   }
   refresh();
 }
