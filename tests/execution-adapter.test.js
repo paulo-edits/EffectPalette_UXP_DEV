@@ -9,6 +9,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({ type: "arbitrary.execute" }).error.code, "UNSUPPORTED_ACTION");
   assert.strictEqual(adapter.normalizeAction({ type: "projectItems.setColorLabel" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoEffect" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyAudioEffect" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.resolve" }).ok, true);
 
   const action = adapter.normalizeAction({

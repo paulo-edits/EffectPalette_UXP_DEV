@@ -83,6 +83,16 @@
         <pre id="effect-action-output">No effect action executed.</pre>
       </section>
 
+      <section aria-labelledby="audio-effect-action-heading">
+        <h2 id="audio-effect-action-heading">Audio effect probe</h2>
+        <p class="hint">Select one or more audio clips in the Timeline. Enter an exact display name from the runtime catalog shown by diagnostics.</p>
+        <label for="audio-effect-display-name">Effect display name</label>
+        <input id="audio-effect-display-name" type="text" value="" placeholder="Exact catalog display name" />
+        <button id="apply-audio-effect" type="button">Apply audio effect to selected clips</button>
+        <button class="copy-json" data-copy-target="audio-effect-action-output" type="button">Copy audio effect JSON</button>
+        <pre id="audio-effect-action-output">No audio effect action executed.</pre>
+      </section>
+
       <details>
         <summary>Serializable result</summary>
         <button class="copy-json" data-copy-target="serialized-output" type="button">Copy diagnostics JSON</button>

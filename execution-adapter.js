@@ -5,7 +5,8 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "diagnostics.read",
   "catalog.videoEffects.resolve",
   "projectItems.setColorLabel",
-  "timeline.applyVideoEffect"
+  "timeline.applyVideoEffect",
+  "timeline.applyAudioEffect"
 ]);
 
 function failure(code, message, actionType) {

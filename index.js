@@ -249,6 +249,104 @@ async function applyVideoEffectToSelection(action) {
   };
 }
 
+async function applyAudioEffectToSelection(action) {
+  const requestedDisplayName = typeof action.payload.displayName === "string"
+    ? action.payload.displayName.trim()
+    : "";
+  if (!requestedDisplayName) throw new Error("An audio-effect display name is required.");
+
+  const availableDisplayNames = await premiere.AudioFilterFactory.getDisplayNames();
+  const displayName = availableDisplayNames.find((candidate) => candidate === requestedDisplayName);
+  if (!displayName) throw new Error("Audio-effect display name was not found in the official runtime catalog.");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying an audio effect.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying an audio effect.");
+
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const audioMediaTypes = new Set();
+  const audioTrackCount = await sequence.getAudioTrackCount();
+  for (let trackIndex = 0; trackIndex < audioTrackCount; trackIndex += 1) {
+    const audioTrack = await sequence.getAudioTrack(trackIndex);
+    audioMediaTypes.add(guidToString(await audioTrack.getMediaType()));
+  }
+  const selectedItemsWithMediaType = await Promise.all(
+    (Array.isArray(selectedItems) ? selectedItems : []).map(async (item) => ({
+      item,
+      mediaType: guidToString(await item.getMediaType())
+    }))
+  );
+  const selectedAudioClips = selectedItemsWithMediaType
+    .filter((entry) => audioMediaTypes.has(entry.mediaType))
+    .map((entry) => entry.item);
+  if (selectedAudioClips.length === 0) {
+    throw new Error("Select at least one audio clip in the Timeline.");
+  }
+
+  const componentChains = await Promise.all(selectedAudioClips.map((item) => item.getComponentChain()));
+  const componentCountsBefore = await Promise.all(componentChains.map((chain) => chain.getComponentCount()));
+  const components = await Promise.all(
+    selectedAudioClips.map((item) =>
+      premiere.AudioFilterFactory.createComponentByDisplayName(displayName, item)
+    )
+  );
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const actions = componentChains.map((chain, index) => chain.createAppendComponentAction(components[index]));
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      actions.forEach((itemAction) => compoundAction.addAction(itemAction));
+    }, `FX.palette: Apply audio effect ${displayName}`);
+  });
+
+  if (!transactionSucceeded) throw new Error("Premiere rejected the audio-effect transaction.");
+  const verification = await Promise.all(componentChains.map(async (chain, index) => {
+    try {
+      const componentCountAfter = await chain.getComponentCount();
+      const expectedComponentIndex = componentCountsBefore[index];
+      const insertedComponent = componentCountAfter > expectedComponentIndex
+        ? await chain.getComponentAtIndex(expectedComponentIndex)
+        : null;
+      const verifiedMatchName = insertedComponent && typeof insertedComponent.getMatchName === "function"
+        ? await insertedComponent.getMatchName()
+        : null;
+      const verifiedDisplayName = insertedComponent && typeof insertedComponent.getDisplayName === "function"
+        ? await insertedComponent.getDisplayName()
+        : null;
+
+      return {
+        clipName: typeof selectedAudioClips[index].getName === "function"
+          ? await selectedAudioClips[index].getName()
+          : null,
+        componentCountBefore: componentCountsBefore[index],
+        componentCountAfter,
+        expectedComponentIndex,
+        appended: componentCountAfter === componentCountsBefore[index] + 1,
+        requestedDisplayName: displayName,
+        verifiedDisplayName,
+        verifiedMatchName,
+        identityMatchesRequest: verifiedDisplayName === displayName
+      };
+    } catch (error) {
+      return {
+        requestedDisplayName: displayName,
+        verified: false,
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  }));
+
+  return {
+    affectedItemCount: selectedAudioClips.length,
+    displayName,
+    verificationSucceeded: verification.every((item) => item.appended === true && item.identityMatchesRequest === true),
+    verification,
+    undoable: true
+  };
+}
+
 async function readDiagnostics() {
   const result = {
     capturedAt: new Date().toISOString(),
@@ -372,6 +470,24 @@ async function runApplyVideoEffect() {
   if (button) button.disabled = false;
 }
 
+async function runApplyAudioEffect() {
+  const button = document.getElementById("apply-audio-effect");
+  const input = document.getElementById("audio-effect-display-name");
+  if (button) button.disabled = true;
+
+  const result = await executionAdapter.execute(
+    {
+      type: "timeline.applyAudioEffect",
+      requestId: String(Date.now()),
+      payload: { displayName: input ? input.value : "" }
+    },
+    { "timeline.applyAudioEffect": applyAudioEffectToSelection }
+  );
+
+  text("audio-effect-action-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function runResolveVideoEffectCatalog() {
   const button = document.getElementById("resolve-video-effect-catalog");
   if (button) button.disabled = true;
@@ -414,6 +530,11 @@ function wirePanel() {
   if (effectButton && !effectButton.dataset.wired) {
     effectButton.addEventListener("click", runApplyVideoEffect);
     effectButton.dataset.wired = "true";
+  }
+  const audioEffectButton = document.getElementById("apply-audio-effect");
+  if (audioEffectButton && !audioEffectButton.dataset.wired) {
+    audioEffectButton.addEventListener("click", runApplyAudioEffect);
+    audioEffectButton.dataset.wired = "true";
   }
   const catalogButton = document.getElementById("resolve-video-effect-catalog");
   if (catalogButton && !catalogButton.dataset.wired) {

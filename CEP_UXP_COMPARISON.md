@@ -46,6 +46,10 @@ The `catalog.videoEffects.resolve` probe confirmed that an unattached `VideoFilt
 - On Premiere 26.3.2, `AE.ADBE Mosaic` resolved to **Mosaic (Legacy)**, not the modern Mosaic effect expected from the remembered name. Resolve and record `Component.getDisplayName()` rather than inferring identity.
 - Duplicate-effect behavior and multi-clip partial failure behavior require host tests.
 
+## Audio effect application
+
+The CEP implementation routes audio effects through the undocumented QE DOM. The official UXP path instead resolves an exact localized display name through `AudioFilterFactory`, creates an `AudioFilterComponent` for each selected `AudioClipTrackItem`, and appends it through that clip's `AudioComponentChain` in a single project transaction. As with video, the inserted component is read back after mutation for serialized identity verification.
+
 ## Reference locations (read-only)
 
 - `EffectPalette/app.py`: `PremiereExecutionAdapter`, `execute_effect_through_adapter()`.

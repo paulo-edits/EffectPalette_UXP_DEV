@@ -24,7 +24,7 @@ Rows marked **Tested in Premiere** are backed by the manual session recorded bel
 | Read video transition catalog | Tested in Premiere | Available | None selected | Official video-transition factory returned a non-empty match-name catalog. Audio-transition catalog coverage remains unknown. | 26.3.2 |
 | Operate without visible panel | Documented concept; not implemented or tested | CEP worker can run headless | Not applicable | Adobe documents invisible plugins using `hostUIContext.hideFromMenu`; lifecycle persistence and future authenticated transport must be proven in Premiere. | None |
 | Apply video effect | Tested in Premiere; post-application identity verification pending | Available through undocumented QE DOM | Existing stable product may use native routing | No selection and audio-only selection failed closed; one/multiple video clips succeeded with one Undo. Version 0.6.0 reads the appended `Component` back from each chain and reports its official match/display names without turning a verification problem into a false mutation failure. This verification path still needs a host test. | 26.3.2 |
-| Apply audio effect | Documented factory surface; not implemented | Available through undocumented QE DOM | Existing stable product may use native routing | `AudioFilterFactory` creates a component using display name plus an audio clip, but the complete official append/transaction path still requires investigation. | None |
+| Apply audio effect | Documented; implemented, pending host test | Available through undocumented QE DOM | Existing stable product may use native routing | Version 0.8.0 validates an exact runtime display name, filters selection to audio clips, creates target-specific components, appends them through `AudioComponentChain` in one transaction, and verifies the inserted `Component` identities. Display names may be localized. | None |
 | Apply preset | Unknown | Available | Existing stable product has routing | Mutation intentionally deferred. | None |
 | Apply transition | Documented API surface, not implemented | Available | Existing stable product has routing | Track-item transition actions are documented, but catalog lookup and real behavior remain untested. | None |
 | Read project-item label | Tested in Premiere | Available | Existing stable product has routing | Project selection probe returned `getColorLabelIndex()` values in Test F. Mapping every numeric index to localized display names remains out of scope. | 26.3.2 |
@@ -72,6 +72,8 @@ Initial local environment discovery found Adobe Premiere 26.3.2. The subsequent 
 - [VideoFilterComponent class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videofiltercomponent)
 - [Component class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/component)
 - [AudioFilterFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiofilterfactory)
+- [AudioComponentChain class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiocomponentchain)
+- [AudioClipTrackItem class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiocliptrackitem)
 - [TransitionFactory class](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transitionfactory)
 - [Constants](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/)
 - [UDT workflows](https://developer.adobe.com/premiere-pro/uxp/plugins/tutorials/udt-deep-dive/plugin-workflows)
