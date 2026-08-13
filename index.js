@@ -599,6 +599,75 @@ function inspectImportedPresetBridgeCandidate(action) {
   };
 }
 
+function encodeXmlText(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function encodeXmlAttribute(value) {
+  return encodeXmlText(value).replace(/"/g, "&quot;");
+}
+
+function serializeXmlNode(node) {
+  if (node.tagName === "#document") return (node.children || []).map(serializeXmlNode).join("");
+  const attributes = Object.keys(node.attributes || {}).map((name) => ` ${name}="${encodeXmlAttribute(node.attributes[name])}"`).join("");
+  const content = encodeXmlText(node.text || "") + (node.children || []).map(serializeXmlNode).join("");
+  return content ? `<${node.tagName}${attributes}>${content}</${node.tagName}>` : `<${node.tagName}${attributes}/>`;
+}
+
+function buildImportedPresetBridge(action) {
+  if (!importedEffectPresetCatalog || !importedEffectPresetXml) throw new Error("Import a .prfpset catalog first.");
+  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
+  const alias = stablePresetAlias(preset);
+  const documentNode = parseXmlTree(importedEffectPresetXml);
+  const objectIndex = {};
+  xmlDescendants(documentNode).forEach((element) => {
+    if (element.attributes.ObjectID) objectIndex[element.attributes.ObjectID] = element;
+  });
+  const sourceTreeItem = objectIndex[preset.sourceObjectId];
+  if (!sourceTreeItem || sourceTreeItem.tagName !== "TreeItem") throw new Error("Could not resolve the preset TreeItem for bridge generation.");
+  const nameElement = xmlPath(sourceTreeItem, ["TreeItemBase", "Name"]);
+  if (!nameElement) throw new Error("Could not resolve the preset name element.");
+  nameElement.text = alias;
+  nameElement.children = [];
+  let rootBin = null;
+  for (const bin of xmlDescendants(documentNode, "BinTreeItem")) {
+    if (xmlText(xmlPath(bin, ["TreeItemBase", "Name"])) === "Presets") { rootBin = bin; break; }
+  }
+  if (!rootBin) throw new Error("Could not resolve the root Presets bin.");
+  const items = xmlChild(rootBin, "Items");
+  if (!items) throw new Error("The root Presets bin has no Items container.");
+  items.children = (items.children || []).filter((item) => item.tagName === "Item" && item.attributes.ObjectRef === preset.sourceObjectId);
+  if (items.children.length !== 1) throw new Error("The selected preset is not a direct child of the root Presets bin; nested bridge wrapping is not implemented yet.");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>${serializeXmlNode(documentNode)}`;
+  const reparsed = parsePrfpsetCatalog(xml);
+  if (reparsed.length !== 1 || reparsed[0].name !== alias) throw new Error("Generated bridge failed its one-preset alias validation.");
+  if (reparsed[0].filters.length !== preset.filters.length) throw new Error("Generated bridge lost one or more filters during validation.");
+  const originalSignature = JSON.stringify(preset.filters);
+  const generatedSignature = JSON.stringify(reparsed[0].filters.map((filter) => ({ ...filter })));
+  if (originalSignature !== generatedSignature) throw new Error("Generated bridge changed the parsed filter payload.");
+  return { xml, alias, preset, reparsedPreset: reparsed[0] };
+}
+
+async function exportImportedPresetBridge(action) {
+  const bridge = buildImportedPresetBridge(action);
+  const { localFileSystem } = require("uxp").storage;
+  const file = await localFileSystem.getFileForSaving(`${bridge.alias}.prfpset`, { types: ["prfpset"] });
+  if (!file) return { cancelled: true, mutation: "none" };
+  await file.write(bridge.xml);
+  return {
+    fileName: file.name,
+    alias: bridge.alias,
+    originalPreset: { name: bridge.preset.name, category: bridge.preset.category },
+    presetCount: 1,
+    filterCount: bridge.reparsedPreset.filters.length,
+    parameterCount: bridge.reparsedPreset.filters.reduce((total, filter) => total + filter.parameters.length, 0),
+    validation: "reparsed-name-filter-and-parameter-payload-exact",
+    originalCatalogUnmodified: true,
+    mutation: "user-approved-new-file"
+  };
+}
+
 function resolveUniqueImportedEffectPreset(name, category) {
   const result = findImportedEffectPresets(name, category);
   if (result.matches.length !== 1) {
@@ -2446,6 +2515,20 @@ async function runInspectPresetBridgeCandidate() {
   if (button) button.disabled = false;
 }
 
+async function runExportPresetBridge() {
+  const button = document.getElementById("export-preset-bridge");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "catalog.effectPresets.exportBridge",
+    requestId: String(Date.now()),
+    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
+  }, { "catalog.effectPresets.exportBridge": exportImportedPresetBridge });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
+}
+
 async function inspectSelectedVideoComponents() {
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before inspecting components.");
@@ -2831,6 +2914,11 @@ function wirePanel() {
   if (inspectBridgeButton && !inspectBridgeButton.dataset.wired) {
     inspectBridgeButton.addEventListener("click", runInspectPresetBridgeCandidate);
     inspectBridgeButton.dataset.wired = "true";
+  }
+  const exportBridgeButton = document.getElementById("export-preset-bridge");
+  if (exportBridgeButton && !exportBridgeButton.dataset.wired) {
+    exportBridgeButton.addEventListener("click", runExportPresetBridge);
+    exportBridgeButton.dataset.wired = "true";
   }
   const compareImportedPresetButton = document.getElementById("compare-imported-transform-preset");
   if (compareImportedPresetButton && !compareImportedPresetButton.dataset.wired) {
