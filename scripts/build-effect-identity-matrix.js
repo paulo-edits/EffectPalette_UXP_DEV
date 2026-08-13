@@ -23,6 +23,17 @@ const cepVideoNames = new Set(
     : []
 );
 
+const CONFIRMED_PAIRS = new Map([
+  ["PR.ADBE Gamma Correction", "Gamma Correction"],
+  ["AE.ADBE Mosaic", "Mosaic (Legacy)"],
+  ["AE.Impact_Mosaic_FX", "Mosaic"],
+  ["AE.Impact_Blur_FX", "Gaussian Blur"],
+  ["AE.BCC_BLUR", "BCC+Blur"],
+  ["AE.S_Glow", "S_Glow"],
+  ["AE.Universe_Blur_Blur_Premium", "uni.Blur"],
+  ["AE.Mettle SkyBox Blur", "VR Blur"]
+]);
+
 function providerFor(matchName) {
   if (/^AE\.Impact/i.test(matchName)) return "Film Impact";
   if (/^AE\.BCC|^BCC/i.test(matchName)) return "Boris FX / BCC";
@@ -35,14 +46,14 @@ function providerFor(matchName) {
 
 const entries = matchNames.map((matchName, index) => {
   const displayName = displayNames[index];
-  const confirmedModernMosaic = matchName === "AE.Impact_Mosaic_FX" && displayName === "Mosaic";
-  const confirmedLegacyMosaic = matchName === "AE.ADBE Mosaic" && displayName === "Mosaic (Legacy)";
+  const confirmedDisplayName = CONFIRMED_PAIRS.get(matchName);
+  const confirmed = typeof confirmedDisplayName === "string" && confirmedDisplayName.trim() === String(displayName).trim();
   return {
     index,
     provider: providerFor(matchName),
     matchName,
     displayName,
-    status: confirmedModernMosaic || confirmedLegacyMosaic
+    status: confirmed
       ? "confirmed_post_insertion"
       : "runtime_positional_candidate",
     presentInCepDisplayCatalog: cepVideoNames.has(displayName)

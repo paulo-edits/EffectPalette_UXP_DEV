@@ -14,7 +14,7 @@ The CEP snapshot is never loaded by the plugin and is not a fallback. Trusted pr
 
 - 829 total UXP video effects.
 - Adobe, Film Impact, Boris FX/BCC, Boris FX/Sapphire, Maxon/Universe, Adobe VR/Mettle and other identifiers are included.
-- Modern and Legacy Mosaic pairs are confirmed.
+- Eight pairs are confirmed across Adobe, Film Impact, BCC, Sapphire, Universe and Adobe VR/Mettle, including modern and Legacy Mosaic.
 - All remaining entries are runtime positional candidates pending representative or individual confirmation.
 
 Regenerate with:

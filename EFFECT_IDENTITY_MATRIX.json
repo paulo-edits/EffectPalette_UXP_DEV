@@ -15,8 +15,8 @@
   },
   "summary": {
     "totalEntries": 829,
-    "confirmedPostInsertion": 2,
-    "runtimePositionalCandidates": 827,
+    "confirmedPostInsertion": 8,
+    "runtimePositionalCandidates": 821,
     "displayNamesAlsoPresentInCep": 691,
     "providers": {
       "Adobe": 65,
@@ -42,7 +42,7 @@
       "provider": "Adobe",
       "matchName": "PR.ADBE Gamma Correction",
       "displayName": "Gamma Correction",
-      "status": "runtime_positional_candidate",
+      "status": "confirmed_post_insertion",
       "presentInCepDisplayCatalog": true
     },
     {
@@ -170,7 +170,7 @@
       "provider": "Adobe VR / Mettle",
       "matchName": "AE.Mettle SkyBox Blur",
       "displayName": "VR Blur",
-      "status": "runtime_positional_candidate",
+      "status": "confirmed_post_insertion",
       "presentInCepDisplayCatalog": true
     },
     {
@@ -634,7 +634,7 @@
       "provider": "Film Impact",
       "matchName": "AE.Impact_Blur_FX",
       "displayName": "Gaussian Blur",
-      "status": "runtime_positional_candidate",
+      "status": "confirmed_post_insertion",
       "presentInCepDisplayCatalog": true
     },
     {
@@ -3098,7 +3098,7 @@
       "provider": "Boris FX / BCC",
       "matchName": "AE.BCC_BLUR",
       "displayName": " BCC+Blur",
-      "status": "runtime_positional_candidate",
+      "status": "confirmed_post_insertion",
       "presentInCepDisplayCatalog": false
     },
     {
@@ -4226,7 +4226,7 @@
       "provider": "Maxon / Universe",
       "matchName": "AE.Universe_Blur_Blur_Premium",
       "displayName": "uni.Blur",
-      "status": "runtime_positional_candidate",
+      "status": "confirmed_post_insertion",
       "presentInCepDisplayCatalog": true
     },
     {
@@ -5434,7 +5434,7 @@
       "provider": "Boris FX / Sapphire",
       "matchName": "AE.S_Glow",
       "displayName": "S_Glow",
-      "status": "runtime_positional_candidate",
+      "status": "confirmed_post_insertion",
       "presentInCepDisplayCatalog": true
     },
     {
