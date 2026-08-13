@@ -594,6 +594,39 @@ async function createNestFromSelection(action) {
     throw new Error("Premiere created the subsequence but rejected the Timeline replacement transaction.");
   }
 
+  const createdProjectItemId = await createdProjectItem.getId();
+  const insertedInstances = [];
+  const collectInsertedInstances = async (track, mediaKind) => {
+    const trackItems = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+    for (const trackItem of trackItems) {
+      const startTime = await trackItem.getStartTime();
+      if (String(startTime.ticks) !== String(earliest.ticks)) continue;
+      const projectItem = await trackItem.getProjectItem();
+      if (!projectItem || await projectItem.getId() !== createdProjectItemId) continue;
+      insertedInstances.push({ trackItem, mediaKind, nameBefore: await trackItem.getName() });
+    }
+  };
+  await collectInsertedInstances(await sourceSequence.getVideoTrack(targetVideoTrackIndex), "video");
+  if (audioItems.length > 0) {
+    await collectInsertedInstances(await sourceSequence.getAudioTrack(targetAudioTrackIndex), "audio");
+  }
+
+  let instanceRenameTransactionSucceeded = false;
+  if (insertedInstances.length > 0) {
+    project.lockedAccess(() => {
+      const renameActions = insertedInstances.map((entry) => entry.trackItem.createSetNameAction(requestedName));
+      instanceRenameTransactionSucceeded = project.executeTransaction((compoundAction) => {
+        renameActions.forEach((renameAction) => compoundAction.addAction(renameAction));
+      }, `FX.palette: Name Nest instances ${requestedName}`);
+    });
+  }
+
+  const renamedInstances = await Promise.all(insertedInstances.map(async (entry) => ({
+    mediaKind: entry.mediaKind,
+    nameBefore: entry.nameBefore,
+    nameAfter: await entry.trackItem.getName()
+  })));
+
   const sequencesAfter = await project.getSequences();
   return {
     sourceSequence: { name: sourceSequence.name || null, guid: guidToString(sourceSequence.guid) },
@@ -621,13 +654,17 @@ async function createNestFromSelection(action) {
       sequenceName: createdSequence.name || null,
       projectItemName: createdProjectItem.name || null,
       guid: guidToString(createdSequence.guid),
-      projectItemId: await createdProjectItem.getId()
+      projectItemId: createdProjectItemId
     },
     replacementTransactionSucceeded,
+    instanceRenameTransactionSucceeded,
+    insertedInstanceCount: insertedInstances.length,
+    renamedInstances,
     originalSelectionExpectedRemoved: true,
     nestedItemExpectedInserted: true,
     undoModelExpected: [
-      "Undo replacement and rename transaction",
+      "Undo Timeline instance rename transaction",
+      "Undo replacement and ProjectItem rename transaction",
       "Undo subsequence creation"
     ]
   };
