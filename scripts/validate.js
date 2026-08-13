@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, "..");
 const manifestPath = path.join(root, "manifest.json");
 const errors = [];
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const identityMatrixPath = path.join(root, "EFFECT_IDENTITY_MATRIX.json");
 
 function expect(condition, message) { if (!condition) errors.push(message); }
 
@@ -26,6 +27,13 @@ expect(
   "PoC must request only clipboard readAndWrite permission"
 );
 expect(fs.existsSync(path.join(root, manifest.main)), "manifest main file does not exist");
+expect(fs.existsSync(identityMatrixPath), "EFFECT_IDENTITY_MATRIX.json is required");
+if (fs.existsSync(identityMatrixPath)) {
+  const identityMatrix = JSON.parse(fs.readFileSync(identityMatrixPath, "utf8"));
+  expect(identityMatrix.schemaVersion === 1, "effect identity matrix schemaVersion must be 1");
+  expect(identityMatrix.summary && identityMatrix.summary.totalEntries === 829, "effect identity matrix must contain 829 entries");
+  expect(Array.isArray(identityMatrix.entries) && identityMatrix.entries.length === 829, "effect identity matrix entries are incomplete");
+}
 
 for (const filename of ["index.js", "execution-adapter.js"]) {
   const source = fs.readFileSync(path.join(root, filename), "utf8");

@@ -65,6 +65,8 @@ The explicit `catalog.videoEffects.resolve` action now probes this limitation wi
 
 The separate `catalog.videoEffects.read` action exports the complete match-name and display-name arrays as independent evidence for offline analysis of native and third-party effects. The export deliberately includes `positionalPairingAssumed: false`; candidate mappings must be confirmed through post-insertion `Component` inspection before becoming trusted product data.
 
+The generated `EFFECT_IDENTITY_MATRIX.json` inventories all 829 effects exposed by the tested runtime, including Adobe, Film Impact, BCC, Sapphire and Universe. Its companion `EFFECT_IDENTITY_MATRIX.md` defines the evidence levels. The matrix is a development artifact and is not loaded by the plugin; the CEP snapshot never becomes a runtime dependency or fallback.
+
 The visible panel is a proof-of-concept diagnostic surface, not a production dependency. The future operational plugin must work without requiring this panel to remain open.
 
 No status should be promoted to **Tested in Premiere** until the exact Premiere version and evidence are recorded in the capability matrix.
