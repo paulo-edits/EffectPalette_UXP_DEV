@@ -24,4 +24,11 @@ powershell -NoProfile -File experimental/preset-assist/inspect_effects_result.ps
   -ExpectedQuery "TESTE SUPREMO"
 ```
 
+The next opt-in gate recaptures Premiere, repeats the hybrid validation, requires the PNG to be no more than five seconds old, verifies that the target remains inside the current Premiere window, and moves only the pointer to the validated text center. It never clicks, presses, releases or drags:
+
+```powershell
+powershell -NoProfile -File experimental/preset-assist/capture_and_point.ps1 `
+  -ExpectedQuery "TESTE SUPREMO"
+```
+
 The alias bridge export remains research evidence only. It was rejected as a product workflow because importing generated copies would pollute and desynchronize the user's Presets catalog.

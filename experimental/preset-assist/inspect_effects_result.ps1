@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$ImagePath,
-    [Parameter(Mandatory = $true)][string]$ExpectedQuery
+    [Parameter(Mandatory = $true)][string]$ExpectedQuery,
+    [switch]$MovePointer,
+    [ValidateRange(1, 30)][int]$MaxImageAgeSeconds = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +29,23 @@ function Normalize-Text([string]$Text) {
 
 function Rect-Object($Rect) {
     return [ordered]@{ left = $Rect.X; top = $Rect.Y; width = $Rect.Width; height = $Rect.Height }
+}
+
+function Ensure-CursorApi {
+    if (-not ("FxPalette.NativeCursor" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace FxPalette {
+    public static class NativeCursor {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Point { public int X; public int Y; }
+        [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+        [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    }
+}
+"@
+    }
 }
 
 try {
@@ -89,6 +108,33 @@ try {
             basis = "center-of-unique-exact-result-text"
         }
     }
+    $pointerBefore = $null
+    $pointerAfter = $null
+    $pointerMoved = $false
+    if ($MovePointer) {
+        if (-not $safe) { throw "Pointer movement refused because the hybrid result gate is not safe." }
+        $imageFile = Get-Item -LiteralPath $ImagePath
+        $imageAgeSeconds = ((Get-Date) - $imageFile.LastWriteTime).TotalSeconds
+        if ($imageAgeSeconds -lt 0 -or $imageAgeSeconds -gt $MaxImageAgeSeconds) {
+            throw "Pointer movement refused because the capture is $([math]::Round($imageAgeSeconds, 2)) seconds old."
+        }
+        $targetX = [int]$dryRunTarget.x
+        $targetY = [int]$dryRunTarget.y
+        if ($targetX -lt $windowRect.X -or $targetX -ge ($windowRect.X + $windowRect.Width) -or
+            $targetY -lt $windowRect.Y -or $targetY -ge ($windowRect.Y + $windowRect.Height)) {
+            throw "Pointer movement refused because the target is outside the current Premiere window."
+        }
+        Ensure-CursorApi
+        $before = New-Object FxPalette.NativeCursor+Point
+        if (-not [FxPalette.NativeCursor]::GetCursorPos([ref]$before)) { throw "Could not read the current cursor position." }
+        $pointerBefore = [ordered]@{ x = $before.X; y = $before.Y }
+        if (-not [FxPalette.NativeCursor]::SetCursorPos($targetX, $targetY)) { throw "SetCursorPos failed." }
+        $after = New-Object FxPalette.NativeCursor+Point
+        if (-not [FxPalette.NativeCursor]::GetCursorPos([ref]$after)) { throw "Could not verify the cursor position." }
+        $pointerAfter = [ordered]@{ x = $after.X; y = $after.Y }
+        $pointerMoved = $after.X -eq $targetX -and $after.Y -eq $targetY
+        if (-not $pointerMoved) { throw "Cursor position did not match the validated target after movement." }
+    }
     [ordered]@{
         ok = $true
         schemaVersion = 1
@@ -105,8 +151,13 @@ try {
             safeToDryRunTarget = $safe
             safetyReason = if ($safe) { "semantic-exact-query-plus-one-distinct-visual-result" } else { "ambiguous-or-missing-visual-result" }
             dryRunTarget = $dryRunTarget
-            pointerMoved = $false
-            inputSynthesized = $false
+            pointerMoveRequested = [bool]$MovePointer
+            pointerBefore = $pointerBefore
+            pointerAfter = $pointerAfter
+            pointerMoved = $pointerMoved
+            clickSynthesized = $false
+            dragSynthesized = $false
+            inputSynthesized = $pointerMoved
         }
     } | ConvertTo-Json -Depth 8
     exit $(if ($safe) { 0 } else { 2 })
