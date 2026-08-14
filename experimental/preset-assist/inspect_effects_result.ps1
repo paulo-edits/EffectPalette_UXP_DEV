@@ -74,7 +74,21 @@ try {
         }
     }
     $resultCandidates = @($matches | Where-Object { $_.classification -eq "visual-result-candidate" })
-    $safe = $matches.Count -eq 2 -and $resultCandidates.Count -eq 1
+    # UI Automation is authoritative for the exact search-field value. OCR only
+    # needs to identify one distinct visual result; recognizing the tiny search
+    # field text a second time is optional and varies with DPI/language rendering.
+    $searchOcrOccurrences = @($matches | Where-Object { $_.classification -eq "search-field" })
+    $safe = $resultCandidates.Count -eq 1 -and $searchOcrOccurrences.Count -le 1
+    $dryRunTarget = $null
+    if ($safe) {
+        $targetRect = $resultCandidates[0].screenRect
+        $dryRunTarget = [ordered]@{
+            x = [math]::Round($targetRect.left + ($targetRect.width / 2.0))
+            y = [math]::Round($targetRect.top + ($targetRect.height / 2.0))
+            coordinateSpace = "virtual-screen-physical-pixels"
+            basis = "center-of-unique-exact-result-text"
+        }
+    }
     [ordered]@{
         ok = $true
         schemaVersion = 1
@@ -85,10 +99,13 @@ try {
             semanticSearchRect = Rect-Object $searchRect
             ocrLanguage = $engine.RecognizerLanguage.LanguageTag
             exactOcrOccurrenceCount = $matches.Count
+            searchFieldOcrOccurrenceCount = $searchOcrOccurrences.Count
             visualResultCandidateCount = $resultCandidates.Count
             matches = $matches
             safeToDryRunTarget = $safe
-            safetyReason = if ($safe) { "exact-query-plus-one-distinct-visual-result" } else { "ambiguous-or-missing-visual-result" }
+            safetyReason = if ($safe) { "semantic-exact-query-plus-one-distinct-visual-result" } else { "ambiguous-or-missing-visual-result" }
+            dryRunTarget = $dryRunTarget
+            pointerMoved = $false
             inputSynthesized = $false
         }
     } | ConvertTo-Json -Depth 8

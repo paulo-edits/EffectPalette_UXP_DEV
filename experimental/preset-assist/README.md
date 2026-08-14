@@ -7,13 +7,16 @@ The first diagnostic is strictly read-only: it enumerates visible windows owned 
 ```powershell
 python experimental/preset-assist/diagnose_premiere_window.py
 python experimental/preset-assist/diagnose_premiere_window.py --output "$env:TEMP\fxpalette-premiere-window.png"
+python experimental/preset-assist/diagnose_premiere_window.py --wait-seconds 30 --output "$env:TEMP\fxpalette-premiere-window.png"
 ```
+
+`--wait-seconds` polls without focusing or controlling Premiere and captures as soon as a visible, executable-validated window becomes available. The accepted range is 0–60 seconds.
 
 Future gates, in order, are panel-region calibration, OCR/result ambiguity detection, dry-run pointer targeting, user-confirmed drag acquisition, and post-drop UXP verification. Every gate must fail closed.
 
 Premiere 26.3.2 exposes the Effects search Edit through Windows UI Automation, including its exact current text, but does not expose the visible filtered result row. The result validator must therefore be hybrid: semantic exact-query verification plus visual detection/OCR of the preset row and icon. A pixel-only or UIA-only decision is forbidden.
 
-`inspect_effects_result.ps1` implements the first hybrid read-only gate with the native Windows OCR engine. It requires exactly one visible Premiere search Edit equal to the requested query, OCRs the saved Premiere-window capture, classifies the OCR occurrence overlapping the semantic Edit as the search field, and approves a future dry run only when exactly one other exact-text line remains. It does not yet classify the preset icon or move the pointer.
+`inspect_effects_result.ps1` implements the first hybrid read-only gate with the native Windows OCR engine. It requires exactly one visible Premiere search Edit equal to the requested query, OCRs the saved Premiere-window capture, and approves a dry-run target only when exactly one distinct visual result line has the same exact text. OCR recognition of the small search-field text is optional because UI Automation already verifies that field authoritatively. A successful result reports the center of the unique exact result text in physical virtual-screen coordinates; it never moves the pointer or synthesizes input.
 
 ```powershell
 powershell -NoProfile -File experimental/preset-assist/inspect_effects_result.ps1 `

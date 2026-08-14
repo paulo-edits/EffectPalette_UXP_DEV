@@ -11,6 +11,7 @@ import ctypes
 import hashlib
 import json
 import sys
+import time
 from ctypes import wintypes
 from pathlib import Path
 
@@ -102,9 +103,21 @@ def capture_window(candidate: dict, output: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect Premiere's top-level window without sending input.")
     parser.add_argument("--output", type=Path, help="Optional PNG path for a read-only window capture.")
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=0,
+        help="Wait up to this many seconds for a visible Premiere window (maximum 60).",
+    )
     args = parser.parse_args()
+    if args.wait_seconds < 0 or args.wait_seconds > 60:
+        parser.error("--wait-seconds must be between 0 and 60")
     dpi_mode = enable_per_monitor_dpi()
     candidates = window_candidates()
+    deadline = time.monotonic() + args.wait_seconds
+    while not candidates and time.monotonic() < deadline:
+        time.sleep(0.25)
+        candidates = window_candidates()
     selected = next((item for item in candidates if item["foreground"]), candidates[0] if len(candidates) == 1 else None)
     result = {
         "ok": selected is not None,
