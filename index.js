@@ -498,10 +498,21 @@ function parsePrfpsetCatalog(xml) {
             keyframes: xmlText(xmlChild(parameterElement, "Keyframes")) || null
           });
         });
+        // FilterPreset's own AnchorInPoint is the shared origin every filter in the preset was
+        // captured against. Different parameters/filters can start their animation at different
+        // offsets from it, so it - not a parameter's own first key - is the correct zero point for
+        // reconstructing relative timing across more than one animated parameter.
+        const anchorInPointTicks = Number(xmlText(xmlChild(filterElement, "AnchorInPoint"))) || 0;
         filters.push({
           matchName: xmlText(xmlChild(filterElement, "FilterMatchName")),
           displayName: xmlText(xmlChild(componentPayload, "DisplayName")),
           mediaType: xmlText(xmlChild(filterElement, "MediaType")),
+          anchorInPointTicks,
+          // Premiere marks fixed effects that exist on every clip (Motion, Opacity, Time
+          // Remapping) with this flag; such a component must be targeted in place rather than
+          // created and appended, since it cannot be duplicated and VideoFilterFactory does not
+          // produce it. Absent for ordinary filters, where it correctly reads as false.
+          intrinsic: xmlText(xmlChild(componentPayload, "Intrinsic")) === "true",
           parameters
         });
       });
@@ -704,6 +715,7 @@ function inspectImportedEffectPreset(action) {
       filters: preset.filters.map((filter) => ({
         matchName: filter.matchName,
         displayName: filter.displayName,
+        intrinsic: filter.intrinsic,
         parameterCount: filter.parameters.length,
         animatedParameterCount: filter.parameters.filter((parameter) => parameter.timeVarying || parameter.keyframes).length
       }))
@@ -2781,10 +2793,13 @@ async function applyImportedEffectPreset(action) {
     })
   }));
 
-  const animatedDurationsSeconds = runtimeFilters.flatMap((filter) =>
+  // The clip must be long enough for every animated parameter's last key relative to the shared
+  // AnchorInPoint, not just its own internal span, since a parameter that starts late still needs
+  // room to finish.
+  const animatedEndOffsetsSeconds = runtimeFilters.flatMap((filter) =>
     filter.preparedParameters.filter((item) => item.mode === "animated")
-      .map((item) => (item.sourceKeys[item.sourceKeys.length - 1].ticks - item.sourceKeys[0].ticks) / 254016000000));
-  const longestSeconds = Math.max(0, ...animatedDurationsSeconds);
+      .map((item) => (item.sourceKeys[item.sourceKeys.length - 1].ticks - filter.anchorInPointTicks) / 254016000000));
+  const longestSeconds = Math.max(0, ...animatedEndOffsetsSeconds);
 
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before applying the preset.");
@@ -2794,24 +2809,45 @@ async function applyImportedEffectPreset(action) {
   const targetInPoint = await target.getInPoint();
   const targetDuration = await target.getDuration();
   if (targetDuration.seconds < longestSeconds) throw new Error("The selected clip is shorter than the imported preset animation.");
-  const fps = (reconstructEasing && animatedDurationsSeconds.length) ? await getSequenceFramesPerSecond(sequence) : null;
+  const fps = (reconstructEasing && animatedEndOffsetsSeconds.length) ? await getSequenceFramesPerSecond(sequence) : null;
 
   const chain = await target.getComponentChain();
+
+  const resolvedFilters = [];
+  for (const filter of runtimeFilters) {
+    // Premiere's own <Intrinsic> flag (see parsePrfpsetCatalog) identifies fixed effects that
+    // already exist on the chain, such as Motion and Opacity, without needing a maintained list of
+    // known match names: appending a second one is both unavailable through VideoFilterFactory and
+    // semantically wrong, so these must be targeted in place instead.
+    if (filter.intrinsic) {
+      const resolved = await findLastComponentByMatchName(chain, filter.matchName);
+      if (!resolved) throw new Error(`The selected clip has no existing ${filter.matchName} component to target.`);
+      resolvedFilters.push({ filter, intrinsic: true, componentIndex: resolved.index });
+    } else {
+      resolvedFilters.push({ filter, intrinsic: false, componentIndex: null });
+    }
+  }
+
   const componentCountBefore = await chain.getComponentCount();
+  const toCreate = resolvedFilters.filter((entry) => !entry.intrinsic);
   const created = [];
-  for (const filter of runtimeFilters) created.push(await premiere.VideoFilterFactory.createComponent(filter.matchName));
-  let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    insertionTransactionSucceeded = project.executeTransaction((compound) => {
-      created.forEach((component) => compound.addAction(chain.createAppendComponentAction(component)));
-    }, `FX.palette: Insert ${preset.name}`);
-  });
-  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the preset component insertion.");
+  for (const entry of toCreate) created.push(await premiere.VideoFilterFactory.createComponent(entry.filter.matchName));
+  let insertionTransactionSucceeded = true;
+  if (created.length) {
+    insertionTransactionSucceeded = false;
+    project.lockedAccess(() => {
+      insertionTransactionSucceeded = project.executeTransaction((compound) => {
+        created.forEach((component) => compound.addAction(chain.createAppendComponentAction(component)));
+      }, `FX.palette: Insert ${preset.name}`);
+    });
+    if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the preset component insertion.");
+  }
+  toCreate.forEach((entry, index) => { entry.componentIndex = componentCountBefore + index; });
 
   const prepared = [];
-  for (let filterIndex = 0; filterIndex < runtimeFilters.length; filterIndex += 1) {
-    const filter = runtimeFilters[filterIndex];
-    const component = await chain.getComponentAtIndex(componentCountBefore + filterIndex);
+  for (const entry of resolvedFilters) {
+    const filter = entry.filter;
+    const component = await chain.getComponentAtIndex(entry.componentIndex);
     for (const item of filter.preparedParameters) {
       const parameter = await component.getParam(item.source.index);
       const context = `filter ${filter.matchName}, parameter ${item.source.index} (${item.source.name || "unnamed"}, controlType ${item.source.controlType})`;
@@ -2823,16 +2859,20 @@ async function applyImportedEffectPreset(action) {
         }
         const originTicks = item.sourceKeys[0].ticks;
         const durationSeconds = (item.sourceKeys[item.sourceKeys.length - 1].ticks - originTicks) / 254016000000;
+        // How far this parameter's own animation starts after the preset's shared AnchorInPoint.
+        // Zero for a parameter that starts immediately; positive for one staggered relative to
+        // another animated parameter in the same preset (see the AnchorInPoint comment above).
+        const startOffsetSeconds = (originTicks - filter.anchorInPointTicks) / 254016000000;
         const keys = [];
         if (reconstructEasing) {
           const segments = Math.max(1, Math.round(durationSeconds * fps));
           for (let frame = 0; frame <= segments; frame += 1) {
-            const offsetSeconds = durationSeconds * (frame / segments);
+            const localOffsetSeconds = durationSeconds * (frame / segments);
             const sampledValue = item.valueType === "point"
-              ? sampleImportedPointCurve(item.sourceKeys, offsetSeconds).value
-              : sampleImportedScalarCurve(item.sourceKeys, offsetSeconds).value;
+              ? sampleImportedPointCurve(item.sourceKeys, localOffsetSeconds).value
+              : sampleImportedScalarCurve(item.sourceKeys, localOffsetSeconds).value;
             const keyframe = await parameter.createKeyframe(createHostValue({ type: item.valueType, value: sampledValue }));
-            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
             if (typeof keyframe.setTemporalInterpolationMode === "function") {
               await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
             }
@@ -2840,14 +2880,14 @@ async function applyImportedEffectPreset(action) {
           }
         } else {
           for (const sourceKey of item.sourceKeys) {
-            const offsetSeconds = (sourceKey.ticks - originTicks) / 254016000000;
+            const localOffsetSeconds = (sourceKey.ticks - originTicks) / 254016000000;
             const keyframe = await parameter.createKeyframe(createHostValue(sourceKey.value));
-            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
             keys.push(keyframe);
           }
         }
         prepared.push({
-          filter, item, parameter, mode: "animated", keys, durationSeconds,
+          filter, item, parameter, mode: "animated", keys, durationSeconds, startOffsetSeconds,
           sampleStrategy: reconstructEasing ? "frame-sampled-approximation" : "principal-keys-only"
         });
       } catch (error) {
@@ -2870,11 +2910,12 @@ async function applyImportedEffectPreset(action) {
   if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the imported preset parameter transaction.");
 
   const verification = [];
-  for (let index = 0; index < runtimeFilters.length; index += 1) {
-    const component = await chain.getComponentAtIndex(componentCountBefore + index);
+  for (const entry of resolvedFilters) {
+    const component = await chain.getComponentAtIndex(entry.componentIndex);
     verification.push({
-      index: componentCountBefore + index,
-      requestedMatchName: runtimeFilters[index].matchName,
+      index: entry.componentIndex,
+      intrinsic: entry.intrinsic,
+      requestedMatchName: entry.filter.matchName,
       resultingMatchName: await component.getMatchName(),
       displayName: await component.getDisplayName()
     });
@@ -2893,16 +2934,20 @@ async function applyImportedEffectPreset(action) {
     animatedParameters: animatedPrepared.map((entry) => ({
       filterMatchName: entry.filter.matchName, index: entry.item.source.index, name: entry.item.source.name,
       valueType: entry.item.valueType, sourceKeyframeCount: entry.item.sourceKeys.length,
-      appliedKeyframeCount: entry.keys.length, durationSeconds: entry.durationSeconds, sampleStrategy: entry.sampleStrategy
+      appliedKeyframeCount: entry.keys.length, durationSeconds: entry.durationSeconds,
+      startOffsetSeconds: entry.startOffsetSeconds, sampleStrategy: entry.sampleStrategy
     })),
     longestAnimationSeconds: longestSeconds,
     framesPerSecond: fps,
+    insertionSkipped: created.length === 0,
     insertionTransactionSucceeded, parameterTransactionSucceeded, verification,
     reproductionModel: reconstructEasing ? "prfpset-frame-sampled-approximation" : "prfpset-principal-keyframes-only",
     fidelityNote: reconstructEasing
       ? "Frame-sampled easing is an approximation; the official UXP API exposes no Point/scalar tangent or velocity surface to restore exact curves."
       : "Effects, static values and principal keyframe values/times are preserved; no dense helper keys are generated to imitate unavailable easing.",
-    undoModelExpected: ["Undo imported preset parameters", "Undo inserted preset effects"]
+    undoModelExpected: created.length
+      ? ["Undo imported preset parameters", "Undo inserted preset effects"]
+      : ["Undo imported preset parameters"]
   };
 }
 

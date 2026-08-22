@@ -71,6 +71,34 @@ Only fields 0–7 are common to every record. Point parameters serialize all 14 
 parameters stop at field 7, since interpolation codes and spatial tangents do not apply to them.
 Code must therefore treat fields 8–13 as absent rather than as zero on scalar records.
 
+A separate, component-level flag matters for application rather than curve math: Premiere serializes
+`<Intrinsic>true</Intrinsic>` on the `VideoFilterComponent` of fixed effects that exist on every
+clip and cannot be duplicated, such as Motion and Opacity, confirmed in
+`PRESET TEST MOTION - OPACITY - TIME REMAP`. A preset targeting one of these must locate the clip's
+existing component and write to it, rather than create and append a new one through
+`VideoFilterFactory`, which does not produce these components in the first place. Reading this flag
+directly is preferable to a maintained list of known intrinsic match names, since it generalizes to
+Time Remapping and any other fixed effect without further evidence being required to add it.
+Applying this fixture confirmed intrinsic targeting for Motion and Opacity: both components verified
+with `intrinsic: true`, and the all-intrinsic preset correctly skipped the insertion transaction
+entirely, dropping to one Undo step. The user separately found that manually applying this preset
+does not create Time Remapping keyframes in Premiere 26.3.2 at all, a host limitation that leaves
+that specific effect's applicability unverified independent of this repository's correctness.
+
+That fixture also exposed a real timing bug, distinct from the intrinsic-targeting question above.
+Every animated parameter had been anchored at its own first keyframe - correct only when a preset
+has exactly one, true of every fixture used before it. Here Opacity's fade starts 0.667 s after
+Position's move, per the shared `FilterPreset.AnchorInPoint` both filters were captured against, and
+the prior code silently started them together. `AnchorInPoint` is now parsed and used as the shared
+origin, with each parameter's own stagger layered on top of it; the clip-length check was corrected
+to use each parameter's true end relative to the clip rather than its own internal span. Host retest
+returned `startOffsetSeconds` of exactly `0.6666666666666666` for Opacity and `0` for Position,
+`longestAnimationSeconds` of `1.5833333333333333`, and the user confirmed in Effect Controls that the
+fade now visibly starts after Position has already moved. The fix is byte-identical for every
+fixture validated earlier, since each had one animated parameter whose first key already equalled
+its filter's `AnchorInPoint` - which is exactly why the bug went undetected until a preset with two
+animated parameters was tested.
+
 Two independent checks support this mapping. The recurring `0.16666666666666666` equals 1/6, the
 documented After Effects default influence. And in `Slide IN UP` the outgoing spatial tangent is
 exactly 1/6 of the value delta while the outgoing temporal influence on the same keyframe is
