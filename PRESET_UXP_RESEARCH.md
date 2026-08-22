@@ -175,6 +175,65 @@ account for at 256 chords, so most of it originates elsewhere — plausibly Prem
 parameterization, though that was not isolated. The table now uses 1024 chords, which drops its own
 contribution to roughly 1e-6 and removes it from future attribution.
 
+## Audio filter presets
+
+Audio filters serialize differently from video ones in three ways, discovered from
+`Áudio Estourado + Posterize` and the isolated `PRESET TEST + DISTORTION` fixtures on 2026-08-22:
+
+1. **Nesting.** `VideoFilterComponent` nests its common payload one level deep
+   (`VideoFilterComponent > Component`). `AudioFilterComponent` nests it two levels deep
+   (`AudioFilterComponent > AudioComponent > Component`); resolving only the outer level silently
+   returns an empty component, which is exactly the bug the first inspection surfaced.
+2. **Identity.** The `FilterMatchName` on an audio filter is a Premiere-internal GUID
+   (`e0b23f05-...`), not a stable public identifier. Consulting this project's CEP reference
+   (`EffectPalette`, read-only per `TECHNICAL_PLAN.md`) showed that even the stable product resolves
+   audio effects by **display name** through the legacy QE DOM (`qe.project.getAudioEffectByName`),
+   never by this GUID; the official UXP surface already used by this project's `timeline.applyAudioEffect`
+   probe agrees, resolving by display name through `AudioFilterFactory`.
+3. **Channel-variant duplication.** One logical audio effect application serializes as one
+   `AudioFilterComponent` **per channel configuration** the instance could run under - mono, stereo,
+   5.1, observed as three "Distortion" entries with the same GUID, differing `ChannelConfigData`
+   channel counts, and (when the user's edit was reflected) identical parameter values shared across
+   the variants Premiere treated as linked. The CEP reference has a dedicated function,
+   `_cleanupDuplicateAudioComponents`, solely to detect and remove these after `addAudioEffect`,
+   confirming this is inherent Premiere behavior rather than a preset-authoring artifact. Applying
+   all three would not reconstruct the preset correctly; they must collapse to one.
+
+The official `AudioFilterFactory.createComponentByDisplayName(displayName, item)` differs from
+`VideoFilterFactory.createComponent(matchName)` by taking the **target item**, making it
+channel-aware from the destination clip. The already host-tested `timeline.applyAudioEffect` probe
+confirms this produces exactly one component per clip (`appended: componentCountAfter ===
+componentCountsBefore + 1`), so reconstruction does not need to replicate Premiere's channel-variant
+duplication - it needs to collapse the `.prfpset`'s variants back to one before creating anything.
+
+`dedupeAudioFilterVariants` first tried keeping whichever parameter set was shared by the most
+variants, on the theory that Premiere propagates an edited value across every channel configuration
+it treats as linked. Applying `PRESET TEST + DISTORTION` to its actual stereo source clip refuted
+this: the majority-shared mono/5.1 values (52%/42%/56%/-60dB) were wrong, and a manual drag of the
+same preset onto the same clip produced the minority stereo variant instead (0%/0%/0%/-120dB,
+matching Adobe's built-in "Maximum Pain" Distortion preset).
+
+The obvious correct rule - match the variant whose channel count equals the target clip's actual
+channel count - turned out not to be implementable: the official UXP reference lists no channel-count
+accessor on `AudioClipTrackItem`, and a developer-forum thread confirms `getAudioChannelMapping()`
+from ExtendScript has no UXP equivalent. This is a documented API gap, not an unexplored option.
+
+The current rule instead keeps whichever variant is **first in the `.prfpset` file's `FilterPreset`
+order** for a given identity. A retest with `verification` extended to read parameter values back
+from the host (not just component identity) confirmed this reproduces the manual "Maximum Pain"
+result exactly - Positive/Negative/Time Smoothing and dB Range all `0` - without needing a screenshot
+this time. This remains this project's best current explanation from one confirmed data point, not a
+verified general rule; a preset where the first-listed variant is not the correct one would defeat
+it, and there is no positive signal yet that would detect that case rather than silently applying the
+wrong values.
+
+The two host tests above jointly confirm what was previously unverified: `createComponentByDisplayName`
+behaves the same inside preset reconstruction as in the isolated single-effect probe it was proven
+in, and `ComponentParam.createKeyframe()` / `createSetValueAction()` - previously proven only on video
+components - work identically on audio ones. A preset mixing video and audio filters is still
+explicitly rejected rather than guessed at, since reconstructing both halves onto what may not even
+be the same TrackItem remains unresolved.
+
 ## Proposed serializable boundary
 
 Parsing and execution must be separate. A future catalog service may run in the Python companion, in UXP after a user grants file access, or offline during catalog generation; the Premiere mutation handler receives the same normalized request either way.

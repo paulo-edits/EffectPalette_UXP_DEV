@@ -337,7 +337,7 @@ async function getSequenceFramesPerSecond(sequence) {
   throw new Error("The sequence frame rate could not be read through the official API.");
 }
 
-async function getSingleSelectedVideoClip(sequence) {
+async function getSelectedVideoClips(sequence) {
   const selection = await sequence.getSelection();
   const selectedItems = selection ? await selection.getTrackItems() : [];
   const videoMediaTypes = new Set();
@@ -348,8 +348,55 @@ async function getSingleSelectedVideoClip(sequence) {
   for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
     if (videoMediaTypes.has(guidToString(await item.getMediaType()))) clips.push(item);
   }
+  if (clips.length === 0) throw new Error("Select at least one video clip.");
+  return clips;
+}
+
+async function getSingleSelectedVideoClip(sequence) {
+  const clips = await getSelectedVideoClips(sequence);
   if (clips.length !== 1) throw new Error("Select exactly one video clip.");
   return clips[0];
+}
+
+async function getSelectedAudioClips(sequence) {
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const audioMediaTypes = new Set();
+  for (let index = 0; index < await sequence.getAudioTrackCount(); index += 1) {
+    audioMediaTypes.add(guidToString(await (await sequence.getAudioTrack(index)).getMediaType()));
+  }
+  const clips = [];
+  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
+    if (audioMediaTypes.has(guidToString(await item.getMediaType()))) clips.push(item);
+  }
+  if (clips.length === 0) throw new Error("Select at least one audio clip.");
+  return clips;
+}
+
+// Premiere's .prfpset serializes one AudioFilterComponent per channel configuration an audio effect
+// instance could run under (mono/stereo/5.1/...), not one per logical application: three entries
+// with the same identity are three variants of one effect, not three effects to apply. The official
+// AudioFilterFactory.createComponentByDisplayName(displayName, item) is channel-aware from the
+// target item and only ever needs one component, matching the single component the already-tested
+// timeline.applyAudioEffect probe produces per clip - so reconstruction must collapse these variants
+// back to one before creating anything, never apply all of them.
+//
+// Which variant is authoritative cannot be decided by matching the target's actual channel count:
+// the official UXP surface has no channel-count accessor on AudioClipTrackItem (confirmed absent
+// from the reference and from a documented gap versus ExtendScript's getAudioChannelMapping()).
+// Host evidence instead points to file order: PRESET TEST + DISTORTION's first-listed variant
+// (FilterPreset Index 0) was the one a manual drag onto the actual (stereo) source clip reproduced,
+// while the later-listed mono/5.1 variants held unrelated values. A majority-vote-by-value heuristic
+// tried first picked those later variants instead and was measurably wrong; first-in-file-order is
+// this project's current best explanation, not a confirmed general rule.
+function dedupeAudioFilterVariants(filters) {
+  const seenMatchNames = new Set();
+  return filters.filter((filter) => {
+    if (!filter.isAudio) return true;
+    if (seenMatchNames.has(filter.matchName)) return false;
+    seenMatchNames.add(filter.matchName);
+    return true;
+  });
 }
 
 async function findLastComponentByMatchName(chain, matchName) {
@@ -478,8 +525,15 @@ function parsePrfpsetCatalog(xml) {
         const componentReference = xmlChild(filterElement, "Component");
         const componentElement = componentReference ? objectIndex[componentReference.attributes.ObjectRef] : null;
         if (!componentElement) return;
-        // Common component data is nested by Premiere inside the typed component.
-        const componentPayload = xmlChild(componentElement, "Component") || componentElement;
+        // Video components nest their common Component payload one level deep
+        // (VideoFilterComponent > Component). Audio components nest it one level deeper still, inside
+        // AudioComponent (AudioFilterComponent > AudioComponent > Component); AudioComponent itself
+        // has no DisplayName/Params of its own, so resolving only the outer level silently returns an
+        // empty component - the tag name is the reliable signal, not a MediaType GUID.
+        const isAudio = componentElement.tagName === "AudioFilterComponent";
+        const componentPayload = isAudio
+          ? xmlChild(xmlChild(componentElement, "AudioComponent"), "Component") || componentElement
+          : xmlChild(componentElement, "Component") || componentElement;
         const parameters = [];
         const paramsElement = xmlChild(componentPayload, "Params");
         (paramsElement ? paramsElement.children.filter((child) => child.tagName === "Param") : []).forEach((parameterReference) => {
@@ -503,10 +557,27 @@ function parsePrfpsetCatalog(xml) {
         // offsets from it, so it - not a parameter's own first key - is the correct zero point for
         // reconstructing relative timing across more than one animated parameter.
         const anchorInPointTicks = Number(xmlText(xmlChild(filterElement, "AnchorInPoint"))) || 0;
+        // Premiere serializes one AudioFilterComponent per channel configuration an audio effect
+        // instance could run under (mono/stereo/5.1/...), not one per logical application; this is
+        // parsed only for diagnostic visibility, since reconstruction collapses these back to one
+        // component (see dedupeAudioFilterVariants).
+        let audioChannelCount = null;
+        if (isAudio) {
+          try {
+            const parsedChannelConfig = JSON.parse(xmlText(xmlChild(componentElement, "ChannelConfigData")));
+            const inputLayout = parsedChannelConfig && Array.isArray(parsedChannelConfig.in) ? parsedChannelConfig.in[0] : null;
+            audioChannelCount = inputLayout && Array.isArray(inputLayout.layout) ? inputLayout.layout.length : null;
+          } catch (error) { audioChannelCount = null; }
+        }
         filters.push({
           matchName: xmlText(xmlChild(filterElement, "FilterMatchName")),
           displayName: xmlText(xmlChild(componentPayload, "DisplayName")),
           mediaType: xmlText(xmlChild(filterElement, "MediaType")),
+          // Audio filters have no official match-name-based creation API; AudioFilterFactory
+          // resolves by display name, same as the already-tested timeline.applyAudioEffect probe.
+          // The matchName captured above is a Premiere-internal identifier, not a usable lookup key.
+          isAudio,
+          audioChannelCount,
           anchorInPointTicks,
           // Premiere marks fixed effects that exist on every clip (Motion, Opacity, Time
           // Remapping) with this flag; such a component must be targeted in place rather than
@@ -716,6 +787,8 @@ function inspectImportedEffectPreset(action) {
         matchName: filter.matchName,
         displayName: filter.displayName,
         intrinsic: filter.intrinsic,
+        isAudio: filter.isAudio,
+        audioChannelCount: filter.audioChannelCount,
         parameterCount: filter.parameters.length,
         animatedParameterCount: filter.parameters.filter((parameter) => parameter.timeVarying || parameter.keyframes).length
       }))
@@ -2771,10 +2844,17 @@ async function applyImportedStaticVideoPreset(action) {
 async function applyImportedEffectPreset(action) {
   if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
   const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
-  if (preset.filters.length < 1) throw new Error("The imported preset contains no video filters.");
+  if (preset.filters.length < 1) throw new Error("The imported preset contains no filters.");
   const reconstructEasing = action.payload.reconstructEasing === true;
 
-  const runtimeFilters = preset.filters.slice().reverse().map((filter) => ({
+  const dedupedFilters = dedupeAudioFilterVariants(preset.filters);
+  const hasAudioFilters = dedupedFilters.some((filter) => filter.isAudio);
+  const hasVideoFilters = dedupedFilters.some((filter) => !filter.isAudio);
+  if (hasAudioFilters && hasVideoFilters) {
+    throw new Error("This preset mixes video and audio filters, which this executor does not yet reconstruct together. Apply the video and audio parts of this preset separately.");
+  }
+
+  const runtimeFilters = dedupedFilters.slice().reverse().map((filter) => ({
     ...filter,
     preparedParameters: filter.parameters.map((source) => {
       if (!source.timeVarying || !source.keyframes) {
@@ -2805,94 +2885,124 @@ async function applyImportedEffectPreset(action) {
   if (!project) throw new Error("Open a project before applying the preset.");
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("Open a sequence before applying the preset.");
-  const target = await getSingleSelectedVideoClip(sequence);
-  const targetInPoint = await target.getInPoint();
-  const targetDuration = await target.getDuration();
-  if (targetDuration.seconds < longestSeconds) throw new Error("The selected clip is shorter than the imported preset animation.");
-  const fps = (reconstructEasing && animatedEndOffsetsSeconds.length) ? await getSequenceFramesPerSecond(sequence) : null;
+  const targets = hasAudioFilters ? await getSelectedAudioClips(sequence) : await getSelectedVideoClips(sequence);
 
-  const chain = await target.getComponentChain();
-
-  const resolvedFilters = [];
-  for (const filter of runtimeFilters) {
-    // Premiere's own <Intrinsic> flag (see parsePrfpsetCatalog) identifies fixed effects that
-    // already exist on the chain, such as Motion and Opacity, without needing a maintained list of
-    // known match names: appending a second one is both unavailable through VideoFilterFactory and
-    // semantically wrong, so these must be targeted in place instead.
-    if (filter.intrinsic) {
-      const resolved = await findLastComponentByMatchName(chain, filter.matchName);
-      if (!resolved) throw new Error(`The selected clip has no existing ${filter.matchName} component to target.`);
-      resolvedFilters.push({ filter, intrinsic: true, componentIndex: resolved.index });
-    } else {
-      resolvedFilters.push({ filter, intrinsic: false, componentIndex: null });
-    }
+  // Validate every target before mutating any of them, so one short clip aborts cleanly instead of
+  // leaving some clips modified and others not - partial application must never look like success.
+  for (const target of targets) {
+    const durationSeconds = (await target.getDuration()).seconds;
+    if (durationSeconds < longestSeconds) throw new Error(`Clip "${await target.getName()}" is shorter than the imported preset animation.`);
   }
 
-  const componentCountBefore = await chain.getComponentCount();
-  const toCreate = resolvedFilters.filter((entry) => !entry.intrinsic);
-  const created = [];
-  for (const entry of toCreate) created.push(await premiere.VideoFilterFactory.createComponent(entry.filter.matchName));
+  const fps = (reconstructEasing && animatedEndOffsetsSeconds.length) ? await getSequenceFramesPerSecond(sequence) : null;
+
+  // Resolve per-clip state up front: its component chain, source In Point, and per-filter
+  // placement (existing intrinsic component vs. one that still needs to be created).
+  const targetStates = [];
+  for (const target of targets) {
+    const chain = await target.getComponentChain();
+    const targetInPoint = await target.getInPoint();
+    const resolvedFilters = [];
+    for (const filter of runtimeFilters) {
+      // Premiere's own <Intrinsic> flag (see parsePrfpsetCatalog) identifies fixed effects that
+      // already exist on the chain, such as Motion and Opacity, without needing a maintained list
+      // of known match names: appending a second one is both unavailable through
+      // VideoFilterFactory and semantically wrong, so these must be targeted in place instead.
+      if (filter.intrinsic) {
+        const resolved = await findLastComponentByMatchName(chain, filter.matchName);
+        if (!resolved) throw new Error(`Clip "${await target.getName()}" has no existing ${filter.matchName} component to target.`);
+        resolvedFilters.push({ filter, intrinsic: true, componentIndex: resolved.index });
+      } else {
+        resolvedFilters.push({ filter, intrinsic: false, componentIndex: null });
+      }
+    }
+    targetStates.push({ target, chain, targetInPoint, resolvedFilters, componentCountBefore: await chain.getComponentCount() });
+  }
+
+  // Insertion happens in one compound transaction across every clip, matching the single-Undo
+  // convention already established by this project's other multi-clip probes.
+  const creations = [];
+  for (const state of targetStates) {
+    for (const entry of state.resolvedFilters.filter((candidate) => !candidate.intrinsic)) {
+      // AudioFilterFactory resolves by display name and takes the target item so it can create a
+      // component already matching that clip's channel configuration, unlike VideoFilterFactory's
+      // plain match-name creation. This mirrors the already host-tested timeline.applyAudioEffect
+      // probe; writing parameters onto the result afterward has not itself been host-verified yet.
+      const component = entry.filter.isAudio
+        ? await premiere.AudioFilterFactory.createComponentByDisplayName(entry.filter.displayName, state.target)
+        : await premiere.VideoFilterFactory.createComponent(entry.filter.matchName);
+      creations.push({ state, entry, component });
+    }
+  }
   let insertionTransactionSucceeded = true;
-  if (created.length) {
+  if (creations.length) {
     insertionTransactionSucceeded = false;
     project.lockedAccess(() => {
       insertionTransactionSucceeded = project.executeTransaction((compound) => {
-        created.forEach((component) => compound.addAction(chain.createAppendComponentAction(component)));
+        creations.forEach(({ state, component }) => compound.addAction(state.chain.createAppendComponentAction(component)));
       }, `FX.palette: Insert ${preset.name}`);
     });
     if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the preset component insertion.");
   }
-  toCreate.forEach((entry, index) => { entry.componentIndex = componentCountBefore + index; });
+  const createdCountByState = new Map();
+  creations.forEach(({ state, entry }) => {
+    const already = createdCountByState.get(state) || 0;
+    entry.componentIndex = state.componentCountBefore + already;
+    createdCountByState.set(state, already + 1);
+  });
 
   const prepared = [];
-  for (const entry of resolvedFilters) {
-    const filter = entry.filter;
-    const component = await chain.getComponentAtIndex(entry.componentIndex);
-    for (const item of filter.preparedParameters) {
-      const parameter = await component.getParam(item.source.index);
-      const context = `filter ${filter.matchName}, parameter ${item.source.index} (${item.source.name || "unnamed"}, controlType ${item.source.controlType})`;
-      try {
-        if (item.mode === "static") {
-          const keyframe = await parameter.createKeyframe(item.hostValue);
-          prepared.push({ filter, item, parameter, mode: "static", keyframe });
-          continue;
-        }
-        const originTicks = item.sourceKeys[0].ticks;
-        const durationSeconds = (item.sourceKeys[item.sourceKeys.length - 1].ticks - originTicks) / 254016000000;
-        // How far this parameter's own animation starts after the preset's shared AnchorInPoint.
-        // Zero for a parameter that starts immediately; positive for one staggered relative to
-        // another animated parameter in the same preset (see the AnchorInPoint comment above).
-        const startOffsetSeconds = (originTicks - filter.anchorInPointTicks) / 254016000000;
-        const keys = [];
-        if (reconstructEasing) {
-          const segments = Math.max(1, Math.round(durationSeconds * fps));
-          for (let frame = 0; frame <= segments; frame += 1) {
-            const localOffsetSeconds = durationSeconds * (frame / segments);
-            const sampledValue = item.valueType === "point"
-              ? sampleImportedPointCurve(item.sourceKeys, localOffsetSeconds).value
-              : sampleImportedScalarCurve(item.sourceKeys, localOffsetSeconds).value;
-            const keyframe = await parameter.createKeyframe(createHostValue({ type: item.valueType, value: sampledValue }));
-            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
-            if (typeof keyframe.setTemporalInterpolationMode === "function") {
-              await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+  for (const state of targetStates) {
+    for (const entry of state.resolvedFilters) {
+      const filter = entry.filter;
+      const component = await state.chain.getComponentAtIndex(entry.componentIndex);
+      for (const item of filter.preparedParameters) {
+        const parameter = await component.getParam(item.source.index);
+        const filterLabel = filter.isAudio ? `${filter.displayName} (audio)` : filter.matchName;
+        const context = `clip "${await state.target.getName()}", filter ${filterLabel}, parameter ${item.source.index} (${item.source.name || "unnamed"}, controlType ${item.source.controlType})`;
+        try {
+          if (item.mode === "static") {
+            const keyframe = await parameter.createKeyframe(item.hostValue);
+            prepared.push({ state, filter, item, parameter, mode: "static", keyframe });
+            continue;
+          }
+          const originTicks = item.sourceKeys[0].ticks;
+          const durationSeconds = (item.sourceKeys[item.sourceKeys.length - 1].ticks - originTicks) / 254016000000;
+          // How far this parameter's own animation starts after the preset's shared AnchorInPoint.
+          // Zero for a parameter that starts immediately; positive for one staggered relative to
+          // another animated parameter in the same preset (see the AnchorInPoint comment above).
+          const startOffsetSeconds = (originTicks - filter.anchorInPointTicks) / 254016000000;
+          const keys = [];
+          if (reconstructEasing) {
+            const segments = Math.max(1, Math.round(durationSeconds * fps));
+            for (let frame = 0; frame <= segments; frame += 1) {
+              const localOffsetSeconds = durationSeconds * (frame / segments);
+              const sampledValue = item.valueType === "point"
+                ? sampleImportedPointCurve(item.sourceKeys, localOffsetSeconds).value
+                : sampleImportedScalarCurve(item.sourceKeys, localOffsetSeconds).value;
+              const keyframe = await parameter.createKeyframe(createHostValue({ type: item.valueType, value: sampledValue }));
+              keyframe.position = state.targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
+              if (typeof keyframe.setTemporalInterpolationMode === "function") {
+                await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+              }
+              keys.push(keyframe);
             }
-            keys.push(keyframe);
+          } else {
+            for (const sourceKey of item.sourceKeys) {
+              const localOffsetSeconds = (sourceKey.ticks - originTicks) / 254016000000;
+              const keyframe = await parameter.createKeyframe(createHostValue(sourceKey.value));
+              keyframe.position = state.targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
+              keys.push(keyframe);
+            }
           }
-        } else {
-          for (const sourceKey of item.sourceKeys) {
-            const localOffsetSeconds = (sourceKey.ticks - originTicks) / 254016000000;
-            const keyframe = await parameter.createKeyframe(createHostValue(sourceKey.value));
-            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
-            keys.push(keyframe);
-          }
+          prepared.push({
+            state, filter, item, parameter, mode: "animated", keys, durationSeconds, startOffsetSeconds,
+            sampleStrategy: reconstructEasing ? "frame-sampled-approximation" : "principal-keys-only"
+          });
+        } catch (error) {
+          const message = error && error.message ? error.message : String(error);
+          throw new Error(`${message} (${context}, mode ${item.mode}${item.mode === "static" ? `, parsed value ${JSON.stringify(item.hostValue instanceof premiere.Color ? { r: item.hostValue.red, g: item.hostValue.green, b: item.hostValue.blue, a: item.hostValue.alpha } : item.hostValue)}` : `, valueType ${item.valueType}`}). The preset's effects were already inserted in a separate transaction; Undo once to remove them.`);
         }
-        prepared.push({
-          filter, item, parameter, mode: "animated", keys, durationSeconds, startOffsetSeconds,
-          sampleStrategy: reconstructEasing ? "frame-sampled-approximation" : "principal-keys-only"
-        });
-      } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        throw new Error(`${message} (${context}, mode ${item.mode}${item.mode === "static" ? `, parsed value ${JSON.stringify(item.hostValue instanceof premiere.Color ? { r: item.hostValue.red, g: item.hostValue.green, b: item.hostValue.blue, a: item.hostValue.alpha } : item.hostValue)}` : `, valueType ${item.valueType}`}). The preset's effects were already inserted in a separate transaction; Undo once to remove them.`);
       }
     }
   }
@@ -2909,43 +3019,69 @@ async function applyImportedEffectPreset(action) {
   });
   if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the imported preset parameter transaction.");
 
-  const verification = [];
-  for (const entry of resolvedFilters) {
-    const component = await chain.getComponentAtIndex(entry.componentIndex);
-    verification.push({
-      index: entry.componentIndex,
-      intrinsic: entry.intrinsic,
-      requestedMatchName: entry.filter.matchName,
-      resultingMatchName: await component.getMatchName(),
-      displayName: await component.getDisplayName()
+  const perClip = [];
+  for (const state of targetStates) {
+    const verification = [];
+    for (const entry of state.resolvedFilters) {
+      const component = await state.chain.getComponentAtIndex(entry.componentIndex);
+      // Read every parameter back from the host rather than trusting what was requested, so a wrong
+      // value (or a wrong choice among audio channel-configuration variants) shows up here instead
+      // of requiring a screenshot from Effect Controls to catch.
+      const parameters = [];
+      for (let parameterIndex = 0; parameterIndex < await component.getParamCount(); parameterIndex += 1) {
+        const parameter = await component.getParam(parameterIndex);
+        parameters.push({
+          index: parameterIndex,
+          displayName: parameter.displayName || null,
+          startValue: serializePresetProbeValue(await parameter.getStartValue())
+        });
+      }
+      verification.push({
+        index: entry.componentIndex,
+        intrinsic: entry.intrinsic,
+        requestedMatchName: entry.filter.matchName,
+        resultingMatchName: await component.getMatchName(),
+        displayName: await component.getDisplayName(),
+        parameters
+      });
+    }
+    const clipPrepared = prepared.filter((entry) => entry.state === state);
+    const clipAnimated = clipPrepared.filter((entry) => entry.mode === "animated");
+    perClip.push({
+      targetClipName: await state.target.getName(),
+      componentCountBefore: state.componentCountBefore,
+      componentCountAfter: await state.chain.getComponentCount(),
+      staticParameterCount: clipPrepared.filter((entry) => entry.mode === "static").length,
+      animatedParameterCount: clipAnimated.length,
+      animatedParameters: clipAnimated.map((entry) => ({
+        filterMatchName: entry.filter.matchName, index: entry.item.source.index, name: entry.item.source.name,
+        valueType: entry.item.valueType, sourceKeyframeCount: entry.item.sourceKeys.length,
+        appliedKeyframeCount: entry.keys.length, durationSeconds: entry.durationSeconds,
+        startOffsetSeconds: entry.startOffsetSeconds, sampleStrategy: entry.sampleStrategy
+      })),
+      verification
     });
   }
 
-  const animatedPrepared = prepared.filter((entry) => entry.mode === "animated");
   return {
     preset: { name: preset.name, category: preset.category },
-    targetClipName: await target.getName(),
     reconstructEasing,
+    hasAudioFilters,
+    targetClipCount: targets.length,
+    sourceFilterCount: preset.filters.length,
+    audioVariantsDeduped: preset.filters.length - dedupedFilters.length,
     sourceFilterOrder: preset.filters.map((filter) => filter.matchName),
     appliedFilterOrder: runtimeFilters.map((filter) => filter.matchName),
-    componentCountBefore, componentCountAfter: await chain.getComponentCount(),
-    staticParameterCount: prepared.filter((entry) => entry.mode === "static").length,
-    animatedParameterCount: animatedPrepared.length,
-    animatedParameters: animatedPrepared.map((entry) => ({
-      filterMatchName: entry.filter.matchName, index: entry.item.source.index, name: entry.item.source.name,
-      valueType: entry.item.valueType, sourceKeyframeCount: entry.item.sourceKeys.length,
-      appliedKeyframeCount: entry.keys.length, durationSeconds: entry.durationSeconds,
-      startOffsetSeconds: entry.startOffsetSeconds, sampleStrategy: entry.sampleStrategy
-    })),
     longestAnimationSeconds: longestSeconds,
     framesPerSecond: fps,
-    insertionSkipped: created.length === 0,
-    insertionTransactionSucceeded, parameterTransactionSucceeded, verification,
+    insertionSkipped: creations.length === 0,
+    insertionTransactionSucceeded, parameterTransactionSucceeded,
+    perClip,
     reproductionModel: reconstructEasing ? "prfpset-frame-sampled-approximation" : "prfpset-principal-keyframes-only",
     fidelityNote: reconstructEasing
       ? "Frame-sampled easing is an approximation; the official UXP API exposes no Point/scalar tangent or velocity surface to restore exact curves."
       : "Effects, static values and principal keyframe values/times are preserved; no dense helper keys are generated to imitate unavailable easing.",
-    undoModelExpected: created.length
+    undoModelExpected: creations.length
       ? ["Undo imported preset parameters", "Undo inserted preset effects"]
       : ["Undo imported preset parameters"]
   };
