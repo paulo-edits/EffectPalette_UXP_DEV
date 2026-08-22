@@ -30,6 +30,7 @@ The catalog snapshot examined contains 1,833 presets, 2,560 video-filter instanc
 | Add a keyframe | set the typed Keyframe `position`, then `createAddKeyframeAction()` | Tested with exact tick/value readback in Premiere 26.3.2 |
 | Set interpolation mode | `Keyframe.setTemporalInterpolationMode()` before `createAddKeyframeAction()` | Hold=4 and Bezier=5 tested with exact readback in Premiere 26.3.2 |
 | Preserve exact Bezier easing | No official tangent/influence/velocity/handle surface exists on `Keyframe` | Unsupported by the reviewed official API; do not claim curve fidelity |
+| Recover easing from the source file instead of the host | `.prfpset` fields 4–7 carry speed/influence per keyframe | Decoded in 0.38.0; the curve is reconstructed from the file and baked into sampled keys, so the missing host surface stops being the limiting factor |
 | Approximate scalar easing | Sample a cubic curve into official Linear helper Keyframes | Implemented as an opt-in 0.21.0 experiment; Point/Position excluded; host comparison pending |
 | Per-frame scalar baking | Use official sequence frame duration and add one sampled Keyframe per intervening frame | OpenCurve confirms the strategy independently; 0.22.0 Transform Scale host test pending |
 | Manual-preset A/B oracle | Sample manual clip A through `getValueAtTime()`, replay exact samples on clip B | Implemented for Transform Scale Height in 0.23.0; host comparison pending |
@@ -44,6 +45,107 @@ Official references:
 - [PointKeyframe](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/pointkeyframe)
 - [Premiere constants, including InterpolationMode](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/)
 - [Filesystem operations and permissions](https://developer.adobe.com/premiere-pro/uxp/resources/recipes/filesystem-operations/)
+
+## Decoded `.prfpset` keyframe record
+
+Adobe does not document this format; the mapping below was derived on 2026-08-21 by comparing a
+two-key handcrafted preset (`Slide IN UP`) against a per-frame baked preset produced by a
+third-party easing tool, plus an official Adobe sample `.prfpset`. Each entry in `<Keyframes>` is a
+semicolon-terminated record of 14 comma-separated fields:
+
+| Field | Meaning |
+| --- | --- |
+| 0 | Keyframe time in ticks (absolute; presets may start at a large offset) |
+| 1 | Value (`x:y` for Point parameters, scalar otherwise) |
+| 2–3 | Not yet identified; observed as `5,0` and `0,0` |
+| 4 | Incoming temporal speed, signed |
+| 5 | Incoming temporal influence, as a fraction where `0.16666…` is Premiere's default and `0.33333…` is Easy Ease |
+| 6 | Outgoing temporal speed, signed |
+| 7 | Outgoing temporal influence |
+| 8 | Interpolation code; observed as `5` on every record inspected so far |
+| 9 | Interpolation code that tracks the motion path: `4` on straight fixtures, `2` on a deliberately curved one, so it most likely selects the spatial interpolation type rather than the temporal one |
+| 10–11 | Incoming spatial tangent, as an offset from this keyframe's own value |
+| 12–13 | Outgoing spatial tangent, same convention |
+
+Only fields 0–7 are common to every record. Point parameters serialize all 14 fields; scalar
+parameters stop at field 7, since interpolation codes and spatial tangents do not apply to them.
+Code must therefore treat fields 8–13 as absent rather than as zero on scalar records.
+
+Two independent checks support this mapping. The recurring `0.16666666666666666` equals 1/6, the
+documented After Effects default influence. And in `Slide IN UP` the outgoing spatial tangent is
+exactly 1/6 of the value delta while the outgoing temporal influence on the same keyframe is
+`0.3148…`, so fields 10–13 cannot be the same quantity as fields 4–7: the former describe the
+motion path, the latter the timing along it.
+
+Temporal speed and influence convert to cubic controls through the same relations Adobe's own
+After Effects exporters use:
+
+```
+x1 = outgoingInfluence(firstKey)
+y1 = x1 * outgoingSpeed(firstKey) / averageSpeed
+x2 = 1 - incomingInfluence(secondKey)
+y2 = 1 - (1 - x2) * incomingSpeed(secondKey) / averageSpeed
+```
+
+Speed keeps its sign, and `averageSpeed` is signed for scalars — the value delta over the duration.
+For Point parameters it is instead the unsigned Euclidean distance over the duration, because speed
+there is measured along the path. Zero influence with zero speed degenerates to a linear segment.
+
+The sign is what carries overshoot, and getting it wrong is silent. A keyframe reached while
+travelling opposite to the segment's overall direction has passed its own value and is returning:
+`PRESET TESTE OVERSHOOT` arrives at 125 with speed `-107.69` after peaking at 167. Signed division
+yields `y2 = 5.3077`, placing the control point far above 1. Taking magnitudes yields `-3.3077`,
+which folds the same curve below the start value instead. Both produce plausible-looking output, so
+this must be verified against a fixture whose speeds are non-zero rather than assumed.
+
+Because the temporal curve yields distance travelled rather than the spatial cubic's own parameter,
+the motion path is traversed by arc length. For collinear default handles this reproduces linear
+interpolation exactly, so straight moves are unaffected and only genuinely curved paths bend.
+
+This decoding replaces the hand-tuned heuristic used through version 0.37.0, which read the
+incoming influence where the outgoing one was required and scaled it through magic constants.
+
+Premiere 26.3.2 measured it against the manual host oracle on `Slide IN UP`: RMS 0.0000083 and
+maximum 0.0000152 normalized Point error across 52 samples, against 0.047095 and 0.097424 for the
+heuristic. The host returned exactly the predicted controls `(0.3148, 0, 0, 1)`, so the mapping is
+confirmed rather than fitted. Values are normalized by frame height — the serialized
+`1.5277777910232544` is the 1650 px the host reports — leaving a residual of 0.009 px RMS and
+0.016 px maximum.
+
+A recreated overshoot fixture then exercised the speed-ratio term that `Slide IN UP` leaves at zero.
+`PRESET TESTE OVERSHOOT` measured RMS 0.0000045 and maximum 0.0000076 Scale points across 61
+samples, and the host returned the predicted `y2 = 5.30769287109375` digit for digit along with a
+peak of 167.14112854 against a predicted 167.143.
+
+Both fixtures were predicted before being measured, which is what distinguishes this decoding from
+the heuristic it replaced: a model fitted to observations explains them by construction, whereas
+these predictions could have failed and did not.
+
+A third fixture then exercised the spatial handles. `TESTE KEYFRAMES CURVA` animates `AE.ADBE Motion`
+Position corner to corner along an S-curve 13.8% longer than its chord, with Easy Ease at both ends
+and zero speeds, which isolates the path question from the temporal one. It measured RMS 0.0000408
+and maximum 0.0000809 normalized error across 61 samples.
+
+That fixture also settled how the two halves couple. Feeding eased progress straight into the
+spatial cubic as its parameter is a plausible alternative that agrees with arc-length traversal on
+every straight path, so neither earlier fixture could tell them apart. Here they diverge by up to
+0.12 normalized, roughly 210 px, and the measurement selects arc length by a wide margin.
+
+Applying `Slide IN UP` through the executor and comparing its velocity graph against a manually
+applied copy confirmed the decoding end to end, which the read-only oracle alone does not: the two
+graphs are the same curve where the superseded heuristic produced a visibly different one.
+
+The one visible difference there is inherent to baking. Per-frame linear keyframes have a staircase
+derivative, which cannot reach a smooth curve's instantaneous peak, so the host's velocity graph
+peaks 0.59% lower on the reconstruction — matching the shortfall predicted from the frame rate.
+Rendered position is unaffected. Raising the sample rate above the frame rate would not help, since
+keyframes and rendering both land on frame boundaries; only sub-frame sampling such as motion blur
+could see the difference, and then only by the same tiny margin.
+
+The residual on that fixture is about six times larger than this repository's arc-length table can
+account for at 256 chords, so most of it originates elsewhere — plausibly Premiere's own path
+parameterization, though that was not isolated. The table now uses 1024 chords, which drops its own
+contribution to roughly 1e-6 and removes it from future attribution.
 
 ## Proposed serializable boundary
 
@@ -82,7 +184,7 @@ The production schema must preserve the source preset's parameter index, control
 2. **Static-value probe:** apply one number/boolean/point/color value by parameter index and verify it by reading the value back.
 3. **Animated-value probe:** enable time variation, add two clip-relative keyframes, read their tick positions/values back, and characterize one Undo.
 4. **Interpolation probe:** test every documented `Constants.InterpolationMode` and derive an evidence-based mapping from `.prfpset` codes. Never pass legacy numeric codes through unverified.
-5. **Compound-filter probe:** reconstruct a small real preset containing multiple effects and static/animated parameters on one and multiple selected clips.
+5. **Compound-filter probe:** reconstruct a small real preset containing multiple effects and static/animated parameters on one and multiple selected clips. Implemented in version 0.37.0 as `timeline.applyImportedEffectPreset` for one selected clip; multi-clip application remains untested.
 6. **Catalog-access probe:** use `localFileSystem: "request"`, let the user select the Premiere profile or `.prfpset`, persist the access token, and parse without requiring unrestricted filesystem access.
 7. **Regression matrix:** cover video/audio, adjustment layers, stills, multiple clips, missing third-party effects, localized parameter names, partial failure and Undo behavior.
 

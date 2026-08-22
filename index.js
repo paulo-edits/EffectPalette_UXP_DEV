@@ -305,7 +305,9 @@ function cubicBezierProgress(progress, x1, y1, x2, y2) {
   let low = 0;
   let high = 1;
   let parameter = progress;
-  for (let index = 0; index < 18; index += 1) {
+  // 30 bisection steps resolve the parameter below float32 storage precision, so the solver stops
+  // being a measurable error source next to the host's own values.
+  for (let index = 0; index < 30; index += 1) {
     parameter = (low + high) / 2;
     const x = cubicBezierCoordinate(parameter, x1, x2);
     if (x < progress) low = parameter;
@@ -757,22 +759,140 @@ function parsePrfpsetStaticHostValue(parameter) {
   return color;
 }
 
-function derivePrfpsetPointCurve(sourceKeys) {
+// Premiere serializes each .prfpset keyframe as 14 comma-separated fields. Fields 4-7 carry the
+// temporal ease as After Effects speed/influence pairs; fields 8-9 carry the interpolation codes
+// already validated against the host runtime (Bezier=5, Hold=4); fields 10-13 carry the spatial
+// path tangents, which are independent of the temporal ease and are left to linear interpolation.
+function parsePrfpsetKeyframeEase(parts) {
+  const field = (index) => {
+    const value = Number(parts[index]);
+    return Number.isFinite(value) ? value : 0;
+  };
+  // Scalar records carry only the first 8 fields; the interpolation codes and spatial tangents are
+  // present on Point records alone. Report the codes as absent rather than as a zero that would
+  // read as Linear.
+  const optionalField = (index) => {
+    if (index >= parts.length) return null;
+    const value = Number(parts[index]);
+    return Number.isFinite(value) ? value : null;
+  };
+  return {
+    incomingSpeed: field(4),
+    incomingInfluence: field(5),
+    outgoingSpeed: field(6),
+    outgoingInfluence: field(7),
+    outgoingInterpolationCode: optionalField(8),
+    incomingInterpolationCode: optionalField(9)
+  };
+}
+
+// Speed/influence pairs map onto cubic controls with the same relations Adobe's own After Effects
+// exporters use: influence is the horizontal handle fraction, and speed relative to the segment's
+// average speed is the vertical one. Zero influence with zero speed degenerates to linear, and a
+// speed above the average pushes a control past 1 so overshoot survives the conversion.
+function derivePrfpsetTemporalCurve(sourceKeys, measureDistance) {
   const first = sourceKeys[0];
   const second = sourceKeys[1];
-  const startParts = first.parts;
-  const endParts = second.parts;
-  const x1 = Math.max(0.09, Math.min(1, 0.09 + ((Number(startParts[5]) || 0) * 0.44)));
-  const y1 = Math.min(0.04, Math.max(0.004, (Number(startParts[7]) || 0) * 0.04));
-  const x2 = Math.min(0.36, Math.max(x1 + 0.04, 0.15 + ((Number(endParts[7]) || 0) * 0.18)));
-  const y2 = Math.max(0.96, Math.min(1, 0.94 + ((Number(endParts[5]) || 0) * 0.05)));
-  return { x1, y1, x2, y2, durationSeconds: (second.ticks - first.ticks) / 254016000000 };
+  const durationSeconds = (second.ticks - first.ticks) / 254016000000;
+  const startEase = parsePrfpsetKeyframeEase(first.parts);
+  const endEase = parsePrfpsetKeyframeEase(second.parts);
+  const distance = measureDistance(first.value.value, second.value.value);
+  const averageSpeed = durationSeconds > 0 ? distance / durationSeconds : 0;
+  // Speed keeps its sign against a signed average: a keyframe reached while travelling opposite to
+  // the segment's overall direction has overshot its own value and is on the way back, which pushes
+  // the control point outside 0..1. Taking magnitudes here would fold that overshoot the wrong way.
+  const speedRatio = (speed) => (Math.abs(averageSpeed) > 1e-12 ? speed / averageSpeed : 0);
+  const x1 = Math.max(0, Math.min(1, startEase.outgoingInfluence));
+  const x2 = Math.max(0, Math.min(1, 1 - endEase.incomingInfluence));
+  return {
+    x1,
+    y1: x1 * speedRatio(startEase.outgoingSpeed),
+    x2,
+    y2: 1 - ((1 - x2) * speedRatio(endEase.incomingSpeed)),
+    durationSeconds,
+    averageSpeed,
+    outgoingSpeed: startEase.outgoingSpeed,
+    outgoingInfluence: startEase.outgoingInfluence,
+    incomingSpeed: endEase.incomingSpeed,
+    incomingInfluence: endEase.incomingInfluence,
+    outgoingInterpolationCode: startEase.outgoingInterpolationCode,
+    incomingInterpolationCode: endEase.incomingInterpolationCode,
+    model: "prfpset-speed-influence"
+  };
+}
+
+function pointDistance(start, end) {
+  return Math.sqrt(end.reduce((sum, value, index) => sum + ((value - start[index]) * (value - start[index])), 0));
+}
+
+function derivePrfpsetPointCurve(sourceKeys) {
+  return derivePrfpsetTemporalCurve(sourceKeys, pointDistance);
+}
+
+// Fields 10-13 hold the motion-path handles as offsets from their own keyframe's value. Premiere
+// stores collinear default handles for a straight move, so arc-length traversal of this cubic
+// reduces to plain linear interpolation there and only bends where the preset really curves.
+function derivePrfpsetSpatialPath(sourceKeys) {
+  const start = sourceKeys[0].value.value;
+  const end = sourceKeys[1].value.value;
+  const tangent = (parts, offset) => start.map((_, index) => {
+    const value = Number(parts[offset + index]);
+    return Number.isFinite(value) ? value : 0;
+  });
+  const outgoing = tangent(sourceKeys[0].parts, 12);
+  const incoming = tangent(sourceKeys[1].parts, 10);
+  return {
+    p0: start,
+    p1: start.map((value, index) => value + outgoing[index]),
+    p2: end.map((value, index) => value + incoming[index]),
+    p3: end
+  };
+}
+
+function evaluateCubicPoint(path, t) {
+  const inverse = 1 - t;
+  const a = inverse * inverse * inverse;
+  const b = 3 * inverse * inverse * t;
+  const c = 3 * inverse * t * t;
+  const d = t * t * t;
+  return path.p0.map((_, index) =>
+    (a * path.p0[index]) + (b * path.p1[index]) + (c * path.p2[index]) + (d * path.p3[index]));
+}
+
+// Temporal easing yields distance travelled along the path, not the cubic's own parameter, so the
+// path is walked by arc length. Values outside 0..1 come from overshoot and extrapolate along the
+// nearest end tangent rather than being clamped, which would silently discard the overshoot.
+function samplePathAtArcFraction(path, fraction) {
+  // 1024 chords hold this table's own contribution near 1e-6, an order below the residual actually
+  // measured against the host, so the traversal is not the limiting factor in a comparison.
+  const steps = 1024;
+  const points = [];
+  for (let step = 0; step <= steps; step += 1) points.push(evaluateCubicPoint(path, step / steps));
+  const cumulative = [0];
+  for (let step = 1; step <= steps; step += 1) {
+    cumulative.push(cumulative[step - 1] + pointDistance(points[step - 1], points[step]));
+  }
+  const total = cumulative[steps];
+  if (!(total > 1e-12)) return path.p3.slice();
+  const extrapolate = (from, to, scale) => from.map((value, index) => value + ((to[index] - value) * scale));
+  if (fraction < 0) return extrapolate(points[0], points[1], (fraction * total) / Math.max(1e-12, cumulative[1]));
+  if (fraction > 1) {
+    const tailLength = Math.max(1e-12, total - cumulative[steps - 1]);
+    return extrapolate(points[steps - 1], points[steps], ((fraction - 1) * total + tailLength) / tailLength);
+  }
+  const target = fraction * total;
+  for (let step = 1; step <= steps; step += 1) {
+    if (cumulative[step] >= target) {
+      const span = cumulative[step] - cumulative[step - 1];
+      return extrapolate(points[step - 1], points[step], span > 1e-12 ? (target - cumulative[step - 1]) / span : 0);
+    }
+  }
+  return points[steps].slice();
 }
 
 function importedPointAtProgress(sourceKeys, curve, progress) {
   const eased = cubicBezierProgress(progress, curve.x1, curve.y1, curve.x2, curve.y2);
-  return sourceKeys[0].value.value.map((start, index) =>
-    start + ((sourceKeys[1].value.value[index] - start) * eased));
+  return samplePathAtArcFraction(derivePrfpsetSpatialPath(sourceKeys), eased);
 }
 
 function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
@@ -789,28 +909,10 @@ function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
   return { value: importedPointAtProgress(segmentKeys, curve, progress), segmentIndex, segmentProgress: progress, curve };
 }
 
+// Scalars carry a signed delta so the ratio above keeps its meaning in both directions. Point
+// parameters instead measure distance along the path, which is unsigned by construction.
 function derivePrfpsetScalarCurve(sourceKeys) {
-  const first = sourceKeys[0];
-  const second = sourceKeys[1];
-  const durationSeconds = (second.ticks - first.ticks) / 254016000000;
-  const delta = second.value.value - first.value.value;
-  const averageSpeed = durationSeconds > 0 ? delta / durationSeconds : 0;
-  const x1 = Math.max(0, Math.min(1, Number(first.parts[5]) || (1 / 3)));
-  const x2 = Math.max(x1, Math.min(1, 1 - (Number(second.parts[7]) || (1 / 3))));
-  const outgoingSpeed = Number(first.parts[6]);
-  const incomingSpeed = Number(second.parts[4]);
-  const outgoingRatio = Math.abs(averageSpeed) > 1e-9 && Number.isFinite(outgoingSpeed) ? outgoingSpeed / averageSpeed : 1;
-  const incomingRatio = Math.abs(averageSpeed) > 1e-9 && Number.isFinite(incomingSpeed) ? incomingSpeed / averageSpeed : 1;
-  return {
-    x1,
-    y1: x1 * outgoingRatio,
-    x2,
-    y2: 1 - ((1 - x2) * incomingRatio),
-    durationSeconds,
-    outgoingSpeed,
-    incomingSpeed,
-    averageSpeed
-  };
+  return derivePrfpsetTemporalCurve(sourceKeys, (start, end) => end - start);
 }
 
 function sampleImportedScalarCurve(sourceKeys, offsetSeconds) {
@@ -842,10 +944,25 @@ function compareImportedTransformWithCapture(action) {
     preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
     preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
   if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
-  const transform = matches[0].filters.find((filter) => filter.matchName === "AE.ADBE Geometry2");
-  if (!transform) throw new Error("The imported preset contains no Transform filter.");
-  const source = transform.parameters.find((parameter) => parameter.index === 1 && parameter.timeVarying && parameter.keyframes);
-  const captured = capturedTransformCurveReference.parameters.find((parameter) => parameter.index === 1 && parameter.mode === "animated");
+  // The compared filter follows whatever was captured, so intrinsic Motion and the Transform effect
+  // are both usable. Animated parameters are paired by index rather than assumed to sit at a fixed
+  // one, because Position is index 1 on Transform and index 0 on Motion.
+  const capturedMatchName = capturedTransformCurveReference.matchName;
+  const transform = matches[0].filters.find((filter) => filter.matchName === capturedMatchName);
+  if (!transform) throw new Error(`The imported preset contains no ${capturedMatchName} filter.`);
+  const pointPair = transform.parameters
+    .filter((parameter) => parameter.timeVarying && parameter.keyframes)
+    .map((parameter) => {
+      let keys = null;
+      try { keys = parsePrfpsetKeyframes(parameter); } catch (error) { return null; }
+      if (keys.length < 2 || keys.some((key) => key.value.type !== "point")) return null;
+      const capturedParameter = capturedTransformCurveReference.parameters
+        .find((entry) => entry.index === parameter.index && entry.mode === "animated");
+      return capturedParameter ? { source: parameter, captured: capturedParameter, keys } : null;
+    })
+    .find(Boolean);
+  const source = pointPair ? pointPair.source : null;
+  const captured = pointPair ? pointPair.captured : null;
   if (!source || !captured) {
     const scalarComparisons = transform.parameters.filter((parameter) => parameter.timeVarying && parameter.keyframes)
       .map((scalarSource) => {
@@ -876,7 +993,7 @@ function compareImportedTransformWithCapture(action) {
       scalarComparisonCount: scalarComparisons.length,
       scalarComparisons,
       mutation: "none",
-      comparisonModel: "manual-host-samples-vs-prfpset-scalar-velocity-model"
+      comparisonModel: "manual-host-samples-vs-prfpset-speed-influence"
     };
   }
   const sourceKeys = parsePrfpsetKeyframes(source);
@@ -896,7 +1013,8 @@ function compareImportedTransformWithCapture(action) {
   const worst = samples.reduce((current, sample) => !current || sample.distance > current.distance ? sample : current, null);
   return {
     preset: { name: matches[0].name, category: matches[0].category },
-    parameter: { index: 1, name: source.name },
+    matchName: capturedMatchName,
+    parameter: { index: source.index, name: source.name },
     importedDurationSeconds,
     capturedDurationSeconds: captured.durationSeconds,
     importedKeyframeCount: sourceKeys.length,
@@ -908,7 +1026,7 @@ function compareImportedTransformWithCapture(action) {
     worstSample: worst,
     samples,
     mutation: "none",
-    comparisonModel: "manual-host-samples-vs-current-prfpset-heuristic"
+    comparisonModel: "manual-host-samples-vs-prfpset-speed-influence"
   };
 }
 
@@ -1015,8 +1133,10 @@ async function applyImportedTransformPreset(action) {
   };
 }
 
-async function captureTransformCurveReference() {
-  const matchName = "AE.ADBE Geometry2";
+async function captureTransformCurveReference(action) {
+  // Defaults to the Transform effect, but any match name works, including the intrinsic
+  // `AE.ADBE Motion` that every clip already carries.
+  const matchName = String((action && action.payload && action.payload.matchName) || "").trim() || "AE.ADBE Geometry2";
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before capturing a reference.");
   const sequence = await project.getActiveSequence();
@@ -1024,7 +1144,7 @@ async function captureTransformCurveReference() {
   const clip = await getSingleSelectedVideoClip(sequence);
   const chain = await clip.getComponentChain();
   const resolved = await findLastComponentByMatchName(chain, matchName);
-  if (!resolved) throw new Error("Apply a Transform effect/preset manually to the selected reference clip first.");
+  if (!resolved) throw new Error(`The selected clip has no ${matchName} component to capture.`);
   const fps = await getSequenceFramesPerSecond(sequence);
   const parameterCount = await resolved.component.getParamCount();
   const parameters = [];
@@ -2445,9 +2565,11 @@ async function runProbeAnimatedVideoEffectParameter() {
 
 async function runCaptureTransformCurveReference() {
   const button = document.getElementById("capture-transform-reference");
+  const matchNameInput = document.getElementById("capture-reference-match-name");
   if (button) button.disabled = true;
   const result = await executionAdapter.execute({
-    type: "timeline.captureTransformCurveReference", requestId: String(Date.now()), payload: {}
+    type: "timeline.captureTransformCurveReference", requestId: String(Date.now()),
+    payload: { matchName: matchNameInput ? matchNameInput.value : "" }
   }, { "timeline.captureTransformCurveReference": captureTransformCurveReference });
   text("transform-reference-output", JSON.stringify(result, null, 2));
   if (button) button.disabled = false;
@@ -2632,6 +2754,174 @@ async function applyImportedStaticVideoPreset(action) {
     colorEncodingScope: "verified-64-bit-ARGB-channel-order",
     undoModelExpected: ["Undo static preset values", "Undo inserted preset effects"]
   };
+}
+
+async function applyImportedEffectPreset(action) {
+  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
+  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
+  if (preset.filters.length < 1) throw new Error("The imported preset contains no video filters.");
+  const reconstructEasing = action.payload.reconstructEasing === true;
+
+  const runtimeFilters = preset.filters.slice().reverse().map((filter) => ({
+    ...filter,
+    preparedParameters: filter.parameters.map((source) => {
+      if (!source.timeVarying || !source.keyframes) {
+        return { source, mode: "static", hostValue: parsePrfpsetStaticHostValue(source) };
+      }
+      const sourceKeys = parsePrfpsetKeyframes(source);
+      if (sourceKeys.length < 2) throw new Error(`Parameter ${source.index} of ${filter.matchName} is time-varying but has fewer than two keys.`);
+      const valueType = sourceKeys[0].value.type;
+      if (valueType !== "point" && valueType !== "number") {
+        throw new Error(`Unsupported animated value type '${valueType}' at parameter ${source.index} of ${filter.matchName}.`);
+      }
+      if (sourceKeys.some((key) => key.value.type !== valueType)) {
+        throw new Error(`Mixed keyframe value types at parameter ${source.index} of ${filter.matchName}.`);
+      }
+      return { source, mode: "animated", valueType, sourceKeys };
+    })
+  }));
+
+  const animatedDurationsSeconds = runtimeFilters.flatMap((filter) =>
+    filter.preparedParameters.filter((item) => item.mode === "animated")
+      .map((item) => (item.sourceKeys[item.sourceKeys.length - 1].ticks - item.sourceKeys[0].ticks) / 254016000000));
+  const longestSeconds = Math.max(0, ...animatedDurationsSeconds);
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before applying the preset.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before applying the preset.");
+  const target = await getSingleSelectedVideoClip(sequence);
+  const targetInPoint = await target.getInPoint();
+  const targetDuration = await target.getDuration();
+  if (targetDuration.seconds < longestSeconds) throw new Error("The selected clip is shorter than the imported preset animation.");
+  const fps = (reconstructEasing && animatedDurationsSeconds.length) ? await getSequenceFramesPerSecond(sequence) : null;
+
+  const chain = await target.getComponentChain();
+  const componentCountBefore = await chain.getComponentCount();
+  const created = [];
+  for (const filter of runtimeFilters) created.push(await premiere.VideoFilterFactory.createComponent(filter.matchName));
+  let insertionTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    insertionTransactionSucceeded = project.executeTransaction((compound) => {
+      created.forEach((component) => compound.addAction(chain.createAppendComponentAction(component)));
+    }, `FX.palette: Insert ${preset.name}`);
+  });
+  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the preset component insertion.");
+
+  const prepared = [];
+  for (let filterIndex = 0; filterIndex < runtimeFilters.length; filterIndex += 1) {
+    const filter = runtimeFilters[filterIndex];
+    const component = await chain.getComponentAtIndex(componentCountBefore + filterIndex);
+    for (const item of filter.preparedParameters) {
+      const parameter = await component.getParam(item.source.index);
+      const context = `filter ${filter.matchName}, parameter ${item.source.index} (${item.source.name || "unnamed"}, controlType ${item.source.controlType})`;
+      try {
+        if (item.mode === "static") {
+          const keyframe = await parameter.createKeyframe(item.hostValue);
+          prepared.push({ filter, item, parameter, mode: "static", keyframe });
+          continue;
+        }
+        const originTicks = item.sourceKeys[0].ticks;
+        const durationSeconds = (item.sourceKeys[item.sourceKeys.length - 1].ticks - originTicks) / 254016000000;
+        const keys = [];
+        if (reconstructEasing) {
+          const segments = Math.max(1, Math.round(durationSeconds * fps));
+          for (let frame = 0; frame <= segments; frame += 1) {
+            const offsetSeconds = durationSeconds * (frame / segments);
+            const sampledValue = item.valueType === "point"
+              ? sampleImportedPointCurve(item.sourceKeys, offsetSeconds).value
+              : sampleImportedScalarCurve(item.sourceKeys, offsetSeconds).value;
+            const keyframe = await parameter.createKeyframe(createHostValue({ type: item.valueType, value: sampledValue }));
+            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+            if (typeof keyframe.setTemporalInterpolationMode === "function") {
+              await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
+            }
+            keys.push(keyframe);
+          }
+        } else {
+          for (const sourceKey of item.sourceKeys) {
+            const offsetSeconds = (sourceKey.ticks - originTicks) / 254016000000;
+            const keyframe = await parameter.createKeyframe(createHostValue(sourceKey.value));
+            keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+            keys.push(keyframe);
+          }
+        }
+        prepared.push({
+          filter, item, parameter, mode: "animated", keys, durationSeconds,
+          sampleStrategy: reconstructEasing ? "frame-sampled-approximation" : "principal-keys-only"
+        });
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        throw new Error(`${message} (${context}, mode ${item.mode}${item.mode === "static" ? `, parsed value ${JSON.stringify(item.hostValue instanceof premiere.Color ? { r: item.hostValue.red, g: item.hostValue.green, b: item.hostValue.blue, a: item.hostValue.alpha } : item.hostValue)}` : `, valueType ${item.valueType}`}). The preset's effects were already inserted in a separate transaction; Undo once to remove them.`);
+      }
+    }
+  }
+
+  let parameterTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    parameterTransactionSucceeded = project.executeTransaction((compound) => {
+      prepared.forEach((entry) => {
+        if (entry.mode === "static") { compound.addAction(entry.parameter.createSetValueAction(entry.keyframe, false)); return; }
+        compound.addAction(entry.parameter.createSetTimeVaryingAction(true));
+        entry.keys.forEach((keyframe) => compound.addAction(entry.parameter.createAddKeyframeAction(keyframe)));
+      });
+    }, `FX.palette: Apply ${preset.name}`);
+  });
+  if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the imported preset parameter transaction.");
+
+  const verification = [];
+  for (let index = 0; index < runtimeFilters.length; index += 1) {
+    const component = await chain.getComponentAtIndex(componentCountBefore + index);
+    verification.push({
+      index: componentCountBefore + index,
+      requestedMatchName: runtimeFilters[index].matchName,
+      resultingMatchName: await component.getMatchName(),
+      displayName: await component.getDisplayName()
+    });
+  }
+
+  const animatedPrepared = prepared.filter((entry) => entry.mode === "animated");
+  return {
+    preset: { name: preset.name, category: preset.category },
+    targetClipName: await target.getName(),
+    reconstructEasing,
+    sourceFilterOrder: preset.filters.map((filter) => filter.matchName),
+    appliedFilterOrder: runtimeFilters.map((filter) => filter.matchName),
+    componentCountBefore, componentCountAfter: await chain.getComponentCount(),
+    staticParameterCount: prepared.filter((entry) => entry.mode === "static").length,
+    animatedParameterCount: animatedPrepared.length,
+    animatedParameters: animatedPrepared.map((entry) => ({
+      filterMatchName: entry.filter.matchName, index: entry.item.source.index, name: entry.item.source.name,
+      valueType: entry.item.valueType, sourceKeyframeCount: entry.item.sourceKeys.length,
+      appliedKeyframeCount: entry.keys.length, durationSeconds: entry.durationSeconds, sampleStrategy: entry.sampleStrategy
+    })),
+    longestAnimationSeconds: longestSeconds,
+    framesPerSecond: fps,
+    insertionTransactionSucceeded, parameterTransactionSucceeded, verification,
+    reproductionModel: reconstructEasing ? "prfpset-frame-sampled-approximation" : "prfpset-principal-keyframes-only",
+    fidelityNote: reconstructEasing
+      ? "Frame-sampled easing is an approximation; the official UXP API exposes no Point/scalar tangent or velocity surface to restore exact curves."
+      : "Effects, static values and principal keyframe values/times are preserved; no dense helper keys are generated to imitate unavailable easing.",
+    undoModelExpected: ["Undo imported preset parameters", "Undo inserted preset effects"]
+  };
+}
+
+async function runApplyImportedEffectPreset() {
+  const button = document.getElementById("apply-imported-effect-preset");
+  const nameInput = document.getElementById("prfpset-preset-name");
+  const categoryInput = document.getElementById("prfpset-preset-category");
+  const reconstructEasingInput = document.getElementById("prfpset-reconstruct-easing");
+  if (button) button.disabled = true;
+  const result = await executionAdapter.execute({
+    type: "timeline.applyImportedEffectPreset", requestId: String(Date.now()),
+    payload: {
+      name: nameInput ? nameInput.value : "",
+      category: categoryInput ? categoryInput.value : "",
+      reconstructEasing: Boolean(reconstructEasingInput && reconstructEasingInput.checked)
+    }
+  }, { "timeline.applyImportedEffectPreset": applyImportedEffectPreset });
+  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
+  if (button) button.disabled = false;
 }
 
 async function runCompareImportedTransformPreset() {
@@ -2934,6 +3224,11 @@ function wirePanel() {
   if (applyStaticPresetButton && !applyStaticPresetButton.dataset.wired) {
     applyStaticPresetButton.addEventListener("click", runApplyImportedStaticVideoPreset);
     applyStaticPresetButton.dataset.wired = "true";
+  }
+  const applyImportedEffectPresetButton = document.getElementById("apply-imported-effect-preset");
+  if (applyImportedEffectPresetButton && !applyImportedEffectPresetButton.dataset.wired) {
+    applyImportedEffectPresetButton.addEventListener("click", runApplyImportedEffectPreset);
+    applyImportedEffectPresetButton.dataset.wired = "true";
   }
   const audioEffectButton = document.getElementById("apply-audio-effect");
   if (audioEffectButton && !audioEffectButton.dataset.wired) {

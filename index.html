@@ -119,6 +119,8 @@
         <pre id="effect-parameter-output">No parameter probe executed.</pre>
         <h3>Manual preset A/B comparison</h3>
         <p class="hint">Apply your preset manually to clip A, select only clip A and capture every static/animated parameter from its last Transform component. Then select only clip B and reconstruct the complete Transform. Animated values are sampled every frame; capture remains in memory until reload.</p>
+        <label for="capture-reference-match-name">Component match name to capture</label>
+        <input id="capture-reference-match-name" type="text" value="AE.ADBE Geometry2" placeholder="AE.ADBE Geometry2" />
         <button id="capture-transform-reference" type="button">Capture complete manual Transform (clip A)</button>
         <button id="apply-transform-reference" type="button">Reconstruct captured Transform (clip B)</button>
         <button class="copy-json" data-copy-target="transform-reference-output" type="button">Copy A/B comparison JSON</button>
@@ -137,6 +139,11 @@
         <button id="compare-imported-transform-preset" type="button">Compare imported curve with captured manual preset</button>
         <button id="inspect-selected-video-components" type="button">Inspect selected clip components</button>
         <button id="apply-imported-static-video-preset" type="button">Apply imported static video preset</button>
+        <label for="prfpset-reconstruct-easing">
+          <input id="prfpset-reconstruct-easing" type="checkbox" />
+          Reconstruct easing (frame-sampled approximation; off preserves only principal keyframe values/times)
+        </label>
+        <button id="apply-imported-effect-preset" type="button">Apply imported preset (any static + animated filters)</button>
         <button class="copy-json" data-copy-target="prfpset-catalog-output" type="button">Copy .prfpset catalog JSON</button>
         <pre id="prfpset-catalog-output">No .prfpset imported.</pre>
       </section>
