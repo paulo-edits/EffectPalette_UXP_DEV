@@ -1,0 +1,13 @@
+{
+  "adjustmentLayer": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      {
+        "name": "AL_TEMPLATE_1920x1080",
+        "width": 1920,
+        "height": 1080,
+        "sequenceID": "SEQUENCE_ID_AQUI"
+      }
+    ]
+  }
+}

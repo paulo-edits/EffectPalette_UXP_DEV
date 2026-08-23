@@ -158,3 +158,65 @@ handshake works, and a network caller reaches the exact same `executionAdapter.e
 diagnostics panel's own buttons, for both reads and mutations. A real product-side companion server is
 still unwritten and is the user's (or a future session's) work, per the read-only-CEP-repos
 constraint.
+
+## Stage 6: the real companion, first vertical slice
+
+The user confirmed the goal is to actually bring the stable product's Python companion onto this
+transport, not keep proving isolated capabilities. `companion/` in this repository is a copy (never
+an edit) of `EffectPalette/app.py`, `beta_report.py`, `requirements.txt`, `assets/` and one example
+data template, taken read-only from the stable repository per the user's standing instruction.
+
+`PremiereExecutionAdapter` (`backend_name = "cep"`) already documented itself as "Host boundary
+shared by shortcuts, macros and future UXP execution" and is read from exactly two call sites
+(`EffectPalette.__init__`, `QtEffectPalette.__init__`), both now going through a new
+`create_execution_adapter()` factory that prefers `companion/uxp_execution_adapter.py`'s
+`PremiereUxpExecutionAdapter` (`backend_name = "uxp"`) whenever a Qt event loop is running, falling
+back to the CEP adapter otherwise. `PremiereExecutionAdapter` itself is unmodified and untouched
+apart from gaining `poll_status`/`is_terminal`/`is_success` wrappers around its existing free
+functions, so the swap point is polymorphic rather than a rewrite.
+
+`PremiereUxpExecutionAdapter` embeds a `QWebSocketServer` (`PySide6.QtWebSockets` - already covered
+by the existing `PySide6>=6.7.0` dependency, no new package) bound to the exact
+`ws://localhost:58756` / token `transport.js` already has baked in, so the plugin connects to the
+real companion with zero additional configuration. This first slice translates `effect["type"] in
+{"video", "audio"}`: audio passes `effect["name"]` straight through as `timeline.applyAudioEffect`'s
+`displayName` (no lookup needed - `AudioFilterFactory.createComponentByDisplayName` takes the display
+name directly); video requires resolving a display name to a `matchName`, built from
+`catalog.videoEffects.read`'s two parallel arrays. Since Adobe does not document positional
+correspondence between those arrays (`CAPABILITY_MATRIX.md`), the adapter treats a same-index pairing
+as a candidate only, and compares the *actually inserted* component's display name (from the plugin's
+own post-insertion `verification`) against what was requested, failing closed with
+`error_identity_mismatch` on a wrong guess rather than reporting a false success.
+
+Host-tested end to end in Premiere 26.3.2 on 2026-08-23, through the real companion's real floating
+palette and real global hotkey (`Ctrl+Espaço`), not a throwaway script:
+
+- **Video**: applying "Gaussian Blur" produced `identityMatchesRequest: true`, the clip's component
+  count going from 2 to 3, and the plugin's own post-insertion `displayName` reading back
+  "Gaussian Blur" - confirmed in Effect Controls by the user.
+- **Audio**: applying "Lowpass" (twice) and "Hard Limiter" produced the same verified-identity result
+  on the real selected clip.
+- **Failure paths** (isolated adapter test, real code, fake plugin peer): a request before any plugin
+  is connected resolves immediately to `error_not_connected`; an unsupported `effect["type"]` resolves
+  to `error_not_supported` without touching the network; a display name absent from the cached catalog
+  resolves to `error_effect_not_found`; a name that resolves locally but the plugin itself rejects
+  resolves to the mapped `error_execution_failed`. None of these hang or wait for the 5s timeout.
+
+Proving the CEP bridge was not involved required more than "the file wasn't created," since the CEP
+extension (`Type=Custom`, `AutoVisible=false`, `StartOn: ApplicationActivate`) auto-loads without
+appearing in Window > Extensions - a real gap in the first proposed check, caught by the user. The
+standing proof instead layers four independent facts: `send_command()` (the only code path that
+writes the CEP bridge file) has exactly one call site, inside the CEP adapter class that
+`create_execution_adapter()` did not choose; the connected-plugin log line is only reachable after a
+token handshake only this plugin knows; `data/current_selection.json`, which `bridge.js` rewrites
+every 300ms whenever it is actually running, sat unchanged for the entire test window; and the
+returned clip name/component counts are live Premiere state the Python adapter has no other way to
+have produced.
+
+Deferred, not blocking: preset/transition/nest/project-item/generic-item/favorite-item translation
+(same adapter pattern, one action type at a time - preset is simpler than CEP's own approach since
+the plugin already parses `.prfpset` itself); generic-item creation from scratch and favorite-item
+import (CEP relies on undocumented `qe.project` calls with no known UXP equivalent); Timeline-clip
+label and label-group selection (native-keystroke fallback stands per Stage 4 bucket C, though CEP's
+own `app.executeCommand("cmd.sequence.edit.label."+index)` suggests a documented UXP command-execution
+equivalent may be worth checking before accepting that as final); a single combined installer.
