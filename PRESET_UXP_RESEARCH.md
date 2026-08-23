@@ -272,6 +272,33 @@ Effect Controls that every slider and toggle matches a manual application. This 
 preset verified both at the API level and visually, closing the process gap the Distortion mismatch
 exposed.
 
+## Video confirmation: Lumetri Color, and a silent-corruption bug it exposed
+
+`Lumetri Color Preset` was inspected to test the Excalibur prediction on video. Its 130-parameter
+surface uses a third parameter element type, `ArbVideoComponentParam`, on every curve, LUT and HSL
+Secondary control (Hue vs Sat/Hue/Luma, Sat vs Sat, RGB Curves, embedded LUTs, the "Blob" state at
+index 0, and more - roughly two dozen of the 130 parameters in this fixture). Unlike `VideoComponentParam`
+and `AudioComponentParam`, it serializes its value as a separate base64 `StartKeyframeValue` element
+rather than the comma-separated `StartKeyframe` text every other parameter type uses.
+
+Reading `StartKeyframe` on one of these returns nothing, and `parsePrfpsetCatalog` was passing that
+straight to `parsePrfpsetValue`, where `Number("")` coerces to `0` in JavaScript - not `NaN`, so
+nothing failed. Every Arb parameter in a preset would have silently applied as a fake `0` if the
+preset had ever reached the parameter-write transaction, rather than the project's fail-closed
+principle catching it before any mutation. This was a real correctness bug, found only because Lumetri's
+parameter surface is saturated enough with Arb parameters to make it obvious, not a documentation gap.
+
+Fixed by tagging `arbitrary: true` on any parameter read from an `ArbVideoComponentParam` element
+(structural detection, not a maintained list) and refusing to derive a value from it at all;
+`applyImportedEffectPreset` and `parsePrfpsetStaticHostValue` both now throw a named, specific error
+naming the parameter instead of reaching the coercion. Because Lumetri Color's "Blob" parameter at
+index 0 exists on every instance regardless of what the user actually changed, this means **every**
+Lumetri Color preset - not only ones with edited curves - fails closed under the corrected code,
+consistent with the Excalibur report the user raised: Lumetri Color is confirmed here as unsupported
+end to end for preset reconstruction, not merely approximate on its curves the way Distortion's named
+sliders remained usable. Named-parameter-only video effects without an Arb-typed control are
+unaffected.
+
 ## Proposed serializable boundary
 
 Parsing and execution must be separate. A future catalog service may run in the Python companion, in UXP after a user grants file access, or offline during catalog generation; the Premiere mutation handler receives the same normalized request either way.

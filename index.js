@@ -539,6 +539,13 @@ function parsePrfpsetCatalog(xml) {
         (paramsElement ? paramsElement.children.filter((child) => child.tagName === "Param") : []).forEach((parameterReference) => {
           const parameterElement = objectIndex[parameterReference.attributes.ObjectRef];
           if (!parameterElement) return;
+          // ArbVideoComponentParam (observed on Lumetri Color's curve/LUT/HSL-secondary controls)
+          // serializes its value as a separate base64 StartKeyframeValue element rather than the
+          // comma-separated StartKeyframe text every other parameter type uses. Reading StartKeyframe
+          // on one of these returns nothing, and Number("") coerces to 0 in JS - silently turning a
+          // parameter we cannot represent into a wrong static value instead of failing closed. This
+          // is marked explicitly instead, so callers can refuse it outright.
+          const isArbitrary = parameterElement.tagName === "ArbVideoComponentParam";
           const startKeyframe = xmlText(xmlChild(parameterElement, "StartKeyframe"));
           const startParts = startKeyframe ? startKeyframe.split(",") : [];
           parameters.push({
@@ -547,9 +554,10 @@ function parsePrfpsetCatalog(xml) {
             parameterId: xmlText(xmlChild(parameterElement, "ParameterID")) || null,
             controlType: xmlText(xmlChild(parameterElement, "ParameterControlType")) || null,
             timeVarying: xmlText(xmlChild(parameterElement, "IsTimeVarying")) === "true",
-            value: startParts.length > 1 ? startParts[1].trim() : null,
+            value: isArbitrary ? null : (startParts.length > 1 ? startParts[1].trim() : null),
             startKeyframe,
-            keyframes: xmlText(xmlChild(parameterElement, "Keyframes")) || null
+            keyframes: xmlText(xmlChild(parameterElement, "Keyframes")) || null,
+            arbitrary: isArbitrary
           });
         });
         // FilterPreset's own AnchorInPoint is the shared origin every filter in the preset was
@@ -790,7 +798,8 @@ function inspectImportedEffectPreset(action) {
         isAudio: filter.isAudio,
         audioChannelCount: filter.audioChannelCount,
         parameterCount: filter.parameters.length,
-        animatedParameterCount: filter.parameters.filter((parameter) => parameter.timeVarying || parameter.keyframes).length
+        animatedParameterCount: filter.parameters.filter((parameter) => parameter.timeVarying || parameter.keyframes).length,
+        arbitraryParameterCount: filter.parameters.filter((parameter) => parameter.arbitrary).length
       }))
     },
     mutation: "none"
@@ -817,6 +826,9 @@ function parsePrfpsetKeyframes(parameter) {
 }
 
 function parsePrfpsetStaticHostValue(parameter) {
+  // Safety net: every caller should already have rejected an arbitrary parameter with fuller
+  // context, but a missing value must never silently coerce to a number here (see parsePrfpsetCatalog).
+  if (parameter.arbitrary) throw new Error(`Parameter ${parameter.index} (${parameter.name || "unnamed"}) is stored as opaque/arbitrary data with no official value or write path.`);
   if (String(parameter.controlType) !== "5") return createHostValue(parsePrfpsetValue(parameter.value, parameter.controlType));
   let decimal = String(parameter.value || "").replace(/^0+/, "") || "0";
   if (!/^\d+$/.test(decimal)) throw new Error(`Invalid packed .prfpset Color '${decimal}'.`);
@@ -2857,6 +2869,12 @@ async function applyImportedEffectPreset(action) {
   const runtimeFilters = dedupedFilters.slice().reverse().map((filter) => ({
     ...filter,
     preparedParameters: filter.parameters.map((source) => {
+      // Fail closed rather than silently applying a coerced value: opaque parameters have no
+      // official ComponentParam representation this project can write, per the Distortion/Lumetri
+      // curve findings in PRESET_UXP_RESEARCH.md.
+      if (source.arbitrary) {
+        throw new Error(`Parameter ${source.index} (${source.name || "unnamed"}) of ${filter.matchName} is stored as opaque/arbitrary data with no official value or write path; this preset cannot be reconstructed.`);
+      }
       if (!source.timeVarying || !source.keyframes) {
         return { source, mode: "static", hostValue: parsePrfpsetStaticHostValue(source) };
       }
