@@ -233,9 +233,40 @@ The two host tests above jointly confirm, at the API level, what was previously 
 `createComponentByDisplayName` behaves the same inside preset reconstruction as in the isolated
 single-effect probe it was proven in, and `ComponentParam.createKeyframe()` / `createSetValueAction()`
 - previously proven only on video components - accept values and read them back identically on audio
-ones. Whether the audio actually renders/sounds as that state implies has not been checked in Effect
-Controls. A preset mixing video and audio filters is still explicitly rejected rather than guessed
-at, since reconstructing both halves onto what may not even be the same TrackItem remains unresolved.
+ones. A preset mixing video and audio filters is still explicitly rejected rather than guessed at,
+since reconstructing both halves onto what may not even be the same TrackItem remains unresolved.
+
+## Audio effects with a graphical/curve UI are a separate, harder limit
+
+A visual comparison of the reconstructed Distortion against a manual "Maximum Pain" application was
+first read as matching because both showed identical numeric settings (Curve Smoothing 0%/0%, Time
+Smoothing 0%, dB Range -120 dB); the user disputed this immediately, and a careful re-look confirmed
+the curve shapes genuinely differ - the manual application had its midpoint dragged upward, which the
+reconstruction does not reproduce. The user explained they had dragged that point by hand, and named
+a CEP audio plugin (Excalibur) reportedly hitting the same limitation for curve-UI effects.
+
+`AudioFilterComponent` carries an `OpaqueData` field (base64) whose format was unknown. Decoding it
+for both fixtures resolved the question: Hard Limiter's `OpaqueData` decodes to readable XML whose
+`ParamList` float array is exactly the seven non-Bypass named parameter values, digit for digit - no
+hidden state beyond what `AudioComponentParam` already exposes. Distortion's `OpaqueData` is instead
+a much larger blob that does not decode as text, consistent with it also carrying the dragged curve's
+geometry, which a fixed-size named-parameter list cannot represent.
+
+Two things follow. First, this project's official-API-only decoding approach - which worked for
+temporal easing - does not straightforwardly extend here even in principle: `OpaqueData` is unlabeled
+binary, not the semi-documented comma-separated fields keyframes use, and reverse-engineering it would
+be a materially different and larger undertaking. Second, and more decisively, even a successful
+decode would not help: no official `Component`/`ComponentParam` API accepts arbitrary opaque data,
+only typed named values (number, boolean, Point, Color). This is recorded as a confirmed platform
+boundary for curve-UI effects, not a decoding problem worth pursuing - narrower than "audio effects
+have limitations" and specifically about effects whose state includes hand-drawn curve geometry.
+
+A second audio fixture, `PRESET TESTE - HARD LIMITER` (sliders and toggles only, no curve UI),
+confirmed the corrected dedup rule and the executor end to end: `ComponentParam.getStartValue()`
+readback matched the predicted stereo variant exactly, and the user independently confirmed in
+Effect Controls that every slider and toggle matches a manual application. This is the first audio
+preset verified both at the API level and visually, closing the process gap the Distortion mismatch
+exposed.
 
 ## Proposed serializable boundary
 
