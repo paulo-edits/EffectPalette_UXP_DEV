@@ -1127,109 +1127,6 @@ function compareImportedTransformWithCapture(action) {
   };
 }
 
-async function applyImportedTransformPreset(action) {
-  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
-  const requestedName = String(action.payload.name || "").trim();
-  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
-  const matches = importedEffectPresetCatalog.presets.filter((preset) =>
-    preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
-    preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
-  if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
-  const preset = matches[0];
-  if (preset.filters.length !== 1 || preset.filters[0].matchName !== "AE.ADBE Geometry2") {
-    throw new Error("This first direct-application probe supports exactly one Transform filter.");
-  }
-  const filter = preset.filters[0];
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before applying the imported preset.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before applying the imported preset.");
-  const target = await getSingleSelectedVideoClip(sequence);
-  const targetInPoint = await target.getInPoint();
-  const targetDuration = await target.getDuration();
-  const fps = await getSequenceFramesPerSecond(sequence);
-  const animatedSources = filter.parameters.filter((parameter) => parameter.timeVarying && parameter.keyframes);
-  const longestTicks = Math.max(0, ...animatedSources.map((parameter) => {
-    const keys = parsePrfpsetKeyframes(parameter);
-    return keys.length > 1 ? keys[keys.length - 1].ticks - keys[0].ticks : 0;
-  }));
-  const longestSeconds = longestTicks / 254016000000;
-  if (targetDuration.seconds < longestSeconds) throw new Error("The selected clip is shorter than the imported preset animation.");
-
-  const chain = await target.getComponentChain();
-  const componentIndex = await chain.getComponentCount();
-  const created = await premiere.VideoFilterFactory.createComponent(filter.matchName);
-  let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    insertionTransactionSucceeded = project.executeTransaction((compound) => {
-      compound.addAction(chain.createAppendComponentAction(created));
-    }, `FX.palette: Insert ${preset.name}`);
-  });
-  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the imported Transform insertion.");
-  const component = await chain.getComponentAtIndex(componentIndex);
-  const prepared = [];
-  for (const source of filter.parameters) {
-    const parameter = await component.getParam(source.index);
-    if (!source.timeVarying || !source.keyframes) {
-      const typedValue = parsePrfpsetValue(source.value, source.controlType);
-      prepared.push({ source, parameter, staticKeyframe: await parameter.createKeyframe(createHostValue(typedValue)), keys: [] });
-      continue;
-    }
-    const sourceKeys = parsePrfpsetKeyframes(source);
-    if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "point")) {
-      throw new Error(`The direct probe requires a Point curve with at least two keys; parameter ${source.index} differs.`);
-    }
-    const durationSeconds = (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000;
-    const segments = Math.max(1, Math.round(durationSeconds * fps));
-    const keys = [];
-    let explicitLinearInterpolationCount = 0;
-    for (let frame = 0; frame <= segments; frame += 1) {
-      const progress = frame / segments;
-      const sampled = sampleImportedPointCurve(sourceKeys, durationSeconds * progress);
-      const point = sampled.value;
-      const keyframe = await parameter.createKeyframe(createHostValue({ type: "point", value: point }));
-      keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(durationSeconds * progress));
-      if (typeof keyframe.setTemporalInterpolationMode === "function") {
-        await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
-        explicitLinearInterpolationCount += 1;
-      }
-      keys.push(keyframe);
-    }
-    prepared.push({
-      source, parameter, staticKeyframe: null, keys,
-      curve: {
-        sourceKeyframeCount: sourceKeys.length,
-        sourceSegmentCount: sourceKeys.length - 1,
-        durationSeconds,
-        explicitLinearInterpolationCount
-      }
-    });
-  }
-  let parameterTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    parameterTransactionSucceeded = project.executeTransaction((compound) => {
-      prepared.forEach((entry) => {
-        if (entry.staticKeyframe) compound.addAction(entry.parameter.createSetValueAction(entry.staticKeyframe, false));
-        else {
-          compound.addAction(entry.parameter.createSetTimeVaryingAction(true));
-          entry.keys.forEach((keyframe) => compound.addAction(entry.parameter.createAddKeyframeAction(keyframe)));
-        }
-      });
-    }, `FX.palette: Apply ${preset.name}`);
-  });
-  if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the imported preset parameters.");
-  return {
-    preset: { name: preset.name, category: preset.category }, targetClipName: await target.getName(),
-    matchName: filter.matchName, componentIndex, framesPerSecond: fps, durationSeconds: longestSeconds,
-    staticParameterCount: prepared.filter((entry) => entry.staticKeyframe).length,
-    animatedParameterCount: prepared.filter((entry) => entry.keys.length).length,
-    sampledKeyframeCounts: prepared.filter((entry) => entry.keys.length).map((entry) => ({ index: entry.source.index, name: entry.source.name, count: entry.keys.length, curve: entry.curve })),
-    insertionTransactionSucceeded, parameterTransactionSucceeded,
-    reproductionModel: "prfpset-point-curve-frame-sampled",
-    undoModelExpected: ["Undo imported preset parameters", "Undo inserted Transform effect"]
-  };
-}
-
 async function captureTransformCurveReference(action) {
   // Defaults to the Transform effect, but any match name works, including the intrinsic
   // `AE.ADBE Motion` that every clip already carries.
@@ -2706,20 +2603,6 @@ async function runInspectImportedEffectPreset() {
   if (button) button.disabled = false;
 }
 
-async function runApplyImportedTransformPreset() {
-  const button = document.getElementById("apply-imported-transform-preset");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.applyImportedTransformPreset",
-    requestId: String(Date.now()),
-    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
-  }, { "timeline.applyImportedTransformPreset": applyImportedTransformPreset });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
 async function runInspectPresetBridgeCandidate() {
   const button = document.getElementById("inspect-preset-bridge-candidate");
   const nameInput = document.getElementById("prfpset-preset-name");
@@ -2779,78 +2662,6 @@ async function inspectSelectedVideoComponents() {
     });
   }
   return { clipName: await clip.getName(), componentCount, components, mutation: "none" };
-}
-
-async function applyImportedStaticVideoPreset(action) {
-  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
-  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
-  if (preset.filters.length < 1) throw new Error("The imported preset contains no video filters.");
-  if (preset.filters.some((filter) => filter.parameters.some((parameter) => parameter.timeVarying || parameter.keyframes))) {
-    throw new Error("This probe accepts static presets only.");
-  }
-  const runtimeFilters = preset.filters.slice().reverse().map((filter) => ({
-    ...filter,
-    preparedParameters: filter.parameters.map((source) => ({ source, hostValue: parsePrfpsetStaticHostValue(source) }))
-  }));
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before applying the preset.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before applying the preset.");
-  const target = await getSingleSelectedVideoClip(sequence);
-  const chain = await target.getComponentChain();
-  const componentCountBefore = await chain.getComponentCount();
-  const created = [];
-  for (const filter of runtimeFilters) created.push(await premiere.VideoFilterFactory.createComponent(filter.matchName));
-  let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    insertionTransactionSucceeded = project.executeTransaction((compound) => {
-      created.forEach((component) => compound.addAction(chain.createAppendComponentAction(component)));
-    }, `FX.palette: Insert ${preset.name}`);
-  });
-  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the preset component insertion.");
-  const prepared = [];
-  for (let filterIndex = 0; filterIndex < runtimeFilters.length; filterIndex += 1) {
-    const filter = runtimeFilters[filterIndex];
-    const component = await chain.getComponentAtIndex(componentCountBefore + filterIndex);
-    for (const preparedParameter of filter.preparedParameters) {
-      const { source, hostValue } = preparedParameter;
-      const parameter = await component.getParam(source.index);
-      const keyframe = await parameter.createKeyframe(hostValue);
-      prepared.push({ filter, source, component, parameter, keyframe });
-    }
-  }
-  let parameterTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    parameterTransactionSucceeded = project.executeTransaction((compound) => {
-      prepared.forEach((entry) => compound.addAction(entry.parameter.createSetValueAction(entry.keyframe, false)));
-    }, `FX.palette: Set ${preset.name}`);
-  });
-  if (!parameterTransactionSucceeded) throw new Error("Premiere rejected the preset parameter transaction.");
-  const verification = [];
-  for (let index = 0; index < runtimeFilters.length; index += 1) {
-    const component = await chain.getComponentAtIndex(componentCountBefore + index);
-    const parameters = [];
-    for (let parameterIndex = 0; parameterIndex < await component.getParamCount(); parameterIndex += 1) {
-      const parameter = await component.getParam(parameterIndex);
-      parameters.push({ index: parameterIndex, displayName: parameter.displayName || null, startValue: serializePresetProbeValue(await parameter.getStartValue()) });
-    }
-    verification.push({
-      index: componentCountBefore + index,
-      requestedMatchName: runtimeFilters[index].matchName,
-      resultingMatchName: await component.getMatchName(),
-      displayName: await component.getDisplayName(),
-      parameters
-    });
-  }
-  return {
-    preset: { name: preset.name, category: preset.category }, targetClipName: await target.getName(),
-    sourceFilterOrder: preset.filters.map((filter) => filter.matchName),
-    appliedFilterOrder: runtimeFilters.map((filter) => filter.matchName),
-    componentCountBefore, componentCountAfter: await chain.getComponentCount(),
-    insertionTransactionSucceeded, parameterTransactionSucceeded, verification,
-    colorEncodingScope: "verified-64-bit-ARGB-channel-order",
-    undoModelExpected: ["Undo static preset values", "Undo inserted preset effects"]
-  };
 }
 
 async function applyImportedEffectPreset(action) {
@@ -3147,19 +2958,6 @@ async function runInspectSelectedVideoComponents() {
   if (button) button.disabled = false;
 }
 
-async function runApplyImportedStaticVideoPreset() {
-  const button = document.getElementById("apply-imported-static-video-preset");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.applyImportedStaticVideoPreset", requestId: String(Date.now()),
-    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
-  }, { "timeline.applyImportedStaticVideoPreset": applyImportedStaticVideoPreset });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
 async function runApplyAudioEffect() {
   const button = document.getElementById("apply-audio-effect");
   const input = document.getElementById("audio-effect-display-name");
@@ -3394,11 +3192,6 @@ function wirePanel() {
     inspectPrfpsetButton.addEventListener("click", runInspectImportedEffectPreset);
     inspectPrfpsetButton.dataset.wired = "true";
   }
-  const applyImportedPresetButton = document.getElementById("apply-imported-transform-preset");
-  if (applyImportedPresetButton && !applyImportedPresetButton.dataset.wired) {
-    applyImportedPresetButton.addEventListener("click", runApplyImportedTransformPreset);
-    applyImportedPresetButton.dataset.wired = "true";
-  }
   const inspectBridgeButton = document.getElementById("inspect-preset-bridge-candidate");
   if (inspectBridgeButton && !inspectBridgeButton.dataset.wired) {
     inspectBridgeButton.addEventListener("click", runInspectPresetBridgeCandidate);
@@ -3418,11 +3211,6 @@ function wirePanel() {
   if (inspectComponentsButton && !inspectComponentsButton.dataset.wired) {
     inspectComponentsButton.addEventListener("click", runInspectSelectedVideoComponents);
     inspectComponentsButton.dataset.wired = "true";
-  }
-  const applyStaticPresetButton = document.getElementById("apply-imported-static-video-preset");
-  if (applyStaticPresetButton && !applyStaticPresetButton.dataset.wired) {
-    applyStaticPresetButton.addEventListener("click", runApplyImportedStaticVideoPreset);
-    applyStaticPresetButton.dataset.wired = "true";
   }
   const applyImportedEffectPresetButton = document.getElementById("apply-imported-effect-preset");
   if (applyImportedEffectPresetButton && !applyImportedEffectPresetButton.dataset.wired) {
