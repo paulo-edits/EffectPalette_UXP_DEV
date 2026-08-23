@@ -236,14 +236,18 @@ single-effect probe it was proven in, and `ComponentParam.createKeyframe()` / `c
 ones. A preset mixing video and audio filters is still explicitly rejected rather than guessed at,
 since reconstructing both halves onto what may not even be the same TrackItem remains unresolved.
 
-## Audio effects with a graphical/curve UI are a separate, harder limit
+## Effects with a graphical/curve UI are a separate, harder limit - not audio-specific
 
 A visual comparison of the reconstructed Distortion against a manual "Maximum Pain" application was
 first read as matching because both showed identical numeric settings (Curve Smoothing 0%/0%, Time
 Smoothing 0%, dB Range -120 dB); the user disputed this immediately, and a careful re-look confirmed
 the curve shapes genuinely differ - the manual application had its midpoint dragged upward, which the
 reconstruction does not reproduce. The user explained they had dragged that point by hand, and named
-a CEP audio plugin (Excalibur) reportedly hitting the same limitation for curve-UI effects.
+a CEP plugin (Excalibur) reportedly hitting the same limitation - confirmed there against **video**
+curve-UI effects such as Lumetri Color, not something specific to audio. This project's own video
+reconstruction should therefore be expected to hit the same gap on curve-based video effects (Lumetri
+Color, RGB/Hue curves, and similar); none has been tested here, so that remains a prediction from this
+audio evidence, not a confirmed video finding.
 
 `AudioFilterComponent` carries an `OpaqueData` field (base64) whose format was unknown. Decoding it
 for both fixtures resolved the question: Hard Limiter's `OpaqueData` decodes to readable XML whose
