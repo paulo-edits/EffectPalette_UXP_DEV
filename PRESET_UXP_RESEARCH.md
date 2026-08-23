@@ -220,19 +220,22 @@ from ExtendScript has no UXP equivalent. This is a documented API gap, not an un
 
 The current rule instead keeps whichever variant is **first in the `.prfpset` file's `FilterPreset`
 order** for a given identity. A retest with `verification` extended to read parameter values back
-from the host (not just component identity) confirmed this reproduces the manual "Maximum Pain"
-result exactly - Positive/Negative/Time Smoothing and dB Range all `0` - without needing a screenshot
-this time. This remains this project's best current explanation from one confirmed data point, not a
-verified general rule; a preset where the first-listed variant is not the correct one would defeat
-it, and there is no positive signal yet that would detect that case rather than silently applying the
-wrong values.
+from the host (not just component identity) matched the manual "Maximum Pain" result exactly at the
+API level - Positive/Negative/Time Smoothing and dB Range all `0`. That confirms the host stored the
+requested values; it does not by itself confirm the effect renders or sounds correct, since it was
+read from the same API path that wrote it rather than checked visually in Effect Controls, which
+remains outstanding. This remains this project's best current explanation from one data point still
+awaiting that visual confirmation, not a verified general rule; a preset where the first-listed
+variant is not the correct one would defeat it, and there is no positive signal yet that would detect
+that case rather than silently applying the wrong values.
 
-The two host tests above jointly confirm what was previously unverified: `createComponentByDisplayName`
-behaves the same inside preset reconstruction as in the isolated single-effect probe it was proven
-in, and `ComponentParam.createKeyframe()` / `createSetValueAction()` - previously proven only on video
-components - work identically on audio ones. A preset mixing video and audio filters is still
-explicitly rejected rather than guessed at, since reconstructing both halves onto what may not even
-be the same TrackItem remains unresolved.
+The two host tests above jointly confirm, at the API level, what was previously unverified:
+`createComponentByDisplayName` behaves the same inside preset reconstruction as in the isolated
+single-effect probe it was proven in, and `ComponentParam.createKeyframe()` / `createSetValueAction()`
+- previously proven only on video components - accept values and read them back identically on audio
+ones. Whether the audio actually renders/sounds as that state implies has not been checked in Effect
+Controls. A preset mixing video and audio filters is still explicitly rejected rather than guessed
+at, since reconstructing both halves onto what may not even be the same TrackItem remains unresolved.
 
 ## Proposed serializable boundary
 
