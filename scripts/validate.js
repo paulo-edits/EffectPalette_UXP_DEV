@@ -21,12 +21,20 @@ expect(manifest.host && manifest.host.minVersion === "25.6.0", "host.minVersion 
 expect(Array.isArray(manifest.entrypoints) && manifest.entrypoints.length > 0, "at least one entrypoint is required");
 expect(manifest.entrypoints.some((item) => item.type === "panel" && item.id === "effectPaletteDiagnostics"), "diagnostics panel entrypoint is required");
 expect(manifest.entrypoints.some((item) => item.type === "command" && item.id === "headlessSetVioletLabel"), "headless command entrypoint is required");
+// Stage 5 (TECHNICAL_PLAN.md) added one exact, allowlisted localhost network permission for the
+// optional companion transport; this check still fails on any other/extra permission appearing.
+const expectedNetworkDomains = ["ws://localhost:58756"];
 expect(
   manifest.requiredPermissions &&
-    Object.keys(manifest.requiredPermissions).length === 2 &&
+    Object.keys(manifest.requiredPermissions).length === 3 &&
     manifest.requiredPermissions.clipboard === "readAndWrite" &&
-    manifest.requiredPermissions.localFileSystem === "request",
-  "PoC must request only clipboard readAndWrite and user-requested localFileSystem permissions"
+    manifest.requiredPermissions.localFileSystem === "request" &&
+    manifest.requiredPermissions.network &&
+    Object.keys(manifest.requiredPermissions.network).length === 1 &&
+    Array.isArray(manifest.requiredPermissions.network.domains) &&
+    manifest.requiredPermissions.network.domains.length === expectedNetworkDomains.length &&
+    manifest.requiredPermissions.network.domains.every((domain, index) => domain === expectedNetworkDomains[index]),
+  "PoC must request only clipboard readAndWrite, user-requested localFileSystem and the exact stage-5 localhost network domain"
 );
 expect(fs.existsSync(path.join(root, manifest.main)), "manifest main file does not exist");
 expect(fs.existsSync(identityMatrixPath), "EFFECT_IDENTITY_MATRIX.json is required");
@@ -37,7 +45,7 @@ if (fs.existsSync(identityMatrixPath)) {
   expect(Array.isArray(identityMatrix.entries) && identityMatrix.entries.length === 829, "effect identity matrix entries are incomplete");
 }
 
-for (const filename of ["index.js", "execution-adapter.js"]) {
+for (const filename of ["index.js", "execution-adapter.js", "transport.js"]) {
   const source = fs.readFileSync(path.join(root, filename), "utf8");
   try { new vm.Script(source, { filename }); } catch (error) { errors.push(`${filename}: ${error.message}`); }
 }

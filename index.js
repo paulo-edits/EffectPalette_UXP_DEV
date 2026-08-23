@@ -3,6 +3,7 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
 const executionAdapter = require("./execution-adapter.js");
+const transport = require("./transport.js");
 let capturedTransformCurveReference = null;
 let importedEffectPresetCatalog = null;
 let importedEffectPresetXml = null;
@@ -3141,7 +3142,31 @@ async function runReadVideoEffectCatalog() {
   if (button) button.disabled = false;
 }
 
+function renderTransportStatus(status) {
+  text("transport-status", status.status);
+  text("transport-url", transport.TRANSPORT_URL);
+  text("transport-connected-since", status.connectedSince);
+  text("transport-last-error", status.lastError);
+}
+
+function wireTransportPanel() {
+  const reconnectButton = document.getElementById("transport-reconnect");
+  if (reconnectButton && !reconnectButton.dataset.wired) {
+    reconnectButton.addEventListener("click", () => {
+      transport.stop();
+      transport.start(ACTION_HANDLERS, executionAdapter);
+    });
+    reconnectButton.dataset.wired = "true";
+  }
+  if (!wireTransportPanel.subscribed) {
+    transport.onStatusChange(renderTransportStatus);
+    wireTransportPanel.subscribed = true;
+  }
+  renderTransportStatus(transport.getStatus());
+}
+
 function wirePanel() {
+  wireTransportPanel();
   const button = document.getElementById("refresh");
   if (button && !button.dataset.wired) {
     button.addEventListener("click", refresh);
@@ -3271,6 +3296,36 @@ function wirePanel() {
   refresh();
 }
 
+// The transport (stage 5, TECHNICAL_PLAN.md) dispatches through this exact map, so a command
+// received over the network can never do anything the diagnostics panel's own buttons could not
+// already do - it is the same allowlisted, schema-validated action set, just a different caller.
+const ACTION_HANDLERS = {
+  "diagnostics.read": readDiagnostics,
+  "catalog.videoEffects.resolve": resolveVideoEffectCatalog,
+  "catalog.videoEffects.read": readVideoEffectCatalog,
+  "catalog.videoTransitions.read": readVideoTransitionCatalog,
+  "projectItems.setColorLabel": setSelectedProjectItemLabel,
+  "timeline.applyVideoEffect": applyVideoEffectToSelection,
+  "timeline.probeVideoEffectParameters": probeVideoEffectParameters,
+  "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter,
+  "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter,
+  "timeline.captureTransformCurveReference": captureTransformCurveReference,
+  "timeline.applyTransformCurveReference": applyTransformCurveReference,
+  "catalog.effectPresets.importPrfpset": importPrfpsetCatalog,
+  "catalog.effectPresets.inspectImported": inspectImportedEffectPreset,
+  "catalog.effectPresets.inspectBridgeCandidate": inspectImportedPresetBridgeCandidate,
+  "catalog.effectPresets.exportBridge": exportImportedPresetBridge,
+  "catalog.effectPresets.compareImportedTransform": compareImportedTransformWithCapture,
+  "timeline.inspectSelectedVideoComponents": inspectSelectedVideoComponents,
+  "timeline.applyImportedEffectPreset": applyImportedEffectPreset,
+  "timeline.applyAudioEffect": applyAudioEffectToSelection,
+  "timeline.applyVideoTransition": applyVideoTransitionToSelection,
+  "timeline.createSubsequence": createSubsequenceFromSelection,
+  "timeline.createNest": createNestFromSelection,
+  "timeline.insertProjectItem": insertSelectedProjectItem,
+  "timeline.insertGenericItem": insertGenericItemAcrossSelection
+};
+
 async function runHeadlessSetVioletLabelCommand() {
   const result = await executionAdapter.execute(
     {
@@ -3285,6 +3340,12 @@ async function runHeadlessSetVioletLabelCommand() {
 }
 
 entrypoints.setup({
+  plugin: {
+    // Fires automatically when Premiere loads the plugin, independent of the diagnostics panel ever
+    // being opened - the actual "no configuration, just works" requirement behind the transport.
+    create() { transport.start(ACTION_HANDLERS, executionAdapter); },
+    destroy() { transport.stop(); }
+  },
   commands: {
     headlessSetVioletLabel: runHeadlessSetVioletLabelCommand
   },

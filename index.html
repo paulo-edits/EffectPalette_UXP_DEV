@@ -16,6 +16,17 @@
       <button id="refresh" type="button">Refresh diagnostics</button>
       <p id="status" class="status" role="status">Waiting for Premiere…</p>
 
+      <section aria-labelledby="transport-heading">
+        <h2 id="transport-heading">Companion transport (stage 5, experimental)</h2>
+        <dl>
+          <div><dt>Status</dt><dd id="transport-status">—</dd></div>
+          <div><dt>URL</dt><dd id="transport-url">—</dd></div>
+          <div><dt>Connected since</dt><dd id="transport-connected-since">—</dd></div>
+          <div><dt>Last error</dt><dd id="transport-last-error">—</dd></div>
+        </dl>
+        <button id="transport-reconnect" type="button">Reconnect now</button>
+      </section>
+
       <section aria-labelledby="environment-heading">
         <h2 id="environment-heading">Environment</h2>
         <dl>
