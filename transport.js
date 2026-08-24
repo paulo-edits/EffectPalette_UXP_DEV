@@ -165,4 +165,17 @@ function getStatus() {
   return { ...state };
 }
 
-module.exports = { start, stop, onStatusChange, getStatus, TRANSPORT_PORT, TRANSPORT_URL };
+// Fire-and-forget progress line, sent mid-request while an executionAdapter action is still
+// awaiting (handleIncoming only sends the final result once execute() resolves) - added to diagnose
+// a hang inside a long multi-step action (ensureGenericProjectItem, index.js) without needing the
+// UXP plugin's own DevTools console, which is harder to reach than the companion's own log output.
+function sendDiagnosticLog(message) {
+  if (!socket || !handshakeAcknowledged) return;
+  try {
+    socket.send(JSON.stringify({ type: "diagnostic.log", message: String(message) }));
+  } catch (error) {
+    // Best-effort only; a lost log line must not affect the actual request/response flow.
+  }
+}
+
+module.exports = { start, stop, onStatusChange, getStatus, sendDiagnosticLog, TRANSPORT_PORT, TRANSPORT_URL };

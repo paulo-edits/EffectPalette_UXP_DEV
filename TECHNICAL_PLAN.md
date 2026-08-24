@@ -435,11 +435,43 @@ overlapping the very clip the user just selected; the response's new `trackFallb
 booleans report whenever this path was taken instead of hiding it. This is a confirmed platform
 boundary, not a gap to keep chasing - the same category as the Timeline-item Label finding in Stage 4.
 
-Still deferred: generic-item creation from scratch (needs the same missing track-creation capability
-for some kinds, plus `qe.project.newBlackVideo`-style calls for others); favorite-item import;
-Timeline-clip label and label-group selection. `isSequence` project items (inserting a whole
-sequence as a nested item, distinct from Nest) are not specially handled by this slice either -
-host.jsx branches on it explicitly and this port does not yet.
+Still deferred: favorite-item import; Timeline-clip label and label-group selection. `isSequence`
+project items (inserting a whole sequence as a nested item, distinct from Nest) are not specially
+handled by this slice either - host.jsx branches on it explicitly and this port does not yet.
+
+## Sixth slice: generic items via template import
+
+CEP creates Bars and Tone/Black Video/Color Matte/Transparent Video fresh every time, via
+`app.project.newBarsAndTone` (documented) or `qe.project.newBlackVideo`-style calls (undocumented
+QE DOM) - UXP has neither. Adjustment Layer already worked around the same gap (no creation API on
+either platform) by importing a pre-built `.prproj`'s sequence via `Project.importSequences`; this
+slice extends that trick to Bars and Tone, Black Video, and Transparent Video (Color Matte stays
+out - neither platform can set its color after creation, so a template built once could never be
+recolored per use, matching the user's own reasoning for excluding it).
+
+`index.js`'s `ensureGenericProjectItem` is generic across all four `GENERIC_ITEM_TEMPLATES` entries:
+find an already-organized item of the right size anywhere in the project; otherwise pick the
+closest-resolution entry from `assets/template_project/generic_item_templates.json`, import that
+sequence, move whatever landed at root into `FX.palette_Assets`, locate the item by its expected
+name, delete the now-empty imported wrapper sequence. Host-tested for all four types, in a fresh
+sequence to force a real import as well as a reused already-existing item, with `sequenceCleanup`
+in the response confirming the wrapper sequence was actually deleted (a name-based match here
+originally left it behind silently - fixed to match by guid).
+
+Building the three new template sequences needed a generator no CEP precedent exists for (host.jsx
+only ever *imports* the Adjustment Layer template, never builds one) - `tools/template_generator/`
+is a throwaway, unsigned CEP dev panel (not part of the product, not part of any stable repo) that
+clones each existing `AL_TEMPLATE_WxH` sequence for its settings, creates the generic item on it,
+and records the resulting sequenceID. Notable dead ends before it worked, kept here so they aren't
+re-attempted: `app.project.createNewSequence()` opens an interactive "New Sequence" dialog and
+blocks waiting for it - undocumented, discovered live, unusable from an unattended script;
+`app.project.newBarsAndTone`'s return value is not a real `ProjectItem` despite the docs and
+host.jsx's own successful `.moveBin()` usage suggesting otherwise (`.type` reads `undefined`,
+`insertClip`/`overwriteClip` throw "Illegal Parameter type") - the actual item has to be located by
+diffing the project root afterward, same as the QE-DOM-created items already required; a
+name-based "already recorded" check in the generator's own JSON-merge step left stale, since-deleted
+sequenceIDs in the config whenever a sequence got rebuilt between debug rounds, which is what made
+`Project.importSequences` on the UXP side return `true` while importing nothing.
 
 ## Parity assessment (2026-08-24)
 
@@ -456,8 +488,8 @@ how should future UXP releases be watched for capabilities that close the remain
 | **Audio** transition apply | ❌ Confirmed platform gap | `TransitionFactory` and `AudioClipTrackItem` (full class references checked) have no transition-related method at all - not unwired, not possible today |
 | Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx` |
 | Insert favorite item | 🔲 Not built yet, looks buildable | CEP uses `app.project.importSequences()`/`importFiles()` - both documented standard-DOM calls already used elsewhere in this project; likely the easiest remaining slice |
-| Create generic item from scratch (Black Video, Color Matte, Bars & Tone, Transparent Video, Universal Counting Leader) | ❌ Confirmed platform gap | CEP itself only reaches these via `qe.project.newBlackVideo`-style calls - the undocumented legacy QE DOM this project has deliberately never used |
-| Create generic item: Adjustment Layer specifically | ❌ Confirmed gap, CEP included | Not a UXP-only limitation - CEP has no creation API for this either and works around it by importing a template `.prproj`; a UXP equivalent would need the same kind of workaround, not a missing API call |
+| Create generic item: Adjustment Layer, Bars and Tone, Black Video, Transparent Video | ✅ Full parity, host-tested | Not built fresh on either platform - CEP has no creation API for these either (for Adjustment Layer) or only reaches them via undocumented QE DOM (the other three); both work around it the same way, importing a pre-built `.prproj` template. `tools/template_generator/` (a throwaway CEP dev panel) built the three new templates; sixth-slice section above has the details |
+| Create generic item: Color Matte, Universal Counting Leader | ❌ Confirmed platform gap (Color Matte: by product decision) | Color Matte: neither platform can set its color after creation, so a template built once could never be recolored per use - excluded by the user's own call, not attempted. Universal Counting Leader: CEP only reaches it via undocumented QE DOM and no template was built for it - not attempted |
 | Nest, auto-routed native/API | ✅ Full parity, host-tested | The routing signal itself (multi-track-audio detection) had gone silently stale under this migration and was restored via a new `diagnostics.read` field, not something UXP was missing |
 | Nest: default codename, bin placement | ✅ Full parity, host-tested | `FXN-NNN` scheme and filing into a project bin (`FolderItem.createBinAction`/`createMoveItemAction`) both ported |
 | Create a new Timeline track when none is free | ❌ Confirmed platform gap | Exhaustive check: every plausibly relevant class (`Sequence`, `SequenceEditor`, `VideoTrack`, `AudioTrack`, `SequenceSettings`, `Application`) plus the complete official changelog from the 25.2.0 public beta through 26.3.0 - track *renaming* was added along the way, track *creation* never was |

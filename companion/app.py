@@ -545,8 +545,22 @@ FOCUS_GRACE_SECONDS = 1.2
 APPLY_STATUS_INITIAL_DELAY_MS = 40
 APPLY_STATUS_POLL_MS = 60
 APPLY_STATUS_TIMEOUT_MS = 5000
+# A "generic item" that isn't already in the project imports a whole template project, moves the
+# result into a bin, and deletes the leftover sequence (index.js's ensureGenericProjectItem) - a
+# multi-transaction round trip that measured well past APPLY_STATUS_TIMEOUT_MS on first use, making
+# the palette report a false "no response" for a request the plugin was still actually completing.
+# 20s wasn't enough either once template_project.prproj grew to ~80 sequences (originally just the
+# 20 Adjustment Layer ones) - only the first import of a given resolution pays this cost, since
+# ensureGenericProjectItem reuses whatever it already imported on every later call.
+GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS = 45000
 APPLY_SUCCESS_CLOSE_DELAY_MS = 300
 MAX_RECENT_ACTIONS = 20
+
+
+def apply_status_timeout_ms(effect: dict) -> float:
+    if effect.get("type") == "generic_item":
+        return GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS
+    return APPLY_STATUS_TIMEOUT_MS
 HEADER_PAD_X = 14
 HEADER_PAD_Y = 10
 SEARCH_PAD_X = 14
@@ -2490,7 +2504,7 @@ def track_adapter_action_success(palette, effect: dict, timestamp: float) -> Non
     adapter = getattr(palette, "execution_adapter", None)
     if root is None or not hasattr(root, "after") or adapter is None:
         return
-    deadline = time.monotonic() + (APPLY_STATUS_TIMEOUT_MS / 1000.0)
+    deadline = time.monotonic() + (apply_status_timeout_ms(effect) / 1000.0)
 
     def poll():
         status = adapter.poll_status(timestamp)
@@ -4345,7 +4359,7 @@ class EffectPalette:
             return
         if self._apply_started_at is not None:
             elapsed_ms = (time.perf_counter() - self._apply_started_at) * 1000.0
-            if elapsed_ms >= APPLY_STATUS_TIMEOUT_MS:
+            if elapsed_ms >= apply_status_timeout_ms(self._current_apply_effect):
                 self._apply_busy = False
                 self.entry.configure(state="normal")
                 self.status_label.config(text=tr("status_no_response"))
@@ -7052,7 +7066,7 @@ if HAS_QT:
                 return
             if self._apply_started_at is not None:
                 elapsed_ms = (time.perf_counter() - self._apply_started_at) * 1000.0
-                if elapsed_ms >= APPLY_STATUS_TIMEOUT_MS:
+                if elapsed_ms >= apply_status_timeout_ms(self._current_apply_effect):
                     self._apply_busy = False
                     self._apply_finishing = False
                     self.apply_progress.hide()

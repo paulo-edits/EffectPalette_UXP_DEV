@@ -2193,6 +2193,182 @@ async function findProjectItemByTreePath(project, treePath) {
   return (Array.isArray(children) ? children : []).find((child) => (child.name || "") === itemName) || null;
 }
 
+// CEP's host.jsx builds all five generic items from documented ExtendScript/QE-DOM factory calls
+// (app.project.newBarsAndTone, qe.project.newColorMatte, etc.), none of which UXP has an equivalent
+// for. The template-import trick (_importAdjustmentLayerFromTemplate, host.jsx) ports cleanly since
+// Project.importSequences is documented UXP too - tools/template_generator (a throwaway CEP dev
+// panel, since QE DOM is unreachable from UXP's own JS scope) builds the same kind of
+// wrapper-sequence template for bars_and_tone/black_video/transparent_video into
+// generic_item_templates.json. Color Matte is deliberately excluded: neither CEP nor UXP has any
+// way to set its color after creation, so a template built once could never be recolored per use.
+const GENERIC_ITEM_TEMPLATES = {
+  adjustment_layer: { configKey: "adjustmentLayer", displayLabel: "Adjustment Layer" },
+  bars_and_tone: { configKey: "barsAndTone", displayLabel: "Bars and Tone" },
+  black_video: { configKey: "blackVideo", displayLabel: "Black Video" },
+  transparent_video: { configKey: "transparentVideo", displayLabel: "Transparent Video" }
+};
+
+async function readBundledTemplateJson(relativePath) {
+  const { localFileSystem } = require("uxp").storage;
+  const pluginFolder = await localFileSystem.getPluginFolder();
+  const entry = await pluginFolder.getEntry(relativePath);
+  return JSON.parse(await entry.read());
+}
+
+async function getBundledTemplateProjectPath() {
+  const { localFileSystem } = require("uxp").storage;
+  const pluginFolder = await localFileSystem.getPluginFolder();
+  const entry = await pluginFolder.getEntry("assets/template_project/template_project.prproj");
+  return entry.nativePath;
+}
+
+// Mirrors _collectProjectItemsMatching/_findFirstProjectItemMatching (host.jsx): the matcher is
+// applied to every node in the project tree, root included, not just leaves. seenIds/depth guard
+// against a hang if the tree ever has a cycle (a bin nested inside itself) - a real search here was
+// observed to hang indefinitely with no error, which a bare recursive walk gives no way to diagnose
+// or recover from.
+async function findFirstProjectItemRecursive(folderItem, matcher, seenIds, depth) {
+  seenIds = seenIds || new Set();
+  depth = depth || 0;
+  if (depth > 64) return null;
+  let selfId = null;
+  try { selfId = await folderItem.getId(); } catch (error) { selfId = null; }
+  if (selfId !== null) {
+    if (seenIds.has(selfId)) return null;
+    seenIds.add(selfId);
+  }
+  if (matcher(folderItem)) return folderItem;
+  const children = await folderItem.getItems();
+  for (const child of Array.isArray(children) ? children : []) {
+    if (matcher(child)) return child;
+    let childFolder = null;
+    try { childFolder = premiere.FolderItem.cast(child); } catch (error) { childFolder = null; }
+    if (childFolder) {
+      const found = await findFirstProjectItemRecursive(childFolder, matcher, seenIds, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function expectedGenericItemName(displayLabel, width, height) {
+  return `${displayLabel}_${width}x${height}`;
+}
+
+// Mirrors _importAdjustmentLayerFromTemplate (host.jsx): reuse an already-organized item of the
+// right size if one exists anywhere in the project; otherwise import the closest-resolution
+// template sequence, move whatever landed at project root into FX.palette_Assets, locate the item
+// by its expected name, then delete the now-empty imported wrapper sequence(s) - same order host.jsx
+// itself uses, including its quirk of stopping at the first candidate that contains a match rather
+// than moving every newly-added root item unconditionally.
+async function ensureGenericProjectItem(project, genericKey, targetWidth, targetHeight) {
+  // Fire-and-forget progress lines to the companion's own console (transport.js's sendDiagnosticLog)
+  // - added to pin down exactly which step a hang was in for black_video/transparent_video (the
+  // WebSocket response itself only ever gets sent once this whole function resolves/throws, so a
+  // stuck step produces zero visible output otherwise; the plugin's own UXP DevTools console is
+  // harder to reach than the companion's log, which was already being captured).
+  const log = (step) => transport.sendDiagnosticLog(`[ensureGenericProjectItem:${genericKey}] ${step}`);
+
+  log("start");
+  const config = GENERIC_ITEM_TEMPLATES[genericKey];
+  if (!config) throw new Error(`Generic item "${genericKey}" has no UXP template mapping yet.`);
+
+  log("reading bundled template json");
+  const json = await readBundledTemplateJson("assets/template_project/generic_item_templates.json");
+  const section = json[config.configKey];
+  const templates = section && Array.isArray(section.templates) ? section.templates : [];
+  if (templates.length === 0) throw new Error(`No template entries configured for "${genericKey}".`);
+
+  let chosen = null;
+  let bestScore = Infinity;
+  for (const entry of templates) {
+    if (!entry || !entry.sequenceID) continue;
+    const width = Number(entry.width) || 0;
+    const height = Number(entry.height) || 0;
+    const score = Math.abs(width - targetWidth) + Math.abs(height - targetHeight);
+    if (score < bestScore) { bestScore = score; chosen = entry; }
+  }
+  if (!chosen) throw new Error(`No usable template entry found for "${genericKey}".`);
+  log(`chose template "${chosen.name}" (${chosen.sequenceID})`);
+
+  const expectedName = expectedGenericItemName(config.displayLabel, chosen.width, chosen.height);
+  const rootItem = await project.getRootItem();
+
+  log("searching for an already-existing item");
+  const existing = await findFirstProjectItemRecursive(rootItem, (item) => (item.name || "") === expectedName);
+  if (existing) { log("found existing item, done"); return { projectItem: existing, imported: false, templateName: chosen.name }; }
+
+  log("resolving bundled template project path");
+  const templateProjectPath = await getBundledTemplateProjectPath();
+  // Identified by id, not by name: a name-based diff here previously came back empty on every
+  // attempt once a first hung/incomplete run had already left an unmoved orphan of the same name at
+  // root - every later import legitimately added a new (differently-identified) item, but the name
+  // match against that leftover orphan made it look like nothing new had appeared, so the item never
+  // even got looked for, let alone moved - the exact same class of bug the sequence-cleanup diff
+  // below was already fixed for.
+  const beforeChildren = await rootItem.getItems();
+  const beforeIds = new Set();
+  for (const item of Array.isArray(beforeChildren) ? beforeChildren : []) {
+    try { beforeIds.add(await item.getId()); } catch (error) { /* items with no id can't be diffed by id */ }
+  }
+  const beforeSequences = await project.getSequences();
+  const beforeSequenceGuids = new Set(beforeSequences.map((sequence) => guidToString(sequence.guid)));
+
+  log(`calling Project.importSequences(${templateProjectPath}, [${chosen.sequenceID}])`);
+  const importSucceeded = await project.importSequences(templateProjectPath, [premiere.Guid.fromString(chosen.sequenceID)]);
+  log(`importSequences returned ${importSucceeded}`);
+  if (!importSucceeded) throw new Error("Premiere rejected importing the generic-item template project.");
+
+  const afterChildren = await rootItem.getItems();
+  const newRootItems = [];
+  for (const item of Array.isArray(afterChildren) ? afterChildren : []) {
+    let id = null;
+    try { id = await item.getId(); } catch (error) { id = null; }
+    if (id === null || !beforeIds.has(id)) newRootItems.push(item);
+  }
+  log(`${newRootItems.length} new root item(s) after import`);
+
+  let resolvedItem = null;
+  for (const candidate of newRootItems) {
+    let candidateFolder = null;
+    try { candidateFolder = premiere.FolderItem.cast(candidate); } catch (error) { candidateFolder = null; }
+    log(`moving candidate "${candidate.name}" into FX.palette_Assets`);
+    await ensureBinAndMoveProjectItem(project, candidate, "FX.palette_Assets");
+    const found = candidateFolder
+      ? await findFirstProjectItemRecursive(candidateFolder, (item) => (item.name || "") === expectedName)
+      : ((candidate.name || "") === expectedName ? candidate : null);
+    if (found) { resolvedItem = found; break; }
+  }
+  if (!resolvedItem) {
+    log("no match among moved candidates, searching whole project as fallback");
+    resolvedItem = await findFirstProjectItemRecursive(rootItem, (item) => (item.name || "") === expectedName);
+  }
+  if (!resolvedItem) throw new Error(`Imported the template but could not find "${expectedName}" afterward.`);
+  log("resolved item, cleaning up imported sequence(s)");
+
+  // Identified by guid difference, not by name === chosen.name: a name-based filter previously
+  // used here left this array empty (silently, since deleteSequence was then just never called)
+  // whenever the imported sequence's actual name didn't exactly match, which is why the
+  // AL_TEMPLATE_* wrapper sequence was observed still sitting in the project after a real import.
+  const afterSequences = await project.getSequences();
+  const importedSequences = afterSequences.filter((sequence) => !beforeSequenceGuids.has(guidToString(sequence.guid)));
+
+  const sequenceCleanup = [];
+  for (const sequence of importedSequences) {
+    let deleted = false;
+    let deleteError = null;
+    try {
+      deleted = await project.deleteSequence(sequence);
+    } catch (error) {
+      deleteError = error && error.message ? error.message : String(error);
+    }
+    sequenceCleanup.push({ name: sequence.name || null, deleted, deleteError });
+  }
+
+  log("done");
+  return { projectItem: resolvedItem, imported: true, templateName: chosen.name, sequenceCleanup };
+}
+
 // Everything below ports host.jsx's _resolveInsertionTracks/_findAvailableVideoTrackAtTicks/
 // _findAvailableAudioTrackAtTicks/_findAvailableVideoTrackInRange/_projectItemShouldSpanSelection/
 // _selectionVideoSpan (read-only reference) to documented UXP calls. What CEP does beyond this -
@@ -2328,8 +2504,23 @@ async function insertSelectedProjectItem(action) {
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("Open a sequence before inserting a Project item.");
 
+  const genericKey = typeof action.payload.genericKey === "string" ? action.payload.genericKey.trim() : "";
+
   let projectItem;
-  if (treePath) {
+  let genericItemResolution = null;
+  if (genericKey) {
+    // Companion-driven "generic item" request (Adjustment Layer, Bars and Tone, ...): find-or-import
+    // from the bundled template project rather than resolving an already-existing selection/path.
+    const frameSize = await sequence.getFrameSize();
+    const resolved = await ensureGenericProjectItem(project, genericKey, Number(frameSize.width) || 0, Number(frameSize.height) || 0);
+    projectItem = resolved.projectItem;
+    genericItemResolution = {
+      genericKey,
+      imported: resolved.imported,
+      templateName: resolved.templateName,
+      sequenceCleanup: resolved.sequenceCleanup || null
+    };
+  } else if (treePath) {
     // Companion-driven: resolve by path instead of requiring the item to already be selected in
     // the Project panel - there is no official API to set that selection (ProjectItemSelection is
     // read-only), so a search-then-apply flow has no other way to target a specific item.
@@ -2425,6 +2616,7 @@ async function insertSelectedProjectItem(action) {
       name: projectItem.name || null,
       type: projectItem.type
     },
+    genericItemResolution,
     editMode,
     insertionPoint: { ticks: insertionTicks.toString() },
     spanSelection: span ? { startTicks: span.startTicks.toString(), endTicks: span.endTicks.toString(), sourceItemCount: span.count } : null,

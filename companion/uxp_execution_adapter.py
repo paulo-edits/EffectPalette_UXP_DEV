@@ -49,7 +49,22 @@ RECONSTRUCT_EASING_DEFAULT = True
 # effect["type"] values translated so far. Every other type returns error_not_supported
 # immediately - callers see a clear failure instead of a hang. "transition_audio" is
 # deliberately absent: the plugin exposes no audio-transition action at all.
-_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset", "transition_video", "timeline_action", "project_item"}
+_SUPPORTED_EFFECT_TYPES = {
+    "video",
+    "audio",
+    "preset",
+    "transition_video",
+    "timeline_action",
+    "project_item",
+    "generic_item",
+}
+
+# Every generic item except Color Matte now has a UXP-side template mapping (index.js's
+# GENERIC_ITEM_TEMPLATES) - Color Matte has no way to set its color after creation on either CEP or
+# UXP, so a pre-built template could never be recolored per use and stays unsupported here. Requesting
+# it (or any future key without a template) fails closed instead of round-tripping a request the
+# plugin can only reject.
+_GENERIC_ITEM_KEYS_WITH_UXP_TEMPLATE = {"adjustment_layer", "bars_and_tone", "black_video", "transparent_video"}
 
 # Vendor prefixes literally encoded in transition matchNames, longest-first so
 # "Universe_Transitions" is recognized before the shorter "Universe". Extracting this is not a
@@ -212,6 +227,10 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 self._request_catalogs()
             elif self._client is not None:
                 self._client.close()
+            return
+
+        if message.get("type") == "diagnostic.log":
+            print(f"[UXP plugin log] {message.get('message', '')}", flush=True)
             return
 
         request_id = message.get("requestId")
@@ -378,6 +397,17 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             # there), matching host.jsx's _resolveInsertionTracks - sending an explicit 0 here
             # would override that and always insert on track 0 regardless of selection.
             payload = {"treePath": tree_path, "editMode": "INSERT"}
+            requested_display_name = None
+        elif effect_type == "generic_item":
+            generic_key = str(effect.get("genericKey") or "").strip()
+            if not generic_key:
+                self._pending[request_id] = {"status": "error_generic_key_required"}
+                return timestamp
+            if generic_key not in _GENERIC_ITEM_KEYS_WITH_UXP_TEMPLATE:
+                self._pending[request_id] = {"status": "error_not_supported"}
+                return timestamp
+            action_type = "timeline.insertProjectItem"
+            payload = {"genericKey": generic_key, "editMode": "INSERT"}
             requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)

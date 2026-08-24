@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>FX.palette Template Generator</title>
+  <style>
+    body { font-family: sans-serif; font-size: 12px; background: #1e1e1e; color: #ddd; margin: 0; padding: 12px; }
+    button { font-size: 13px; padding: 8px 14px; cursor: pointer; }
+    button:disabled { cursor: default; opacity: 0.6; }
+    #status { margin-top: 10px; white-space: pre-wrap; }
+    #log { margin-top: 10px; white-space: pre-wrap; background: #111; border: 1px solid #333; padding: 8px; height: 260px; overflow-y: auto; font-family: Consolas, monospace; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <button id="generate-btn">Gerar templates (Bars and Tone / Black Video / Transparent Video)</button>
+  <div id="status"></div>
+  <div id="log"></div>
+  <script src="./lib/CSInterface.js"></script>
+  <script src="./index.js"></script>
+</body>
+</html>

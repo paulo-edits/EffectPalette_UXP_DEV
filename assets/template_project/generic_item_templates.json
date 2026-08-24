@@ -1,0 +1,502 @@
+{
+  "adjustmentLayer": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      {
+        "name": "AL_TEMPLATE_720x720",
+        "width": 720,
+        "height": 720,
+        "sequenceID": "eccccc68-81bf-4b5e-aff8-934218acbbef"
+      },
+      {
+        "name": "AL_TEMPLATE_720x1280",
+        "width": 720,
+        "height": 1280,
+        "sequenceID": "3defa303-b1b3-48d9-91c0-f04034e167a9"
+      },
+      {
+        "name": "AL_TEMPLATE_960x720",
+        "width": 960,
+        "height": 720,
+        "sequenceID": "167a9f0e-43dc-439a-8251-4084cdd1b0b3"
+      },
+      {
+        "name": "AL_TEMPLATE_1080x1080",
+        "width": 1080,
+        "height": 1080,
+        "sequenceID": "fe344833-1e46-42d6-ad58-fb2faf81289b"
+      },
+      {
+        "name": "AL_TEMPLATE_1080x1920",
+        "width": 1080,
+        "height": 1920,
+        "sequenceID": "26e3da0c-20f1-4c32-9873-e2262c79a088"
+      },
+      {
+        "name": "AL_TEMPLATE_1280x720",
+        "width": 1280,
+        "height": 720,
+        "sequenceID": "b7a9f248-e12a-4b98-ab66-7ca3c01c98c3"
+      },
+      {
+        "name": "AL_TEMPLATE_1440x1080",
+        "width": 1440,
+        "height": 1080,
+        "sequenceID": "35ae5027-c3cd-49fa-a997-fa7fbeefd072"
+      },
+      {
+        "name": "AL_TEMPLATE_1440x1440",
+        "width": 1440,
+        "height": 1440,
+        "sequenceID": "44523195-f945-4f67-8089-a13d2837b12e"
+      },
+      {
+        "name": "AL_TEMPLATE_1440x2560",
+        "width": 1440,
+        "height": 2560,
+        "sequenceID": "40c555ed-5565-41da-b622-eac252fa94c9"
+      },
+      {
+        "name": "AL_TEMPLATE_1920x1080",
+        "width": 1920,
+        "height": 1080,
+        "sequenceID": "1968205d-d31c-4cf2-b082-0da3dd16c74d"
+      },
+      {
+        "name": "AL_TEMPLATE_1920x1440",
+        "width": 1920,
+        "height": 1440,
+        "sequenceID": "0cd37a5e-435a-4d27-a3b1-2c2a36593770"
+      },
+      {
+        "name": "AL_TEMPLATE_2160x2160",
+        "width": 2160,
+        "height": 2160,
+        "sequenceID": "f3b90dc4-f048-4ab0-a1fe-0fab103ff6b1"
+      },
+      {
+        "name": "AL_TEMPLATE_2160x3840",
+        "width": 2160,
+        "height": 3840,
+        "sequenceID": "524739af-a8ab-45b9-a67c-c40410b0d896"
+      },
+      {
+        "name": "AL_TEMPLATE_2560x1440",
+        "width": 2560,
+        "height": 1440,
+        "sequenceID": "b4dcc2b7-841d-46bb-a015-d6a671e4743d"
+      },
+      {
+        "name": "AL_TEMPLATE_2880x2160",
+        "width": 2880,
+        "height": 2160,
+        "sequenceID": "6bf72812-c0d4-49b4-a211-a5570e6cc9b1"
+      },
+      {
+        "name": "AL_TEMPLATE_3840x2160",
+        "width": 3840,
+        "height": 2160,
+        "sequenceID": "0eea87cd-4eda-469f-9a6a-c1d6ed7e2c74"
+      },
+      {
+        "name": "AL_TEMPLATE_4320x4320",
+        "width": 4320,
+        "height": 4320,
+        "sequenceID": "82e12475-1956-44bf-a718-a608269a9e96"
+      },
+      {
+        "name": "AL_TEMPLATE_4320x7680",
+        "width": 4320,
+        "height": 7680,
+        "sequenceID": "70bf30b1-fac0-42ec-a34d-7674c8ad3b34"
+      },
+      {
+        "name": "AL_TEMPLATE_5760x4320",
+        "width": 5760,
+        "height": 4320,
+        "sequenceID": "e6475aeb-3a1d-42a5-8b19-392232e5cba6"
+      },
+      {
+        "name": "AL_TEMPLATE_7680x4320",
+        "width": 7680,
+        "height": 4320,
+        "sequenceID": "692132bb-57f0-4c40-a857-bafd0832e6d0"
+      }
+    ]
+  },
+  "blackVideo": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      {
+        "name": "BV_TEMPLATE_1920x1440",
+        "width": 1920,
+        "height": 1440,
+        "sequenceID": "8ba63e40-d2a4-42fa-bc53-4793fe56ea25"
+      },
+      {
+        "name": "BV_TEMPLATE_3840x2160",
+        "width": 3840,
+        "height": 2160,
+        "sequenceID": "76615b5d-3942-4a4a-a575-bd5d7ea348e2"
+      },
+      {
+        "name": "BV_TEMPLATE_960x720",
+        "width": 960,
+        "height": 720,
+        "sequenceID": "ba34401c-82eb-4ddc-a136-c862cecd63a7"
+      },
+      {
+        "name": "BV_TEMPLATE_1920x1080",
+        "width": 1920,
+        "height": 1080,
+        "sequenceID": "0cdc5e8d-5d52-4fd1-a4d2-0d6236c5003c"
+      },
+      {
+        "name": "BV_TEMPLATE_1080x1920",
+        "width": 1080,
+        "height": 1920,
+        "sequenceID": "9918774a-2a47-4ae8-be7c-b735e758f691"
+      },
+      {
+        "name": "BV_TEMPLATE_1440x1080",
+        "width": 1440,
+        "height": 1080,
+        "sequenceID": "d4788701-c4ed-469f-8e90-06ae925d6804"
+      },
+      {
+        "name": "BV_TEMPLATE_720x1280",
+        "width": 720,
+        "height": 1280,
+        "sequenceID": "faaf7bc7-6796-4e68-8ac4-a5be2a1506df"
+      },
+      {
+        "name": "BV_TEMPLATE_1440x2560",
+        "width": 1440,
+        "height": 2560,
+        "sequenceID": "82bfd911-c1e5-4d1d-b077-4ef650fd3d31"
+      },
+      {
+        "name": "BV_TEMPLATE_1440x1440",
+        "width": 1440,
+        "height": 1440,
+        "sequenceID": "fea1b68a-e272-40bb-95d1-2a51cb170021"
+      },
+      {
+        "name": "BV_TEMPLATE_2160x3840",
+        "width": 2160,
+        "height": 3840,
+        "sequenceID": "c86f9149-52d2-4d4f-bc2d-ab026ec33a63"
+      },
+      {
+        "name": "BV_TEMPLATE_7680x4320",
+        "width": 7680,
+        "height": 4320,
+        "sequenceID": "fc80c912-efdb-45b4-b47a-0f998e0e7ebc"
+      },
+      {
+        "name": "BV_TEMPLATE_2880x2160",
+        "width": 2880,
+        "height": 2160,
+        "sequenceID": "27d4adc5-97bb-4cc7-bcbb-6e120045cefc"
+      },
+      {
+        "name": "BV_TEMPLATE_4320x7680",
+        "width": 4320,
+        "height": 7680,
+        "sequenceID": "65ef10c4-1db9-4518-9e18-23a42a5bae2f"
+      },
+      {
+        "name": "BV_TEMPLATE_4320x4320",
+        "width": 4320,
+        "height": 4320,
+        "sequenceID": "e9cfe9cd-5252-4fd0-ab1e-b686848d8523"
+      },
+      {
+        "name": "BV_TEMPLATE_2560x1440",
+        "width": 2560,
+        "height": 1440,
+        "sequenceID": "01d1199f-ae77-4be6-8ad1-6bc6cc47edd2"
+      },
+      {
+        "name": "BV_TEMPLATE_1280x720",
+        "width": 1280,
+        "height": 720,
+        "sequenceID": "15ec047f-7f9d-47ec-9f0c-80b95ba76185"
+      },
+      {
+        "name": "BV_TEMPLATE_5760x4320",
+        "width": 5760,
+        "height": 4320,
+        "sequenceID": "ea3138f4-35e8-44db-b13d-33d91f723824"
+      },
+      {
+        "name": "BV_TEMPLATE_720x720",
+        "width": 720,
+        "height": 720,
+        "sequenceID": "e19658ca-d038-4530-a192-bc0397b50c7e"
+      },
+      {
+        "name": "BV_TEMPLATE_2160x2160",
+        "width": 2160,
+        "height": 2160,
+        "sequenceID": "d37c82d9-180d-417d-9108-c909374370d3"
+      },
+      {
+        "name": "BV_TEMPLATE_1080x1080",
+        "width": 1080,
+        "height": 1080,
+        "sequenceID": "6c7fea1a-1e05-4b79-861c-cb0f745c6094"
+      }
+    ]
+  },
+  "transparentVideo": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      {
+        "name": "TV_TEMPLATE_1920x1440",
+        "width": 1920,
+        "height": 1440,
+        "sequenceID": "af3e25b3-48fa-4367-af72-2d599f2e083d"
+      },
+      {
+        "name": "TV_TEMPLATE_3840x2160",
+        "width": 3840,
+        "height": 2160,
+        "sequenceID": "a2f28d67-9209-4122-a951-2d88cc5d098e"
+      },
+      {
+        "name": "TV_TEMPLATE_960x720",
+        "width": 960,
+        "height": 720,
+        "sequenceID": "82d6c5b7-bb69-4c67-9f6b-7a8ef3640467"
+      },
+      {
+        "name": "TV_TEMPLATE_1920x1080",
+        "width": 1920,
+        "height": 1080,
+        "sequenceID": "00f62a97-9385-4a4d-91a4-94e16b3b0194"
+      },
+      {
+        "name": "TV_TEMPLATE_1080x1920",
+        "width": 1080,
+        "height": 1920,
+        "sequenceID": "f5005dc6-a0d6-4218-9e05-c69a07ffd94f"
+      },
+      {
+        "name": "TV_TEMPLATE_1440x1080",
+        "width": 1440,
+        "height": 1080,
+        "sequenceID": "b1245d25-6041-424b-95f5-36df75bc49d6"
+      },
+      {
+        "name": "TV_TEMPLATE_720x1280",
+        "width": 720,
+        "height": 1280,
+        "sequenceID": "ea2c5f99-cab2-47a4-999c-f69cbca82033"
+      },
+      {
+        "name": "TV_TEMPLATE_1440x2560",
+        "width": 1440,
+        "height": 2560,
+        "sequenceID": "b226d89e-dcb0-477d-82f4-272deb711abb"
+      },
+      {
+        "name": "TV_TEMPLATE_1440x1440",
+        "width": 1440,
+        "height": 1440,
+        "sequenceID": "68f27fa6-b4a7-46de-aa4e-00ac87f736d0"
+      },
+      {
+        "name": "TV_TEMPLATE_2160x3840",
+        "width": 2160,
+        "height": 3840,
+        "sequenceID": "278ed8d1-8e70-498d-8074-5f9ec0ab984f"
+      },
+      {
+        "name": "TV_TEMPLATE_7680x4320",
+        "width": 7680,
+        "height": 4320,
+        "sequenceID": "a730b88a-8f84-4bc5-818f-35cfdd7a2132"
+      },
+      {
+        "name": "TV_TEMPLATE_2880x2160",
+        "width": 2880,
+        "height": 2160,
+        "sequenceID": "5be4af9e-c40e-4851-9cf7-a44772ca5a94"
+      },
+      {
+        "name": "TV_TEMPLATE_4320x7680",
+        "width": 4320,
+        "height": 7680,
+        "sequenceID": "12f00dc1-ac5a-43b0-920c-0f25ae252d94"
+      },
+      {
+        "name": "TV_TEMPLATE_4320x4320",
+        "width": 4320,
+        "height": 4320,
+        "sequenceID": "64fb87f9-7b23-4335-b65e-8d865bfbc915"
+      },
+      {
+        "name": "TV_TEMPLATE_2560x1440",
+        "width": 2560,
+        "height": 1440,
+        "sequenceID": "cf434cb3-f22b-4b24-8306-0779396e46ea"
+      },
+      {
+        "name": "TV_TEMPLATE_1280x720",
+        "width": 1280,
+        "height": 720,
+        "sequenceID": "8cd29ce0-50b1-4e06-bca9-7270a518d96b"
+      },
+      {
+        "name": "TV_TEMPLATE_5760x4320",
+        "width": 5760,
+        "height": 4320,
+        "sequenceID": "bc23519b-57c4-4205-a63b-c53f6a9cc042"
+      },
+      {
+        "name": "TV_TEMPLATE_720x720",
+        "width": 720,
+        "height": 720,
+        "sequenceID": "df27b4a1-2c4a-4d79-87fd-851b3907330b"
+      },
+      {
+        "name": "TV_TEMPLATE_2160x2160",
+        "width": 2160,
+        "height": 2160,
+        "sequenceID": "00f39f56-83a0-4daa-bc30-bb90fa0370c4"
+      },
+      {
+        "name": "TV_TEMPLATE_1080x1080",
+        "width": 1080,
+        "height": 1080,
+        "sequenceID": "a5a1e302-f989-465e-a2a6-1fc70d5093cd"
+      }
+    ]
+  },
+  "barsAndTone": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      {
+        "name": "BT_TEMPLATE_1920x1440",
+        "width": 1920,
+        "height": 1440,
+        "sequenceID": "238154c3-d1ef-4f72-b569-15ffee999cdd"
+      },
+      {
+        "name": "BT_TEMPLATE_3840x2160",
+        "width": 3840,
+        "height": 2160,
+        "sequenceID": "3def830d-a107-4498-9eeb-8dbbeea41f1d"
+      },
+      {
+        "name": "BT_TEMPLATE_960x720",
+        "width": 960,
+        "height": 720,
+        "sequenceID": "73f0041b-d5a1-46da-bfbf-4a6ac82d46ec"
+      },
+      {
+        "name": "BT_TEMPLATE_1920x1080",
+        "width": 1920,
+        "height": 1080,
+        "sequenceID": "d8b3a8db-8c26-47d0-a31a-cb7137f5e833"
+      },
+      {
+        "name": "BT_TEMPLATE_1080x1920",
+        "width": 1080,
+        "height": 1920,
+        "sequenceID": "fceacfdc-4421-4612-b113-0f81a907c1b5"
+      },
+      {
+        "name": "BT_TEMPLATE_1440x1080",
+        "width": 1440,
+        "height": 1080,
+        "sequenceID": "c3bc9acd-174d-4787-a562-f9e61ba20f68"
+      },
+      {
+        "name": "BT_TEMPLATE_720x1280",
+        "width": 720,
+        "height": 1280,
+        "sequenceID": "ebd81480-a5a5-43cb-bd69-bcefefca15d2"
+      },
+      {
+        "name": "BT_TEMPLATE_1440x2560",
+        "width": 1440,
+        "height": 2560,
+        "sequenceID": "e964843e-446b-4a0f-8fd8-4100ec956c1f"
+      },
+      {
+        "name": "BT_TEMPLATE_1440x1440",
+        "width": 1440,
+        "height": 1440,
+        "sequenceID": "51c6e243-7e55-4ca5-aa5e-00a0dde1ef9f"
+      },
+      {
+        "name": "BT_TEMPLATE_2160x3840",
+        "width": 2160,
+        "height": 3840,
+        "sequenceID": "3fc8cabb-8d04-4843-bb53-dc1dde97ee0b"
+      },
+      {
+        "name": "BT_TEMPLATE_7680x4320",
+        "width": 7680,
+        "height": 4320,
+        "sequenceID": "4e69f567-6204-4832-9b30-956587d30a17"
+      },
+      {
+        "name": "BT_TEMPLATE_2880x2160",
+        "width": 2880,
+        "height": 2160,
+        "sequenceID": "1362ff80-43f0-4511-a46c-7078d2bf6890"
+      },
+      {
+        "name": "BT_TEMPLATE_4320x7680",
+        "width": 4320,
+        "height": 7680,
+        "sequenceID": "618521d1-5931-43ea-8339-1c3edcdedea4"
+      },
+      {
+        "name": "BT_TEMPLATE_4320x4320",
+        "width": 4320,
+        "height": 4320,
+        "sequenceID": "46fa15a8-7079-4418-8a40-b5b6f2b8e867"
+      },
+      {
+        "name": "BT_TEMPLATE_2560x1440",
+        "width": 2560,
+        "height": 1440,
+        "sequenceID": "72c7bbde-0922-48c0-a302-386f6e877028"
+      },
+      {
+        "name": "BT_TEMPLATE_1280x720",
+        "width": 1280,
+        "height": 720,
+        "sequenceID": "de8dc3ce-7ce5-45d9-baf4-cd6950645859"
+      },
+      {
+        "name": "BT_TEMPLATE_5760x4320",
+        "width": 5760,
+        "height": 4320,
+        "sequenceID": "80464903-57a9-43c9-887b-c6d7ac0fdfeb"
+      },
+      {
+        "name": "BT_TEMPLATE_720x720",
+        "width": 720,
+        "height": 720,
+        "sequenceID": "8eeb0e35-51fd-43e8-a209-1b976894ba5f"
+      },
+      {
+        "name": "BT_TEMPLATE_2160x2160",
+        "width": 2160,
+        "height": 2160,
+        "sequenceID": "699a1ce8-2bc0-4366-89e5-405deefa3cff"
+      },
+      {
+        "name": "BT_TEMPLATE_1080x1080",
+        "width": 1080,
+        "height": 1080,
+        "sequenceID": "dfea3f24-1e83-40b9-8d49-608e59560bd4"
+      }
+    ]
+  }
+}
