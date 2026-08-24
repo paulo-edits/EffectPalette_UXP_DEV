@@ -440,3 +440,62 @@ for some kinds, plus `qe.project.newBlackVideo`-style calls for others); favorit
 Timeline-clip label and label-group selection. `isSequence` project items (inserting a whole
 sequence as a nested item, distinct from Nest) are not specially handled by this slice either -
 host.jsx branches on it explicitly and this port does not yet.
+
+## Parity assessment (2026-08-24)
+
+Requested by the user after five slices: how close is this to the stable CEP product today, and
+how should future UXP releases be watched for capabilities that close the remaining gaps.
+
+### Per capability, against `UXP_HANDOFF.md`'s own list of CEP's working capabilities
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Video/audio effect apply | ✅ Full parity, host-tested | Identity-verified both directions (video: same-index candidate + post-insert display-name check; audio: exact `displayName` match, no guessing needed) |
+| Preset apply | ✅ Full parity, host-tested | Easing reconstruction on by default; catalog survives plugin reload via a persistent file token |
+| Video transition apply | ✅ Functional, host-tested | Label readability is permanently constrained - `VideoTransition` exposes no properties at all, so no name can ever be verified the way effects are |
+| **Audio** transition apply | ❌ Confirmed platform gap | `TransitionFactory` and `AudioClipTrackItem` (full class references checked) have no transition-related method at all - not unwired, not possible today |
+| Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx` |
+| Insert favorite item | 🔲 Not built yet, looks buildable | CEP uses `app.project.importSequences()`/`importFiles()` - both documented standard-DOM calls already used elsewhere in this project; likely the easiest remaining slice |
+| Create generic item from scratch (Black Video, Color Matte, Bars & Tone, Transparent Video, Universal Counting Leader) | ❌ Confirmed platform gap | CEP itself only reaches these via `qe.project.newBlackVideo`-style calls - the undocumented legacy QE DOM this project has deliberately never used |
+| Create generic item: Adjustment Layer specifically | ❌ Confirmed gap, CEP included | Not a UXP-only limitation - CEP has no creation API for this either and works around it by importing a template `.prproj`; a UXP equivalent would need the same kind of workaround, not a missing API call |
+| Nest, auto-routed native/API | ✅ Full parity, host-tested | The routing signal itself (multi-track-audio detection) had gone silently stale under this migration and was restored via a new `diagnostics.read` field, not something UXP was missing |
+| Nest: default codename, bin placement | ✅ Full parity, host-tested | `FXN-NNN` scheme and filing into a project bin (`FolderItem.createBinAction`/`createMoveItemAction`) both ported |
+| Create a new Timeline track when none is free | ❌ Confirmed platform gap | Exhaustive check: every plausibly relevant class (`Sequence`, `SequenceEditor`, `VideoTrack`, `AudioTrack`, `SequenceSettings`, `Application`) plus the complete official changelog from the 25.2.0 public beta through 26.3.0 - track *renaming* was added along the way, track *creation* never was |
+| Set a Timeline clip's Label | ❌ Confirmed platform gap (Stage 4) | No `TrackItem` label API, and no UXP equivalent to CEP's own `app.executeCommand()` escape hatch was found either (checked `Application` and the full class index) - CEP's own route to this is closed off in UXP twice over |
+| Select a Label group | ❌ Confirmed platform gap (Stage 4) | Same absence; CEP itself only reaches this via a native OS keystroke, not through `bridge.js`/`host.jsx` at all, so there was never a DOM path to port in the first place |
+| Set a **Project item's** color label | ⚠️ Implemented but narrow | `projectItems.setColorLabel` works and is tested, but the action still only accepts the hardcoded Violet label from its original diagnostic-probe form - generalizing to any of the ~8 label colors is a real but small remaining step, not a platform gap |
+| Global shortcuts / Stream Deck F13-F24 bindings | — Not a UXP question | Native Win32 `RegisterHotKey` in the Python companion, unaffected by CEP vs UXP either way |
+| Aliases, recent actions, actionable diagnostics | — Not a UXP question | Companion-side product features (search index, history, settings-panel health checks), independent of the execution backend |
+| `reconstructEasing` as a real user-facing setting | ⚠️ Wired, not yet exposed | Defaults on and is overridable per action already; Stage 4's own recommendation to ship it as a visible companion setting (not a diagnostic-only default) is still open |
+
+### Reading the gaps as a group
+
+Every ❌ above traces back to exactly one of three walls, not five different problems:
+
+1. **The legacy QE DOM** (`qe.project.*`) - CEP's own escape hatch for creating tracks and most
+   generic items, deliberately out of scope for this project from the start (`TECHNICAL_PLAN.md`'s
+   own "Scope and invariants"). Audio transitions and Timeline-clip Label are not QE-DOM cases -
+   they are missing from *both* the documented and the QE surface.
+2. **No generic command-execution API** - UXP has nothing resembling CEP's `app.executeCommand()`,
+   so even the "just run the same menu command CEP runs" fallback that a couple of these gaps might
+   otherwise have doesn't exist either.
+3. **Read-only selection APIs** - `ProjectItemSelection` has no setter, which is why project-item
+   insertion needed a path-based workaround rather than "select it, then insert the selection" the
+   way CEP itself effectively works.
+
+None of these three are things a future *action* in this project can work around - they would need
+Adobe to add API surface. That is exactly what the monitoring plan below is for.
+
+### Watching for future UXP releases
+
+Adobe ships Premiere roughly every 1-3 months (`AdobeDocs/uxp-premiere-pro`'s own changelog:
+25.0 Oct 2024, 25.1 Dec 2024, 25.2 Apr 2025, 25.3 Jun 2025, 25.4 Aug 2025, 25.6 Nov 2025, 26.0
+Jan 2026 - also the "Premiere Pro" → "Premiere" rebrand, 26.2 and 26.3 since), but new UXP *API
+surface* doesn't land in every point release - the changelog's own "New APIs" section only appears
+some releases (26.3.0's, for example, added several; the releases between 25.6.0 and 26.2.0 added
+none). The changelog itself is the one thing worth checking periodically, not Premiere's own release
+notes: `github.com/AdobeDocs/uxp-premiere-pro`, `src/pages/changelog/index.md`. Each entry lists
+exactly which classes/methods were added, so a future session can grep it for anything matching
+"track", "command", "execute", "selection", or "audio transition" rather than re-reading the whole
+API surface from scratch. Worth a look next time this project resumes after a gap of a few months,
+or whenever the user mentions Premiere updated itself.
