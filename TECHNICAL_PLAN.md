@@ -383,5 +383,60 @@ caught by `ok: true` - a lesson for any future action built on `FolderItem`: ver
 trusting a `Succeeded` flag from an API this thinly documented, and check the official samples repo
 for a working call site before inferring one from parameter names.
 
-Still deferred: project-item insertion; generic-item creation from scratch; favorite-item import;
-Timeline-clip label and label-group selection.
+### Fifth slice: project-item insertion, and no selection API to target it
+
+`effect["type"] == "project_item"` maps to `timeline.insertProjectItem`. This slice had its own
+identity problem before it had a behavior one: the action's original implementation required the
+target item to already be selected in the Project panel (`ProjectUtils.getSelection`), but there is
+no official UXP API to *set* that selection - `ProjectItemSelection` only exposes `getItems()`,
+confirmed by reading its full class reference. A search-then-apply palette has no other way to make
+"the item the user picked" also be "the item Premiere's own panel has selected," so `nodeId` (the
+field the CEP-era catalog carries) turned out useless too: it is an ExtendScript-only value with no
+UXP counterpart. The fix instead resolves the item by its full bin path (`treePath`, e.g.
+`\Project.prproj\FX.palette_Assets\Adjustment Layer_1920x1080`) - real, human-visible names, not an
+opaque ID - walking the same `findDirectChildBin` the Nest bin-placement work already proved out
+(`findProjectItemByTreePath`). `insertSelectedProjectItem` now accepts an optional `treePath` and
+only falls back to the old selection-based lookup when it's absent, so the diagnostics panel's own
+manual probe (select in the panel, click apply) still works unchanged.
+
+Host-testing this exposed a second, larger gap: the user found the insertion behavior didn't match
+the real product. Reading `host.jsx`'s `_insertResolvedProjectItem` (read-only reference) in full
+showed three things this slice's first pass had skipped past:
+
+1. **Track targeting follows the current Timeline selection**, not a hardcoded track 0 -
+   `_resolveInsertionTracks` takes the track of the first selected item of each kind.
+2. **An occupied track is avoided** - `_findAvailableVideoTrackAtTicks`/`_findAvailableAudioTrackAtTicks`
+   scan forward from that track for the first one with nothing already at the insertion point (or,
+   for the case below, nothing overlapping the whole span).
+3. **Certain items stretch to cover the current video selection** - `_projectItemShouldSpanSelection`
+   matches project-item names against `/adjustment layer|bars and tone|black video|color matte|
+   transparent video|universal counting leader/i` (host.jsx's own regex, ported verbatim); when it
+   matches and one or more video clips are selected, `_selectionVideoSpan` computes their combined
+   [earliest start, latest end), the item is inserted at that start instead of the playhead, and its
+   end is stretched to match afterward.
+
+`resolveInsertionTracks`, `findAvailableVideoTrackAtTicks`/`findAvailableVideoTrackInRange`/
+`findAvailableAudioTrackAtTicks`, `projectItemShouldSpanSelection`, and `selectionVideoSpan` port all
+three using only documented UXP calls (`Sequence.getSelection`, `TrackItem.getStartTime`/
+`getEndTime`, `VideoClipTrackItem.createSetEndAction` for the post-insert stretch). Host-confirmed:
+a real 3-clip video selection produced `spanSelection: {startTicks, endTicks, sourceItemCount: 3}`
+and `spanTrimSucceeded: true`, landing the Adjustment Layer exactly across the selection on the
+first free track above it.
+
+**What CEP can do here that UXP genuinely cannot**: when every existing track is occupied, host.jsx
+creates a new one via `qe.project.addTracks()` - the legacy QE DOM this project has deliberately
+never used elsewhere. Confirmed by exhaustive search this time, not assumption: every plausibly
+relevant class (`Sequence`, `SequenceEditor`, `VideoTrack`, `AudioTrack`, `SequenceSettings`,
+`Application`) and the complete official changelog from the 25.2.0 public beta through 26.3.0 - track
+*renaming* was added along the way, track *creation* never was. The fallback
+(`findAvailableVideoTrackAtTicks` et al.) now returns the *last* existing track instead of host.jsx's
+own fallback (the original starting track), since reusing the starting track risks silently
+overlapping the very clip the user just selected; the response's new `trackFallback: {video, audio}`
+booleans report whenever this path was taken instead of hiding it. This is a confirmed platform
+boundary, not a gap to keep chasing - the same category as the Timeline-item Label finding in Stage 4.
+
+Still deferred: generic-item creation from scratch (needs the same missing track-creation capability
+for some kinds, plus `qe.project.newBlackVideo`-style calls for others); favorite-item import;
+Timeline-clip label and label-group selection. `isSequence` project items (inserting a whole
+sequence as a nested item, distinct from Nest) are not specially handled by this slice either -
+host.jsx branches on it explicitly and this port does not yet.

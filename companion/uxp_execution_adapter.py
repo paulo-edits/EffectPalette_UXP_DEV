@@ -49,7 +49,7 @@ RECONSTRUCT_EASING_DEFAULT = True
 # effect["type"] values translated so far. Every other type returns error_not_supported
 # immediately - callers see a clear failure instead of a hang. "transition_audio" is
 # deliberately absent: the plugin exposes no audio-transition action at all.
-_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset", "transition_video", "timeline_action"}
+_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset", "transition_video", "timeline_action", "project_item"}
 
 # Vendor prefixes literally encoded in transition matchNames, longest-first so
 # "Universe_Transitions" is recognized before the shorter "Universe". Extracting this is not a
@@ -362,6 +362,22 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             action_type = "timeline.createNest"
             bin_name = str(effect.get("nestBin") or "").strip() or "Nested Clips"
             payload = {"name": nest_name, "binName": bin_name}
+            requested_display_name = None
+        elif effect_type == "project_item":
+            # There is no official API to set the Project panel's own selection
+            # (ProjectItemSelection is read-only), so this resolves the target by its full bin
+            # path instead of requiring the item to already be selected there - see
+            # findProjectItemByTreePath in index.js.
+            tree_path = str(effect.get("treePath") or "").strip()
+            if not tree_path:
+                self._pending[request_id] = {"status": "error_tree_path_required"}
+                return timestamp
+            action_type = "timeline.insertProjectItem"
+            # videoTrackIndex/audioTrackIndex are deliberately omitted: the plugin auto-targets
+            # the currently selected clip's track (falling back to the first available track from
+            # there), matching host.jsx's _resolveInsertionTracks - sending an explicit 0 here
+            # would override that and always insert on track 0 regardless of selection.
+            payload = {"treePath": tree_path, "editMode": "INSERT"}
             requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)

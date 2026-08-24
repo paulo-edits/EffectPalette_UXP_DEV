@@ -2171,35 +2171,213 @@ async function findProjectItemInstancesAtTime(sequence, projectItemId, tickTime)
   return matches;
 }
 
+// The companion's catalog identifies a Project item by a full bin path (e.g.
+// "\Project.prproj\FX.palette_Assets\Adjustment Layer_1920x1080"), captured by the CEP-era
+// exporter this app.py copy still reads. That value is a real, human-visible path through the
+// project tree - not an opaque ID - so it can be walked with the same findDirectChildBin() the
+// Nest bin-placement work already proved out, rather than relying on any cross-system identifier
+// (the "nodeId" field on the same catalog entries is an ExtendScript-only value with no UXP
+// counterpart, and was never usable here).
+async function findProjectItemByTreePath(project, treePath) {
+  const segments = String(treePath || "").split("\\").map((part) => part.trim()).filter(Boolean);
+  if (segments.length === 0) return null;
+  const itemName = segments[segments.length - 1];
+  const binSegments = segments.slice(1, -1); // drop the leading "Project.prproj" segment
+  let folder = await project.getRootItem();
+  for (const segment of binSegments) {
+    const next = await findDirectChildBin(folder, segment);
+    if (!next) return null;
+    folder = next;
+  }
+  const children = await folder.getItems();
+  return (Array.isArray(children) ? children : []).find((child) => (child.name || "") === itemName) || null;
+}
+
+// Everything below ports host.jsx's _resolveInsertionTracks/_findAvailableVideoTrackAtTicks/
+// _findAvailableAudioTrackAtTicks/_findAvailableVideoTrackInRange/_projectItemShouldSpanSelection/
+// _selectionVideoSpan (read-only reference) to documented UXP calls. What CEP does beyond this -
+// creating a brand new track via qe.project.addTracks() when every existing track is occupied -
+// is QE-DOM-only with no known UXP equivalent, so this falls back to the originally resolved
+// track instead, exactly like host.jsx's own fallback when track creation isn't attempted/fails.
+
+async function trackHasClipAtTicks(track, ticks) {
+  const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+  for (const item of items) {
+    const start = BigInt((await item.getStartTime()).ticks);
+    const end = BigInt((await item.getEndTime()).ticks);
+    if (start <= ticks && ticks < end) return true;
+  }
+  return false;
+}
+
+async function trackHasClipInRange(track, startTicks, endTicks) {
+  const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+  for (const item of items) {
+    const start = BigInt((await item.getStartTime()).ticks);
+    const end = BigInt((await item.getEndTime()).ticks);
+    if (start < endTicks && startTicks < end) return true;
+  }
+  return false;
+}
+
+// Each returns { index, hadAvailableTrack }. When no existing track is free, CEP's own fallback
+// (host.jsx) is to give up and reuse the original starting track - but UXP has no documented way
+// to create a new track (checked exhaustively: Sequence, SequenceEditor, VideoTrack, AudioTrack,
+// SequenceSettings, Application, and the full official changelog from the 25.2.0 beta through
+// 26.3.0 - track renaming was added, track creation never was; CEP's own qe.project.addTracks is
+// the legacy QE DOM this project has deliberately never used). Falling back to the *last* existing
+// track instead of the original starting one is a deliberate improvement over host.jsx's own
+// fallback: reusing the starting track risks silently overlapping the very clip the user just
+// selected, which the last track is less likely to already contain. hadAvailableTrack lets the
+// caller report when this fallback path was taken instead of hiding it.
+async function findAvailableVideoTrackAtTicks(sequence, startIndex, ticks) {
+  const count = await sequence.getVideoTrackCount();
+  for (let index = startIndex; index < count; index += 1) {
+    if (!(await trackHasClipAtTicks(await sequence.getVideoTrack(index), ticks))) return { index, hadAvailableTrack: true };
+  }
+  return { index: count > 0 ? count - 1 : startIndex, hadAvailableTrack: false };
+}
+
+async function findAvailableVideoTrackInRange(sequence, startIndex, startTicks, endTicks) {
+  const count = await sequence.getVideoTrackCount();
+  for (let index = startIndex; index < count; index += 1) {
+    if (!(await trackHasClipInRange(await sequence.getVideoTrack(index), startTicks, endTicks))) return { index, hadAvailableTrack: true };
+  }
+  return { index: count > 0 ? count - 1 : startIndex, hadAvailableTrack: false };
+}
+
+async function findAvailableAudioTrackAtTicks(sequence, startIndex, ticks) {
+  const count = await sequence.getAudioTrackCount();
+  for (let index = startIndex; index < count; index += 1) {
+    if (!(await trackHasClipAtTicks(await sequence.getAudioTrack(index), ticks))) return { index, hadAvailableTrack: true };
+  }
+  return { index: count > 0 ? count - 1 : startIndex, hadAvailableTrack: false };
+}
+
+// Mirrors _resolveInsertionTracks: the track of the first selected item of each kind, or 0 if
+// nothing of that kind is selected.
+async function resolveInsertionTracks(sequence) {
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  const audioTrackCount = await sequence.getAudioTrackCount();
+  const audioMediaTypes = new Set();
+  for (let index = 0; index < audioTrackCount; index += 1) {
+    audioMediaTypes.add(guidToString(await (await sequence.getAudioTrack(index)).getMediaType()));
+  }
+  const selection = await sequence.getSelection();
+  const items = selection ? await selection.getTrackItems() : [];
+  let videoTrackIndex = 0;
+  let audioTrackIndex = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!audioMediaTypes.has(guidToString(await item.getMediaType()))) continue;
+    const trackIndex = await item.getTrackIndex();
+    if (trackIndex >= 0 && trackIndex < audioTrackCount) { audioTrackIndex = trackIndex; break; }
+  }
+  for (const item of Array.isArray(items) ? items : []) {
+    if (audioMediaTypes.has(guidToString(await item.getMediaType()))) continue;
+    const trackIndex = await item.getTrackIndex();
+    if (trackIndex >= 0 && trackIndex < videoTrackCount) { videoTrackIndex = trackIndex; break; }
+  }
+  return { videoTrackIndex, audioTrackIndex };
+}
+
+// Mirrors _projectItemShouldSpanSelection's name regex exactly - CEP itself has no official
+// per-item-type flag for this either, it matches display name the same way.
+function projectItemShouldSpanSelection(name) {
+  return /adjustment layer|bars and tone|black video|color matte|transparent video|universal counting leader/i
+    .test(String(name || ""));
+}
+
+// Mirrors _selectionVideoSpan: the [min start, max end) across every selected *video* item.
+async function selectionVideoSpan(sequence) {
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  const videoMediaTypes = new Set();
+  for (let index = 0; index < videoTrackCount; index += 1) {
+    videoMediaTypes.add(guidToString(await (await sequence.getVideoTrack(index)).getMediaType()));
+  }
+  const selection = await sequence.getSelection();
+  const items = selection ? await selection.getTrackItems() : [];
+  let minStart = null;
+  let maxEnd = null;
+  let count = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!videoMediaTypes.has(guidToString(await item.getMediaType()))) continue;
+    const start = BigInt((await item.getStartTime()).ticks);
+    const end = BigInt((await item.getEndTime()).ticks);
+    if (end <= start) continue;
+    if (minStart === null || start < minStart) minStart = start;
+    if (maxEnd === null || end > maxEnd) maxEnd = end;
+    count += 1;
+  }
+  if (minStart === null || maxEnd === null || count < 1) return null;
+  return { startTicks: minStart, endTicks: maxEnd, count };
+}
+
 async function insertSelectedProjectItem(action) {
   const editMode = action.payload.editMode === "OVERWRITE" ? "OVERWRITE" : "INSERT";
-  const videoTrackIndex = readNonNegativeTrackIndex(action.payload.videoTrackIndex, "Video track index");
-  const audioTrackIndex = readNonNegativeTrackIndex(action.payload.audioTrackIndex, "Audio track index");
+  const treePath = typeof action.payload.treePath === "string" ? action.payload.treePath.trim() : "";
+  // Explicit track indices (the diagnostics panel's own numeric inputs) are honored as before;
+  // omitting them (the companion's own payload) triggers the same selection-based auto-targeting
+  // host.jsx always did, rather than defaulting to hardcoded track 0.
+  const explicitVideoTrackIndex = action.payload.videoTrackIndex !== undefined
+    ? readNonNegativeTrackIndex(action.payload.videoTrackIndex, "Video track index") : null;
+  const explicitAudioTrackIndex = action.payload.audioTrackIndex !== undefined
+    ? readNonNegativeTrackIndex(action.payload.audioTrackIndex, "Audio track index") : null;
 
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before inserting a Project item.");
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("Open a sequence before inserting a Project item.");
-  const selection = await premiere.ProjectUtils.getSelection(project);
-  const projectItems = selection ? await selection.getItems() : [];
-  if (!Array.isArray(projectItems) || projectItems.length !== 1) {
-    throw new Error("Select exactly one item in the Project panel before insertion.");
-  }
 
-  const projectItem = projectItems[0];
+  let projectItem;
+  if (treePath) {
+    // Companion-driven: resolve by path instead of requiring the item to already be selected in
+    // the Project panel - there is no official API to set that selection (ProjectItemSelection is
+    // read-only), so a search-then-apply flow has no other way to target a specific item.
+    projectItem = await findProjectItemByTreePath(project, treePath);
+    if (!projectItem) throw new Error(`No Project item found at path "${treePath}".`);
+  } else {
+    // Diagnostics-panel probe: still supports "select in the Project panel, then click apply".
+    const selection = await premiere.ProjectUtils.getSelection(project);
+    const projectItems = selection ? await selection.getItems() : [];
+    if (!Array.isArray(projectItems) || projectItems.length !== 1) {
+      throw new Error("Select exactly one item in the Project panel before insertion.");
+    }
+    projectItem = projectItems[0];
+  }
   if (!projectItem || typeof projectItem.getId !== "function") {
     throw new Error("The selected Project item is not insertable.");
   }
   const projectItemId = await projectItem.getId();
-  const playhead = await sequence.getPlayerPosition();
-  const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, playhead);
+
+  const resolvedTracks = await resolveInsertionTracks(sequence);
+  let videoTrackIndex = explicitVideoTrackIndex !== null ? explicitVideoTrackIndex : resolvedTracks.videoTrackIndex;
+  let audioTrackIndex = explicitAudioTrackIndex !== null ? explicitAudioTrackIndex : resolvedTracks.audioTrackIndex;
+
+  const shouldSpanSelection = projectItemShouldSpanSelection(projectItem.name);
+  const span = shouldSpanSelection ? await selectionVideoSpan(sequence) : null;
+
+  let insertionTicks = span ? span.startTicks : BigInt((await sequence.getPlayerPosition()).ticks);
+  const insertionTime = premiere.TickTime.createWithTicks(insertionTicks.toString());
+
+  const videoTrackResult = span
+    ? await findAvailableVideoTrackInRange(sequence, videoTrackIndex, span.startTicks, span.endTicks)
+    : await findAvailableVideoTrackAtTicks(sequence, videoTrackIndex, insertionTicks);
+  const audioTrackResult = await findAvailableAudioTrackAtTicks(sequence, audioTrackIndex, insertionTicks);
+  videoTrackIndex = videoTrackResult.index;
+  audioTrackIndex = audioTrackResult.index;
+  const trackFallback = {
+    video: !videoTrackResult.hadAvailableTrack,
+    audio: !audioTrackResult.hadAvailableTrack
+  };
+
+  const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, insertionTime);
   const editor = premiere.SequenceEditor.getEditor(sequence);
   let transactionSucceeded = false;
 
   project.lockedAccess(() => {
     const insertionAction = editMode === "OVERWRITE"
-      ? editor.createOverwriteItemAction(projectItem, playhead, videoTrackIndex, audioTrackIndex)
-      : editor.createInsertProjectItemAction(projectItem, playhead, videoTrackIndex, audioTrackIndex, false);
+      ? editor.createOverwriteItemAction(projectItem, insertionTime, videoTrackIndex, audioTrackIndex)
+      : editor.createInsertProjectItemAction(projectItem, insertionTime, videoTrackIndex, audioTrackIndex, false);
     transactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(insertionAction);
     }, `FX.palette: ${editMode === "OVERWRITE" ? "Overwrite" : "Insert"} ${projectItem.name || "Project item"}`);
@@ -2207,8 +2385,40 @@ async function insertSelectedProjectItem(action) {
 
   if (!transactionSucceeded) throw new Error("Premiere rejected the Project item insertion transaction.");
 
-  const instancesAfter = await findProjectItemInstancesAtTime(sequence, projectItemId, playhead);
+  const instancesAfter = await findProjectItemInstancesAtTime(sequence, projectItemId, insertionTime);
   const insertedInstanceCount = Math.max(0, instancesAfter.length - instancesBefore.length);
+
+  // Mirrors host.jsx: after insertion, stretch the newly inserted clip's end to match the
+  // selection span exactly, rather than leaving it at the item's own default/still-image duration.
+  let spanTrimSucceeded = null;
+  if (span && insertedInstanceCount > 0) {
+    const insertedOnVideoTrack = instancesAfter
+      .slice(instancesBefore.length)
+      .find((entry) => entry.mediaKind === "video" && entry.trackIndex === videoTrackIndex);
+    if (insertedOnVideoTrack) {
+      // Re-locate the inserted TrackItem object by start time + name, matching host.jsx's own
+      // _findClipByStartOnTrack - findProjectItemInstancesAtTime already confirmed it exists but
+      // only returns plain data, not the object createSetEndAction needs to be called on.
+      const videoTrack = await sequence.getVideoTrack(videoTrackIndex);
+      const trackItems = await videoTrack.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+      let targetItem = null;
+      for (const item of trackItems) {
+        const start = BigInt((await item.getStartTime()).ticks);
+        if (start === span.startTicks && String(await item.getName()) === projectItem.name) { targetItem = item; break; }
+      }
+      if (targetItem && typeof targetItem.createSetEndAction === "function") {
+        project.lockedAccess(() => {
+          const setEndAction = targetItem.createSetEndAction(premiere.TickTime.createWithTicks(span.endTicks.toString()));
+          spanTrimSucceeded = project.executeTransaction((compoundAction) => {
+            compoundAction.addAction(setEndAction);
+          }, `FX.palette: Stretch ${projectItem.name || "Project item"} to selection`);
+        });
+      } else {
+        spanTrimSucceeded = false;
+      }
+    }
+  }
+
   return {
     projectItem: {
       id: projectItemId,
@@ -2216,8 +2426,14 @@ async function insertSelectedProjectItem(action) {
       type: projectItem.type
     },
     editMode,
-    playhead: { seconds: playhead.seconds, ticks: playhead.ticks },
+    insertionPoint: { ticks: insertionTicks.toString() },
+    spanSelection: span ? { startTicks: span.startTicks.toString(), endTicks: span.endTicks.toString(), sourceItemCount: span.count } : null,
+    spanTrimSucceeded,
     requestedTracks: { videoTrackIndex, audioTrackIndex },
+    // true when every existing track at the target time/range was occupied and UXP has no way to
+    // create a new one, so the item was placed on the last existing track anyway (see the comment
+    // above findAvailableVideoTrackAtTicks) - a confirmed platform limit, not a bug.
+    trackFallback,
     matchingInstanceCountBefore: instancesBefore.length,
     matchingInstanceCountAfter: instancesAfter.length,
     insertedInstanceCount,
