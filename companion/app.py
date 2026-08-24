@@ -564,13 +564,21 @@ APPLY_STATUS_TIMEOUT_MS = 5000
 # 20 Adjustment Layer ones) - only the first import of a given resolution pays this cost, since
 # ensureGenericProjectItem reuses whatever it already imported on every later call.
 GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS = 45000
+# reconstructEasing (on by default) writes one keyframe per frame across an animated parameter's
+# whole duration, each its own createKeyframe/position/setTemporalInterpolationMode call - a preset
+# with many animated parameters over several seconds ("SUPER SMOOTH SHAKE", found by the user to
+# silently fail to apply) can need thousands of these, well past APPLY_STATUS_TIMEOUT_MS.
+PRESET_APPLY_STATUS_TIMEOUT_MS = 30000
 APPLY_SUCCESS_CLOSE_DELAY_MS = 300
 MAX_RECENT_ACTIONS = 20
 
 
 def apply_status_timeout_ms(effect: dict) -> float:
-    if effect.get("type") == "generic_item":
+    effect_type = effect.get("type")
+    if effect_type == "generic_item":
         return GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS
+    if effect_type == "preset":
+        return PRESET_APPLY_STATUS_TIMEOUT_MS
     return APPLY_STATUS_TIMEOUT_MS
 HEADER_PAD_X = 14
 HEADER_PAD_Y = 10

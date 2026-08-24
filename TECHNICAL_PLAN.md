@@ -569,6 +569,46 @@ the plugin's own sandboxed folders requires a user-approved picker, at least onc
 token then makes every later session fully silent). Not a new limitation introduced here - the
 existing `importPrfpsetCatalog` picker this session reused already had this constraint.
 
+## Tenth slice: two real preset-reconstruction bugs, found via the ninth slice's own catalog switch
+
+Making presets UXP-native (ninth slice) surfaced real, pre-existing bugs in `reconstructEasing`
+(unrelated to the catalog source itself - a preset that already worked kept working) that the user
+found by actually using the palette: one preset's curve came out visibly wrong, and a
+many-keyframe preset silently failed to apply at all.
+
+**Failed-to-apply**: `reconstructEasing` writes one keyframe per frame across an animated
+parameter's whole duration - a preset with many animated parameters over several seconds can need
+thousands of `createKeyframe`/`setTemporalInterpolationMode` calls, well past
+`APPLY_STATUS_TIMEOUT_MS` (5s). Fixed the same way the sixth slice fixed this for generic items:
+`PRESET_APPLY_STATUS_TIMEOUT_MS` (30s), `apply_status_timeout_ms` (`companion/app.py`).
+
+**Wrong curve**: diagnosed with the project's own existing A/B comparison tooling
+(`captureTransformCurveReference`/`compareImportedTransformWithCapture`, already built and
+host-tested earlier in this project) rather than reading raw `.prfpset` bytes blind - the user
+applied the preset manually via Premiere's own UI, we captured its real per-frame values, and
+compared them numerically against the reconstruction. Two distinct bugs found this way:
+
+1. `parsePrfpsetKeyframeEase` captured Hold/Bezier interpolation codes but neither sampling
+   function ever branched on them - every segment was bezier/linear-eased regardless. Fixed:
+   `isHoldOutgoing` makes a Hold-outgoing segment a step function (constant until the next
+   keyframe, then jump), matching real Hold semantics.
+2. Raw `.prfpset` keyframe speed fields turned out to be scored per-FRAME, not per-second, while
+   `averageSpeed` here is measured from real tick deltas and is genuinely per-second - a real units
+   mismatch, confirmed empirically: the reconstructed-vs-real peak velocity ratio was within 1% of
+   the sequence's own frame rate (60fps). Fixed by dividing raw speed by fps before taking the ratio
+   against `averageSpeed`, in `derivePrfpsetTemporalCurve`.
+
+The fps fix measurably improved the tested case (worst-sample error 0.94 → 0.66, normalized units)
+but didn't fully resolve it - the same preset's Position keyframe also has 100% influence on both
+sides (an extreme, uncommon ease setting), which bunches most of the bezier parameter range near an
+inflection point and produces a "flat then sudden" shape the real curve doesn't have. Confirmed not
+a wrong-root solver bug (the curve is still monotonic); it's the simplified speed/influence-to-bezier
+model not matching whatever additional correction Adobe's own undocumented conversion applies for
+extreme influence values. Left as a documented, known limitation (comment on
+`derivePrfpsetTemporalCurve`) rather than guessed at further - fully solving it would need many more
+real capture/compare data points across different speed/influence combinations to empirically derive
+that correction, which the user chose not to pursue further this session.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and
@@ -579,7 +619,7 @@ how should future UXP releases be watched for capabilities that close the remain
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Video/audio effect apply | ✅ Full parity, host-tested | Identity-verified both directions (video: same-index candidate + post-insert display-name check; audio: exact `displayName` match, no guessing needed); catalog (the listing itself, not just apply-time resolution) is UXP-native since the ninth slice |
-| Preset apply | ✅ Full parity, host-tested | Easing reconstruction on by default; catalog survives plugin reload via a persistent file token (a real one-time picker cost - see ninth slice - but no ongoing CEP dependency once granted) |
+| Preset apply | ✅ Functional, host-tested | Easing reconstruction on by default; catalog survives plugin reload via a persistent file token (a real one-time picker cost - see ninth slice - but no ongoing CEP dependency once granted). Curve fidelity is an approximation with two real fixes and one known-remaining gap - see tenth slice |
 | Video transition apply | ✅ Functional, host-tested | Label readability is permanently constrained - `VideoTransition` exposes no properties at all, so no name can ever be verified the way effects are |
 | **Audio** transition apply | ❌ Confirmed platform gap | `TransitionFactory` and `AudioClipTrackItem` (full class references checked) have no transition-related method at all - not unwired, not possible today |
 | Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx`; catalog is UXP-native since the ninth slice, no template-project guard (scans whatever's currently open, matching CEP) |

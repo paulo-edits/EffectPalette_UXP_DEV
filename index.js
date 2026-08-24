@@ -951,7 +951,29 @@ function parsePrfpsetKeyframeEase(parts) {
 // exporters use: influence is the horizontal handle fraction, and speed relative to the segment's
 // average speed is the vertical one. Zero influence with zero speed degenerates to linear, and a
 // speed above the average pushes a control past 1 so overshoot survives the conversion.
-function derivePrfpsetTemporalCurve(sourceKeys, measureDistance) {
+//
+// A real host comparison (captureTransformCurveReference vs. this reconstruction, "Slide In Up")
+// found the reconstructed curve overshooting far past a keyframe value the real curve never crosses
+// at all - traced to raw outgoingSpeed/incomingSpeed producing a bezier y-control an order of
+// magnitude too large. The ratio between the reconstructed and real peak velocity in that case was
+// within 1% of the sequence's own frame rate (60fps), which is what raw .prfpset speed fields turned
+// out to actually be scaled by - per-FRAME, not per-second, despite averageSpeed here (measured
+// from real tick deltas) being genuinely per-second. Dividing the raw speed by fps before taking the
+// ratio against averageSpeed corrects the units mismatch and was confirmed to reduce the "Slide In
+// Up" case's worst-sample error from 0.94 to 0.66 (normalized position units).
+//
+// KNOWN REMAINING LIMITATION, confirmed against the same real capture, not yet solved: "Slide In
+// Up"'s Position keyframe has 100% outgoing/incoming influence on both sides (x1=1, x2=0 after
+// clamping) - an extreme, uncommon ease setting. That specific x-envelope bunches most of the
+// bezier parameter t range toward its x=0.5 inflection, so the eased value stays near-constant for
+// a wide span of requested progress before changing rapidly - not what the real curve does. This
+// wasn't a wrong-root bisection bug (the x(t) curve is still monotonic here, confirmed by hand);
+// it's the simplified speed/influence model itself not matching whatever additional correction
+// Adobe's own (undocumented, proprietary) conversion applies for extreme influence values. Fixing
+// this fully would need many more real capture/compare data points across different speed/influence
+// combinations to empirically derive that correction - not attempted here after this one data point
+// showed the fps fix alone doesn't fully resolve it.
+function derivePrfpsetTemporalCurve(sourceKeys, measureDistance, fps) {
   const first = sourceKeys[0];
   const second = sourceKeys[1];
   const durationSeconds = (second.ticks - first.ticks) / 254016000000;
@@ -959,10 +981,14 @@ function derivePrfpsetTemporalCurve(sourceKeys, measureDistance) {
   const endEase = parsePrfpsetKeyframeEase(second.parts);
   const distance = measureDistance(first.value.value, second.value.value);
   const averageSpeed = durationSeconds > 0 ? distance / durationSeconds : 0;
+  const framesPerSecond = fps > 0 ? fps : 1;
   // Speed keeps its sign against a signed average: a keyframe reached while travelling opposite to
   // the segment's overall direction has overshot its own value and is on the way back, which pushes
   // the control point outside 0..1. Taking magnitudes here would fold that overshoot the wrong way.
-  const speedRatio = (speed) => (Math.abs(averageSpeed) > 1e-12 ? speed / averageSpeed : 0);
+  const speedRatio = (speedPerFrame) => {
+    const speedPerSecond = speedPerFrame / framesPerSecond;
+    return Math.abs(averageSpeed) > 1e-12 ? speedPerSecond / averageSpeed : 0;
+  };
   const x1 = Math.max(0, Math.min(1, startEase.outgoingInfluence));
   const x2 = Math.max(0, Math.min(1, 1 - endEase.incomingInfluence));
   return {
@@ -978,7 +1004,7 @@ function derivePrfpsetTemporalCurve(sourceKeys, measureDistance) {
     incomingInfluence: endEase.incomingInfluence,
     outgoingInterpolationCode: startEase.outgoingInterpolationCode,
     incomingInterpolationCode: endEase.incomingInterpolationCode,
-    model: "prfpset-speed-influence"
+    model: "prfpset-speed-influence-per-frame"
   };
 }
 
@@ -986,8 +1012,8 @@ function pointDistance(start, end) {
   return Math.sqrt(end.reduce((sum, value, index) => sum + ((value - start[index]) * (value - start[index])), 0));
 }
 
-function derivePrfpsetPointCurve(sourceKeys) {
-  return derivePrfpsetTemporalCurve(sourceKeys, pointDistance);
+function derivePrfpsetPointCurve(sourceKeys, fps) {
+  return derivePrfpsetTemporalCurve(sourceKeys, pointDistance, fps);
 }
 
 // Fields 10-13 hold the motion-path handles as offsets from their own keyframe's value. Premiere
@@ -1056,7 +1082,17 @@ function importedPointAtProgress(sourceKeys, curve, progress) {
   return samplePathAtArcFraction(derivePrfpsetSpatialPath(sourceKeys), eased);
 }
 
-function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
+// A Hold keyframe (outgoingInterpolationCode 4) is a step function, not a curve: the value stays
+// at the segment's starting keyframe for the whole segment and only jumps to the ending keyframe's
+// value at the exact next keyframe time. parsePrfpsetKeyframeEase already captured this code, but
+// neither sampling function below branched on it before - every segment was bezier/linear-eased
+// regardless, silently smoothing what should have snapped, matching a real "curve reconstructed
+// incorrectly" preset report.
+function isHoldOutgoing(segmentStartKey) {
+  return parsePrfpsetKeyframeEase(segmentStartKey.parts).outgoingInterpolationCode === 4;
+}
+
+function sampleImportedPointCurve(sourceKeys, offsetSeconds, fps) {
   const originTicks = sourceKeys[0].ticks;
   const requestedTicks = originTicks + (Math.max(0, offsetSeconds) * 254016000000);
   let segmentIndex = sourceKeys.length - 2;
@@ -1064,7 +1100,11 @@ function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
     if (requestedTicks <= sourceKeys[index + 1].ticks) { segmentIndex = index; break; }
   }
   const segmentKeys = [sourceKeys[segmentIndex], sourceKeys[segmentIndex + 1]];
-  const curve = derivePrfpsetPointCurve(segmentKeys);
+  if (isHoldOutgoing(segmentKeys[0])) {
+    const holdValue = requestedTicks >= segmentKeys[1].ticks ? segmentKeys[1].value.value : segmentKeys[0].value.value;
+    return { value: holdValue, segmentIndex, segmentProgress: requestedTicks >= segmentKeys[1].ticks ? 1 : 0, curve: null, hold: true };
+  }
+  const curve = derivePrfpsetPointCurve(segmentKeys, fps);
   const segmentTicks = segmentKeys[1].ticks - segmentKeys[0].ticks;
   const progress = segmentTicks > 0 ? Math.max(0, Math.min(1, (requestedTicks - segmentKeys[0].ticks) / segmentTicks)) : 0;
   return { value: importedPointAtProgress(segmentKeys, curve, progress), segmentIndex, segmentProgress: progress, curve };
@@ -1072,11 +1112,11 @@ function sampleImportedPointCurve(sourceKeys, offsetSeconds) {
 
 // Scalars carry a signed delta so the ratio above keeps its meaning in both directions. Point
 // parameters instead measure distance along the path, which is unsigned by construction.
-function derivePrfpsetScalarCurve(sourceKeys) {
-  return derivePrfpsetTemporalCurve(sourceKeys, (start, end) => end - start);
+function derivePrfpsetScalarCurve(sourceKeys, fps) {
+  return derivePrfpsetTemporalCurve(sourceKeys, (start, end) => end - start, fps);
 }
 
-function sampleImportedScalarCurve(sourceKeys, offsetSeconds) {
+function sampleImportedScalarCurve(sourceKeys, offsetSeconds, fps) {
   const originTicks = sourceKeys[0].ticks;
   const requestedTicks = originTicks + (Math.max(0, offsetSeconds) * 254016000000);
   let segmentIndex = sourceKeys.length - 2;
@@ -1084,7 +1124,11 @@ function sampleImportedScalarCurve(sourceKeys, offsetSeconds) {
     if (requestedTicks <= sourceKeys[index + 1].ticks) { segmentIndex = index; break; }
   }
   const segmentKeys = [sourceKeys[segmentIndex], sourceKeys[segmentIndex + 1]];
-  const curve = derivePrfpsetScalarCurve(segmentKeys);
+  if (isHoldOutgoing(segmentKeys[0])) {
+    const holdValue = requestedTicks >= segmentKeys[1].ticks ? segmentKeys[1].value.value : segmentKeys[0].value.value;
+    return { value: holdValue, segmentIndex, segmentProgress: requestedTicks >= segmentKeys[1].ticks ? 1 : 0, curve: null, hold: true };
+  }
+  const curve = derivePrfpsetScalarCurve(segmentKeys, fps);
   const segmentTicks = segmentKeys[1].ticks - segmentKeys[0].ticks;
   const progress = segmentTicks > 0 ? Math.max(0, Math.min(1, (requestedTicks - segmentKeys[0].ticks) / segmentTicks)) : 0;
   const eased = cubicBezierProgress(progress, curve.x1, curve.y1, curve.x2, curve.y2);
@@ -1132,7 +1176,7 @@ function compareImportedTransformWithCapture(action) {
         const sourceKeys = parsePrfpsetKeyframes(scalarSource);
         if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "number")) return null;
         const samples = scalarCaptured.samples.map((sample) => {
-          const derived = sampleImportedScalarCurve(sourceKeys, sample.offsetSeconds);
+          const derived = sampleImportedScalarCurve(sourceKeys, sample.offsetSeconds, capturedTransformCurveReference.fps);
           const manual = sample.value.value;
           const delta = derived.value - manual;
           return { offsetSeconds: sample.offsetSeconds, manual, derived: derived.value, delta, absoluteError: Math.abs(delta), segmentIndex: derived.segmentIndex, segmentProgress: derived.segmentProgress };
@@ -1143,7 +1187,7 @@ function compareImportedTransformWithCapture(action) {
           index: scalarSource.index, name: scalarSource.name, importedKeyframeCount: sourceKeys.length,
           importedDurationSeconds: (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000,
           capturedDurationSeconds: scalarCaptured.durationSeconds,
-          segmentCurves: sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetScalarCurve([sourceKeys[index], sourceKeys[index + 1]])),
+          segmentCurves: sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetScalarCurve([sourceKeys[index], sourceKeys[index + 1]], capturedTransformCurveReference.fps)),
           sampleCount: samples.length, rootMeanSquareError: Math.sqrt(sumSquares / Math.max(1, samples.length)),
           maximumAbsoluteError: worst ? worst.absoluteError : 0, worstSample: worst, samples
         };
@@ -1160,10 +1204,10 @@ function compareImportedTransformWithCapture(action) {
   const sourceKeys = parsePrfpsetKeyframes(source);
   if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "point")) throw new Error("Expected an imported Point curve with at least two keys.");
   const importedDurationSeconds = (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000;
-  const segmentCurves = sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetPointCurve([sourceKeys[index], sourceKeys[index + 1]]));
+  const segmentCurves = sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetPointCurve([sourceKeys[index], sourceKeys[index + 1]], capturedTransformCurveReference.fps));
   const samples = captured.samples.map((sample) => {
     const progress = captured.durationSeconds > 0 ? Math.min(1, sample.offsetSeconds / captured.durationSeconds) : 0;
-    const sampled = sampleImportedPointCurve(sourceKeys, sample.offsetSeconds);
+    const sampled = sampleImportedPointCurve(sourceKeys, sample.offsetSeconds, capturedTransformCurveReference.fps);
     const derived = sampled.value;
     const manual = sample.value.value;
     const delta = derived.map((value, index) => value - manual[index]);
@@ -3602,8 +3646,8 @@ async function applyImportedEffectPreset(action) {
             for (let frame = 0; frame <= segments; frame += 1) {
               const localOffsetSeconds = durationSeconds * (frame / segments);
               const sampledValue = item.valueType === "point"
-                ? sampleImportedPointCurve(item.sourceKeys, localOffsetSeconds).value
-                : sampleImportedScalarCurve(item.sourceKeys, localOffsetSeconds).value;
+                ? sampleImportedPointCurve(item.sourceKeys, localOffsetSeconds, fps).value
+                : sampleImportedScalarCurve(item.sourceKeys, localOffsetSeconds, fps).value;
               const keyframe = await parameter.createKeyframe(createHostValue({ type: item.valueType, value: sampledValue }));
               keyframe.position = state.targetInPoint.add(premiere.TickTime.createWithSeconds(startOffsetSeconds + localOffsetSeconds));
               if (typeof keyframe.setTemporalInterpolationMode === "function") {
@@ -3703,7 +3747,7 @@ async function applyImportedEffectPreset(action) {
     perClip,
     reproductionModel: reconstructEasing ? "prfpset-frame-sampled-approximation" : "prfpset-principal-keyframes-only",
     fidelityNote: reconstructEasing
-      ? "Frame-sampled easing is an approximation; the official UXP API exposes no Point/scalar tangent or velocity surface to restore exact curves."
+      ? "Frame-sampled easing is an approximation; the official UXP API exposes no Point/scalar tangent or velocity surface to restore exact curves. Host-verified accurate for typical speed/influence values; a keyframe with 100% influence on both sides (an extreme, uncommon ease setting) is a known-inaccurate case - see derivePrfpsetTemporalCurve's comment."
       : "Effects, static values and principal keyframe values/times are preserved; no dense helper keys are generated to imitate unavailable easing.",
     undoModelExpected: creations.length
       ? ["Undo imported preset parameters", "Undo inserted preset effects"]
