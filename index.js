@@ -1936,7 +1936,7 @@ async function findDirectChildBin(folderItem, name) {
 // moveItem()) always calls it on the project's rootItem regardless of the item's actual current
 // location, with the destination explicitly re-cast via FolderItem.cast() - both details this
 // function now matches exactly rather than the plausible-looking assumption that failed silently.
-async function ensureBinAndMoveProjectItem(project, projectItem, binName) {
+async function ensureBin(project, binName) {
   const rootItem = await project.getRootItem();
   let targetBin = await findDirectChildBin(rootItem, binName);
   let binCreated = false;
@@ -1953,6 +1953,12 @@ async function ensureBinAndMoveProjectItem(project, projectItem, binName) {
     if (!targetBin) throw new Error(`Premiere created the "${binName}" bin but it could not be found afterward.`);
     binCreated = true;
   }
+  return { targetBin, binCreated };
+}
+
+async function ensureBinAndMoveProjectItem(project, projectItem, binName) {
+  const rootItem = await project.getRootItem();
+  const { targetBin, binCreated } = await ensureBin(project, binName);
 
   let moveTransactionSucceeded = false;
   project.lockedAccess(() => {
@@ -2222,11 +2228,186 @@ async function getBundledTemplateProjectPath() {
   return entry.nativePath;
 }
 
+// --- Favorites (host.jsx's FX.palette_Favorites bin, read-only reference) --------------------
+//
+// The user curates a favorite by opening the bundled template_project.prproj (the same file the
+// generic-item templates live in) and dragging media/sequences into a root bin named
+// FX.palette_Favorites (legacy alias EffectPalette_Favorites) - optionally in sub-bins, which
+// become the favorite's category. UXP has no documented way to inspect an unopened project's bin
+// structure, so scanning (unlike importing a specific sequence by id, which importSequences can do
+// blind) can only happen while that template project is the one the user currently has open -
+// exactly the same guard host.jsx's own getTemplateFavoritesListSafe uses.
+
+const FAVORITES_BIN_NAMES = ["FX.palette_Favorites", "EffectPalette_Favorites"];
+
+// Project.path was observed to come back with Windows' "\\?\" extended-length-path prefix
+// (\\?\C:\...) while the plugin's own bundled-file path (localFileSystem/nativePath) does not -
+// otherwise byte-identical for the same file. Stripped here so the two are actually comparable.
+function normalizePath(value) {
+  return String(value || "").trim().toLowerCase().replace(/\//g, "\\").replace(/^\\\\\?\\/, "").replace(/\\+$/, "");
+}
+
+async function findFavoritesBin(rootItem) {
+  for (const name of FAVORITES_BIN_NAMES) {
+    const found = await findDirectChildBin(rootItem, name);
+    if (found) return found;
+  }
+  return null;
+}
+
+// Mirrors host.jsx's _collectFavoriteItemsRecursive: sub-bins become the favorite's "category"
+// path (joined the same way, " > "); each leaf is classified as a "sequence" favorite (resolvable
+// sequence guid) or a "media" favorite (resolvable media file path).
+async function collectFavoriteItems(folderItem, categoryPath, treeSegments, out) {
+  const children = await folderItem.getItems();
+  for (const child of Array.isArray(children) ? children : []) {
+    let childFolder = null;
+    try { childFolder = premiere.FolderItem.cast(child); } catch (error) { childFolder = null; }
+    if (childFolder) {
+      const nextCategory = categoryPath ? `${categoryPath} > ${child.name}` : String(child.name || "");
+      await collectFavoriteItems(childFolder, nextCategory, [...treeSegments, child.name || ""], out);
+      continue;
+    }
+
+    let clipItem = null;
+    try { clipItem = premiere.ClipProjectItem.cast(child); } catch (error) { clipItem = null; }
+    if (!clipItem) continue;
+
+    let isSeq = false;
+    try { isSeq = await clipItem.isSequence(); } catch (error) { isSeq = false; }
+
+    let sequenceID = "";
+    let mediaPath = "";
+    if (isSeq) {
+      try {
+        const sequence = await clipItem.getSequence();
+        sequenceID = sequence ? guidToString(sequence.guid) : "";
+      } catch (error) { sequenceID = ""; }
+    } else {
+      try { mediaPath = (await clipItem.getMediaFilePath()) || ""; } catch (error) { mediaPath = ""; }
+    }
+
+    out.push({
+      name: child.name || "",
+      category: categoryPath || "Favoritos",
+      favoriteType: isSeq ? "sequence" : "media",
+      sourceTreePath: [...treeSegments, child.name || ""].join("\\"),
+      mediaPath,
+      sequenceID,
+      isSequence: isSeq,
+      itemType: String(child.type || "")
+    });
+  }
+}
+
+// Registered as the catalog.favorites.read handler.
+async function readFavoritesCatalog() {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) return { applicable: false, items: [], activeProjectPath: null, templatePath: null };
+
+  const templatePath = await getBundledTemplateProjectPath();
+  if (normalizePath(project.path) !== normalizePath(templatePath)) {
+    return { applicable: false, items: [], activeProjectPath: project.path, templatePath };
+  }
+
+  const rootItem = await project.getRootItem();
+  const favoritesBin = await findFavoritesBin(rootItem);
+  if (!favoritesBin) return { applicable: true, items: [], sourceProjectPath: project.path };
+
+  const items = [];
+  await collectFavoriteItems(favoritesBin, "", [], items);
+  return { applicable: true, items, sourceProjectPath: project.path };
+}
+
+// Mirrors host.jsx's _importFavoriteProjectItem: search the whole project for an already-imported
+// copy first (by media path for a media favorite, by name+isSequence for a sequence favorite,
+// since a favorite sequence has no separately-tracked identity once imported), otherwise import
+// fresh via the matching documented UXP call and organize the result into FX.palette_Assets.
+// Unlike a generic item's template wrapper sequence, an imported favorite SEQUENCE is the actual
+// favorited content, not throwaway packaging - it is kept, not deleted, after import.
+async function resolveFavoriteProjectItem(project, favorite) {
+  const rootItem = await project.getRootItem();
+  const name = String(favorite.name || "");
+
+  if (favorite.favoriteType === "sequence" || favorite.sequenceID) {
+    const existing = await findFirstProjectItemRecursive(rootItem, async (item) => {
+      if ((item.name || "") !== name) return false;
+      let clipItem = null;
+      try { clipItem = premiere.ClipProjectItem.cast(item); } catch (error) { return false; }
+      try { return await clipItem.isSequence(); } catch (error) { return false; }
+    });
+    if (existing) return { projectItem: existing, imported: false };
+
+    if (!favorite.sequenceID) throw new Error(`Favorite "${name}" has no sequenceID to import.`);
+    const sourcePath = String(favorite.sourceProjectPath || "").trim() || await getBundledTemplateProjectPath();
+
+    const beforeChildren = await rootItem.getItems();
+    const beforeIds = new Set();
+    for (const item of Array.isArray(beforeChildren) ? beforeChildren : []) {
+      try { beforeIds.add(await item.getId()); } catch (error) { /* ignore */ }
+    }
+
+    const importSucceeded = await project.importSequences(sourcePath, [premiere.Guid.fromString(favorite.sequenceID)]);
+    if (!importSucceeded) throw new Error(`Premiere rejected importing the favorite sequence "${name}".`);
+
+    const afterChildren = await rootItem.getItems();
+    const newRootItems = [];
+    for (const item of Array.isArray(afterChildren) ? afterChildren : []) {
+      let id = null;
+      try { id = await item.getId(); } catch (error) { id = null; }
+      if (id === null || !beforeIds.has(id)) newRootItems.push(item);
+    }
+
+    for (const candidate of newRootItems) {
+      await ensureBinAndMoveProjectItem(project, candidate, "FX.palette_Assets");
+    }
+
+    const resolved = await findFirstProjectItemRecursive(rootItem, async (item) => {
+      if ((item.name || "") !== name) return false;
+      let clipItem = null;
+      try { clipItem = premiere.ClipProjectItem.cast(item); } catch (error) { return false; }
+      try { return await clipItem.isSequence(); } catch (error) { return false; }
+    });
+    if (!resolved) throw new Error(`Imported the favorite sequence but could not find "${name}" afterward.`);
+    return { projectItem: resolved, imported: true };
+  }
+
+  const mediaPath = String(favorite.mediaPath || "").trim();
+  if (!mediaPath) throw new Error(`Favorite "${name}" has no mediaPath to import.`);
+
+  const existingMedia = await findFirstProjectItemRecursive(rootItem, async (item) => {
+    let clipItem = null;
+    try { clipItem = premiere.ClipProjectItem.cast(item); } catch (error) { return false; }
+    let path = "";
+    try { path = (await clipItem.getMediaFilePath()) || ""; } catch (error) { path = ""; }
+    return !!path && normalizePath(path) === normalizePath(mediaPath);
+  });
+  if (existingMedia) return { projectItem: existingMedia, imported: false };
+
+  // Unlike the sequence branch (importSequences always lands new items at project root,
+  // regardless of any bin), importFiles takes the destination bin directly - no separate
+  // find-then-move step needed here.
+  const { targetBin } = await ensureBin(project, "FX.palette_Assets");
+  const importSucceeded = await project.importFiles([mediaPath], true, targetBin, false);
+  if (!importSucceeded) throw new Error(`Premiere rejected importing the favorite media "${name}".`);
+
+  const resolvedMedia = await findFirstProjectItemRecursive(rootItem, async (item) => {
+    let clipItem = null;
+    try { clipItem = premiere.ClipProjectItem.cast(item); } catch (error) { return false; }
+    let path = "";
+    try { path = (await clipItem.getMediaFilePath()) || ""; } catch (error) { path = ""; }
+    return !!path && normalizePath(path) === normalizePath(mediaPath);
+  });
+  if (!resolvedMedia) throw new Error(`Imported the favorite media but could not find "${name}" afterward.`);
+  return { projectItem: resolvedMedia, imported: true };
+}
+
 // Mirrors _collectProjectItemsMatching/_findFirstProjectItemMatching (host.jsx): the matcher is
 // applied to every node in the project tree, root included, not just leaves. seenIds/depth guard
 // against a hang if the tree ever has a cycle (a bin nested inside itself) - a real search here was
 // observed to hang indefinitely with no error, which a bare recursive walk gives no way to diagnose
-// or recover from.
+// or recover from. matcher may be sync or async (always awaited) - a plain boolean-returning
+// function works unchanged, since await on a non-promise value just resolves to that value.
 async function findFirstProjectItemRecursive(folderItem, matcher, seenIds, depth) {
   seenIds = seenIds || new Set();
   depth = depth || 0;
@@ -2237,10 +2418,10 @@ async function findFirstProjectItemRecursive(folderItem, matcher, seenIds, depth
     if (seenIds.has(selfId)) return null;
     seenIds.add(selfId);
   }
-  if (matcher(folderItem)) return folderItem;
+  if (await matcher(folderItem)) return folderItem;
   const children = await folderItem.getItems();
   for (const child of Array.isArray(children) ? children : []) {
-    if (matcher(child)) return child;
+    if (await matcher(child)) return child;
     let childFolder = null;
     try { childFolder = premiere.FolderItem.cast(child); } catch (error) { childFolder = null; }
     if (childFolder) {
@@ -2505,10 +2686,20 @@ async function insertSelectedProjectItem(action) {
   if (!sequence) throw new Error("Open a sequence before inserting a Project item.");
 
   const genericKey = typeof action.payload.genericKey === "string" ? action.payload.genericKey.trim() : "";
+  const favorite = action.payload.favorite && typeof action.payload.favorite === "object" ? action.payload.favorite : null;
 
   let projectItem;
   let genericItemResolution = null;
-  if (genericKey) {
+  let favoriteResolution = null;
+  if (favorite) {
+    // Companion-driven "favorite item" request: find-or-import from the favorite's own source
+    // project (usually the same bundled template project favorites are curated in) rather than
+    // requiring the item to already be selected in the Project panel.
+    if (!favorite.name) throw new Error("A favorite item name is required.");
+    const resolved = await resolveFavoriteProjectItem(project, favorite);
+    projectItem = resolved.projectItem;
+    favoriteResolution = { favoriteType: favorite.favoriteType || null, imported: resolved.imported };
+  } else if (genericKey) {
     // Companion-driven "generic item" request (Adjustment Layer, Bars and Tone, ...): find-or-import
     // from the bundled template project rather than resolving an already-existing selection/path.
     const frameSize = await sequence.getFrameSize();
@@ -2617,6 +2808,7 @@ async function insertSelectedProjectItem(action) {
       type: projectItem.type
     },
     genericItemResolution,
+    favoriteResolution,
     editMode,
     insertionPoint: { ticks: insertionTicks.toString() },
     spanSelection: span ? { startTicks: span.startTicks.toString(), endTicks: span.endTicks.toString(), sourceItemCount: span.count } : null,
@@ -3811,6 +4003,7 @@ const ACTION_HANDLERS = {
   "catalog.videoEffects.resolve": resolveVideoEffectCatalog,
   "catalog.videoEffects.read": readVideoEffectCatalog,
   "catalog.videoTransitions.read": readVideoTransitionCatalog,
+  "catalog.favorites.read": readFavoritesCatalog,
   "timeline.applyVideoEffect": applyVideoEffectToSelection,
   "timeline.probeVideoEffectParameters": probeVideoEffectParameters,
   "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter,

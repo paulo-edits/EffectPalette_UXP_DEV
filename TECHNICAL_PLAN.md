@@ -492,6 +492,52 @@ repo has no installer/InstallDir concept yet). Host-run: on this machine every c
 bound from the earlier CEP install, so nothing needed adding - but the script is what makes this
 resilient on a machine that never had CEP installed at all.
 
+## Eighth slice: favorite items, and a deeper finding about catalog data
+
+Investigating "insert favorite item" surfaced something bigger than the feature itself: every
+catalog this product lists from (effects, presets, project items, favorites) was still being read
+from files the legacy CEP extension's own headless worker (`bridge.js`/`worker.html`) writes to
+`%APPDATA%\Adobe\CEP\extensions\EffectPalette\data\`. Prior slices had only replaced the
+*execution* layer (applying/inserting); *discovery* (what's available to apply) silently still
+depended on that CEP worker being installed and periodically running - the video-transition catalog
+was the only exception, already ported UXP-native in an earlier slice. This slice ports favorites
+the same way, and leaves the same gap open for effects/presets/project items as a known follow-up,
+not something this slice's scope covered.
+
+A favorite is not a flag on an arbitrary item - the user opens the bundled `template_project.prproj`
+in Premiere, drags media/sequences into a root bin named `FX.palette_Favorites` (sub-bins become the
+favorite's category), and CEP's `getTemplateFavoritesListSafe()` (host.jsx, read-only reference)
+scans it - but only while that specific project is the one currently open, since there's no API on
+either platform to inspect an unopened project's bin structure. `readFavoritesCatalog` (`index.js`)
+ports this exact guard using `Project.path` against the plugin's own bundled template path, and the
+companion re-requests it on a 5s timer (`FAVORITES_REFRESH_INTERVAL_MS`) so a favorite curated
+mid-session shows up without a plugin reload - mirroring how the CEP worker polled every ~3s.
+`companion/app.py`'s `_load_favorites` now prefers `uxp_favorites.json` (UXP-native) over
+`premiere_favorites.json` (CEP-sourced) once it exists, same override pattern as transitions.
+
+Insertion (`resolveFavoriteProjectItem`) mirrors host.jsx's `_importFavoriteProjectItem`: search the
+whole project for an already-imported copy first (by media path via the newly-verified
+`ClipProjectItem.getMediaFilePath()`, or by name+`isSequence()` for a sequence favorite - a favorite
+sequence has no separately-tracked identity once imported, so name is what CEP itself matches on
+too), otherwise import fresh (`Project.importFiles` for media, `Project.importSequences` for a
+sequence - both host-tested working) and organize into `FX.palette_Assets`. Unlike a generic item's
+throwaway wrapper sequence, an imported favorite sequence is real content and is kept, not deleted.
+
+Two real bugs found and fixed via host-tested iteration, not guessing:
+- `Project.path` was observed returning Windows' `\\?\` extended-length-path prefix
+  (`\\?\C:\Users\...`) while the plugin's own bundled-file path (`localFileSystem`/`nativePath`)
+  does not carry it - otherwise byte-identical for the same file, so the template-project guard
+  silently never matched until `normalizePath` was taught to strip that prefix.
+- A diagnostic dedup guard (only log `catalog.favorites.read`'s `applicable` value on change) wasn't
+  reset on disconnect, so a value carried over from a dead connection suppressed the first log line
+  of the next one - fixed by resetting it in `_on_disconnected`, unrelated to the feature itself but
+  what made the `\\?\` finding visible at all.
+
+Host-tested: first-time import (real file path, `verificationSucceeded: true`) and re-click dedup
+(reused the same project item, no duplicate import) for a media favorite. The sequence-favorite path
+shares the same import/organize/insert mechanism, host-tested elsewhere in this project for
+generic items, but has not itself been exercised against a real favorited sequence.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and
@@ -506,7 +552,8 @@ how should future UXP releases be watched for capabilities that close the remain
 | Video transition apply | ✅ Functional, host-tested | Label readability is permanently constrained - `VideoTransition` exposes no properties at all, so no name can ever be verified the way effects are |
 | **Audio** transition apply | ❌ Confirmed platform gap | `TransitionFactory` and `AudioClipTrackItem` (full class references checked) have no transition-related method at all - not unwired, not possible today |
 | Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx` |
-| Insert favorite item | 🔲 Not built yet, looks buildable | CEP uses `app.project.importSequences()`/`importFiles()` - both documented standard-DOM calls already used elsewhere in this project; likely the easiest remaining slice |
+| Insert favorite item (media) | ✅ Full parity, host-tested | Import-then-dedup mirrors host.jsx's `_importFavoriteProjectItem` exactly, using documented `Project.importFiles`; catalog scanning is now UXP-native too (see eighth slice below), replacing the CEP worker dependency this capability quietly still had |
+| Insert favorite item (sequence) | ⚠️ Built, not yet host-tested; intentionally not full parity | Imports and inserts as a **nested** clip, not host.jsx's flatten-then-fallback-to-nest behavior - flattening (`_insertSequenceContentsAtPlayhead`) is QE-DOM/dynamic-track-creation-gated, the same confirmed platform wall as the track-creation row below. Accepted by the user, who doesn't favorite whole sequences in practice but wants the path to exist |
 | Create generic item: Adjustment Layer, Bars and Tone, Black Video, Transparent Video | ✅ Full parity, host-tested | Not built fresh on either platform - CEP has no creation API for these either (for Adjustment Layer) or only reaches them via undocumented QE DOM (the other three); both work around it the same way, importing a pre-built `.prproj` template. `tools/template_generator/` (a throwaway CEP dev panel) built the three new templates; sixth-slice section above has the details |
 | Create generic item: Color Matte, Universal Counting Leader | ❌ Confirmed platform gap (Color Matte: by product decision) | Color Matte: neither platform can set its color after creation, so a template built once could never be recolored per use - excluded by the user's own call, not attempted. Universal Counting Leader: CEP only reaches it via undocumented QE DOM and no template was built for it - not attempted |
 | Nest, auto-routed native/API | ✅ Full parity, host-tested | The routing signal itself (multi-track-audio detection) had gone silently stale under this migration and was restored via a new `diagnostics.read` field, not something UXP was missing |

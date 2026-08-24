@@ -85,11 +85,12 @@ except Exception:
     HAS_QT = False
 
 try:
-    from uxp_execution_adapter import PremiereUxpExecutionAdapter, UXP_TRANSITIONS_FILE
+    from uxp_execution_adapter import PremiereUxpExecutionAdapter, UXP_TRANSITIONS_FILE, UXP_FAVORITES_FILE
     HAS_UXP_ADAPTER = HAS_QT
 except Exception:
     PremiereUxpExecutionAdapter = None
     UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_transitions.json"
+    UXP_FAVORITES_FILE = Path(__file__).resolve().parent / "data" / "uxp_favorites.json"
     HAS_UXP_ADAPTER = False
 
 
@@ -743,6 +744,7 @@ class DataPaths:
     selection_file: Path = SELECTION_FILE
     data_dir: Path = EXT_DATA
     uxp_transitions_file: Path = UXP_TRANSITIONS_FILE
+    uxp_favorites_file: Path = UXP_FAVORITES_FILE
 
 
 @dataclass(frozen=True)
@@ -1987,6 +1989,7 @@ class EffectsLoader:
             "project_items": self._safe_mtime(self.paths.project_items_file),
             "favorites": self._safe_mtime(self.paths.favorites_file),
             "uxp_transitions": self._safe_mtime(self.paths.uxp_transitions_file),
+            "uxp_favorites": self._safe_mtime(self.paths.uxp_favorites_file),
         }
 
     def needs_reload(self) -> bool:
@@ -2060,7 +2063,7 @@ class EffectsLoader:
             presets = ()
             project_items = ()
             favorite_items = ()
-            mtimes = {"effects": 0.0, "presets": 0.0, "project_items": 0.0, "favorites": 0.0, "uxp_transitions": 0.0}
+            mtimes = {"effects": 0.0, "presets": 0.0, "project_items": 0.0, "favorites": 0.0, "uxp_transitions": 0.0, "uxp_favorites": 0.0}
         else:
             presets, preset_issues = self._load_presets()
             project_items, project_item_issues = self._load_project_items()
@@ -2194,10 +2197,16 @@ class EffectsLoader:
             return (), (f"project_items:{exc}",)
 
     def _load_favorites(self) -> tuple[tuple[dict, ...], tuple[str, ...]]:
-        if not self.paths.favorites_file.exists():
+        # Prefers the UXP plugin's own scan (written by PremiereUxpExecutionAdapter whenever the
+        # bundled template project happens to be open) over the legacy CEP worker's export, once it
+        # exists - matching _apply_uxp_transition_catalog's override pattern for transitions. Falls
+        # back to the CEP file so favorites keep working before the template project has ever been
+        # opened under the UXP plugin in this install.
+        source_file = self.paths.uxp_favorites_file if self.paths.uxp_favorites_file.exists() else self.paths.favorites_file
+        if not source_file.exists():
             return (), ()
         try:
-            with open(self.paths.favorites_file, encoding="utf-8") as file_obj:
+            with open(source_file, encoding="utf-8") as file_obj:
                 data = json.load(file_obj)
             items = []
             for item in data.get("items", []):

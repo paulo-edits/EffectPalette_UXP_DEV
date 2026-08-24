@@ -33,10 +33,20 @@ REQUEST_TIMEOUT_SECONDS = 5.0
 PENDING_RETENTION_SECONDS = 60.0
 CATALOG_REQUEST_ID = "uxp-adapter-video-catalog"
 TRANSITION_CATALOG_REQUEST_ID = "uxp-adapter-video-transitions"
+FAVORITES_CATALOG_REQUEST_ID = "uxp-adapter-favorites"
+# The plugin can only scan FX.palette_Favorites while the bundled template project happens to be
+# the one currently open in Premiere (index.js's readFavoritesCatalog) - re-requested on a timer
+# instead of once per connection so a favorite curated mid-session (open the template project, add
+# one, switch back) shows up without needing the plugin to reload.
+FAVORITES_REFRESH_INTERVAL_MS = 5000
 
 # Written by this adapter from the plugin's own catalog and read back by EffectsLoader, so the
 # palette lists exactly the transitions UXP can actually apply, each carrying its exact matchName.
 UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_transitions.json"
+# Written by this adapter from the plugin's own FX.palette_Favorites scan - replaces the CEP
+# worker's premiere_favorites.json the same way UXP_TRANSITIONS_FILE replaces the CEP transition
+# export, once index.js has ever seen the template project open and reported at least one item.
+UXP_FAVORITES_FILE = Path(__file__).resolve().parent / "data" / "uxp_favorites.json"
 
 # On: the plugin rebuilds each animated parameter's curve from the .prfpset's own
 # speed/influence fields and frame-samples it, measured indistinguishable from a manual
@@ -57,6 +67,7 @@ _SUPPORTED_EFFECT_TYPES = {
     "timeline_action",
     "project_item",
     "generic_item",
+    "favorite_item",
 }
 
 # Every generic item except Color Matte now has a UXP-side template mapping (index.js's
@@ -182,6 +193,8 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._video_match_names_by_display: dict[str, str] = {}
         self._transition_match_names_by_label: dict[str, str] = {}
         self._catalog_requested = False
+        self._favorites_timer = QtCore.QTimer(self)
+        self._favorites_timer.timeout.connect(self._request_favorites_catalog)
         self._server.newConnection.connect(self._on_new_connection)
         if not self._server.listen(QHostAddress.SpecialAddress.LocalHost, TRANSPORT_PORT):
             raise RuntimeError(
@@ -209,6 +222,12 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._client = None
         self._authenticated = False
         self._catalog_requested = False
+        self._favorites_timer.stop()
+        # Reset so the next connection's first response always logs, regardless of whether it
+        # happens to match whatever this now-dead connection last reported.
+        self._favorites_last_applicable = None
+        self._favorites_last_error_code = None
+        self._favorites_last_logged_count = None
 
     def _on_message(self, raw: str):
         try:
@@ -240,6 +259,9 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         if request_id == TRANSITION_CATALOG_REQUEST_ID:
             self._handle_transition_catalog_response(message)
             return
+        if request_id == FAVORITES_CATALOG_REQUEST_ID:
+            self._handle_favorites_catalog_response(message)
+            return
         if request_id in self._pending:
             self._resolve_pending(request_id, message)
 
@@ -266,6 +288,59 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "requestId": TRANSITION_CATALOG_REQUEST_ID,
             "payload": {},
         })
+        self._request_favorites_catalog()
+        self._favorites_timer.start(FAVORITES_REFRESH_INTERVAL_MS)
+
+    def _request_favorites_catalog(self):
+        self._send({
+            "schemaVersion": 1,
+            "type": "catalog.favorites.read",
+            "requestId": FAVORITES_CATALOG_REQUEST_ID,
+            "payload": {},
+        })
+
+    def _handle_favorites_catalog_response(self, message: dict):
+        # Unlike the transition/effect catalogs, this one legitimately comes back empty most of
+        # the time (whenever the template project isn't the one currently open) - "applicable"
+        # tells the difference between "not open right now" (keep whatever was last written) and
+        # "open, but the favorites bin is empty" (write an empty list, matching what's really there).
+        if not message.get("ok"):
+            error = message.get("error") or {}
+            if error.get("code") != getattr(self, "_favorites_last_error_code", None):
+                self._favorites_last_error_code = error.get("code")
+                print(f"[UXP adapter] catalog.favorites.read failed: {error}", flush=True)
+            return
+        self._favorites_last_error_code = None
+        data = message.get("data") or {}
+        applicable = bool(data.get("applicable"))
+        if applicable != getattr(self, "_favorites_last_applicable", None):
+            self._favorites_last_applicable = applicable
+            print(
+                f"[UXP adapter] catalog.favorites.read applicable={applicable} "
+                f"activeProjectPath={data.get('activeProjectPath')!r} templatePath={data.get('templatePath')!r}",
+                flush=True,
+            )
+        if not applicable:
+            return
+        items = data.get("items") or []
+        try:
+            UXP_FAVORITES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "exported_at": time.time(),
+                "sourceProjectPath": data.get("sourceProjectPath", ""),
+                "items": items,
+            }
+            tmp = UXP_FAVORITES_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(UXP_FAVORITES_FILE)
+            # This response repeats every FAVORITES_REFRESH_INTERVAL_MS while the template project
+            # stays open - only log when the count actually changes, so the console isn't spammed.
+            if len(items) != getattr(self, "_favorites_last_logged_count", None):
+                self._favorites_last_logged_count = len(items)
+                print(f"[UXP adapter] {len(items)} favorites written to {UXP_FAVORITES_FILE}", flush=True)
+        except Exception as error:
+            print(f"[UXP adapter] could not write the favorites catalog: {error}", flush=True)
 
     def _handle_transition_catalog_response(self, message: dict):
         # The plugin's transition catalog exposes matchNames only - no display names, and
@@ -408,6 +483,22 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 return timestamp
             action_type = "timeline.insertProjectItem"
             payload = {"genericKey": generic_key, "editMode": "INSERT"}
+            requested_display_name = None
+        elif effect_type == "favorite_item":
+            if not str(effect.get("name") or "").strip():
+                self._pending[request_id] = {"status": "error_favorite_name_required"}
+                return timestamp
+            action_type = "timeline.insertProjectItem"
+            payload = {
+                "favorite": {
+                    "name": effect.get("name", ""),
+                    "favoriteType": effect.get("favoriteType", ""),
+                    "mediaPath": effect.get("mediaPath", ""),
+                    "sequenceID": effect.get("sequenceID", ""),
+                    "sourceProjectPath": effect.get("sourceProjectPath", ""),
+                },
+                "editMode": "INSERT",
+            }
             requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)
