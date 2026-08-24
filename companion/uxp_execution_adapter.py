@@ -360,10 +360,8 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 self._pending[request_id] = {"status": "error_nest_name_required"}
                 return timestamp
             action_type = "timeline.createNest"
-            payload = {"name": nest_name}
-            # timeline.createNest has no bin-placement equivalent to CEP's DEFAULT_NEST_BIN
-            # organizing step (TECHNICAL_PLAN.md) - the created sequence lands wherever Premiere
-            # itself puts a new Nest, not necessarily effect.get("nestBin").
+            bin_name = str(effect.get("nestBin") or "").strip() or "Nested Clips"
+            payload = {"name": nest_name, "binName": bin_name}
             requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)

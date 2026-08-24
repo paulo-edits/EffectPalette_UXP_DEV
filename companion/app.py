@@ -122,7 +122,7 @@ GOOGLE_SANS_FLEX_MEDIUM = FONTS_DIR / "GoogleSansFlex-Medium.ttf"
 SETTINGS_FILE = APPDATA / "Adobe" / "CEP" / "extensions" / "EffectPalette" / "settings.json"
 SUPPORTED_LANGUAGES = ("en", "pt")
 NEST_MODES = ("auto", "premiere", "api")
-DEFAULT_NEST_BIN = "Nested Sequences"
+DEFAULT_NEST_BIN = "Nested Clips"
 DEFAULT_APP_PREFERENCES = {"animations": True}
 
 

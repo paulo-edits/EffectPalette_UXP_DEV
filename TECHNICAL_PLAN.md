@@ -349,7 +349,39 @@ auto-reconnecting plugin instance is also trying to reach can get a live answer 
 fake one, with a real side effect - future sessions should assume that risk rather than treat a
 "standalone" test script as isolated by construction.
 
-Still deferred: `timeline.createNest` has no bin-placement equivalent to CEP's
-`_organizeNestSequenceObject`/`DEFAULT_NEST_BIN` step - a created Nest lands wherever Premiere itself
-puts a new subsequence, not a configured bin; project-item insertion; generic-item creation from
-scratch; favorite-item import; Timeline-clip label and label-group selection.
+### Bin placement, added after the slice above shipped
+
+The user tested the slice above and found a second gap: CEP always filed a newly created Nest into
+a project bin (`_organizeNestSequenceObject`/`DEFAULT_NEST_BIN`, `host.jsx`, renamed by the user
+from "Nested Sequences" to "Nested Clips" - `DEFAULT_NEST_BIN` and every payload default now match).
+`timeline.createNest` had no equivalent, so a created Nest just landed wherever Premiere itself put
+a new subsequence. `FolderItem.createBinAction`/`createMoveItemAction` (Premiere UXP API, `Project.
+getRootItem()`) are genuinely new territory for this project - no prior action had touched project-
+panel bin structure - and getting them working took two host-confirmed wrong turns before a
+third attempt matched the one working reference found:
+
+1. **"Requires locked access"** - the `Action` objects (`createBinAction`, `createMoveItemAction`)
+   were constructed *before* entering `project.lockedAccess(() => {...})`, only added to the
+   transaction inside it. Every other working transaction in this codebase constructs the action
+   itself inside the locked callback, not just the `executeTransaction()` call - this one broke
+   that pattern by accident and Premiere's own error named exactly why.
+2. **Silent no-op** - fixed #1, but `moveTransactionSucceeded: true` came back and nothing moved.
+   The official API reference documents `createMoveItemAction(item, newParent)`'s parameters but
+   not which object it must be called on; by analogy with `createRemoveItemAction` ("removes the
+   given item from *this* folder") the item's own current parent bin seemed like the right target
+   - it built without error and reported success while doing nothing, which is a worse failure
+   mode than an exception because nothing catches it. Adobe's own official
+   `AdobeDocs/uxp-premiere-pro-samples` reference panel (`sample-panels/premiere-api/src/
+   projectPanel.ts`, `moveItem()`) resolved the ambiguity: it calls `createMoveItemAction` on the
+   project's `rootItem` unconditionally, not the item's current parent, and re-casts the
+   destination with `FolderItem.cast()` before passing it. Matching that exactly fixed it -
+   host-confirmed by the user both in the transaction log (`binCreated: true,
+   moveTransactionSucceeded: true`) and visually in the Project panel.
+
+Recorded because both wrong turns were plausible from the documentation alone and neither was
+caught by `ok: true` - a lesson for any future action built on `FolderItem`: verify visually before
+trusting a `Succeeded` flag from an API this thinly documented, and check the official samples repo
+for a working call site before inferring one from parameter names.
+
+Still deferred: project-item insertion; generic-item creation from scratch; favorite-item import;
+Timeline-clip label and label-group selection.

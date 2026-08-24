@@ -1912,9 +1912,65 @@ async function createSubsequenceFromSelection(action) {
   };
 }
 
+async function findDirectChildBin(folderItem, name) {
+  const children = await folderItem.getItems();
+  for (const child of Array.isArray(children) ? children : []) {
+    if ((child.name || "") !== name) continue;
+    try {
+      return premiere.FolderItem.cast(child);
+    } catch (error) {
+      // Same name, but not a folder - keep looking rather than treat it as a match.
+    }
+  }
+  return null;
+}
+
+// CEP's _ensureNestedSequencesBin/_organizeNestSequenceObject (host.jsx) always filed a newly
+// created Nest into a project bin, creating it on first use. UXP has no single call for this -
+// FolderItem.createBinAction/createMoveItemAction are separate Actions, so this is its own
+// find-or-create-then-move transaction rather than part of the nest-creation transaction itself.
+//
+// createMoveItemAction's exact calling convention is undocumented beyond its parameter list, and
+// a first attempt (called on the item's own current parent bin) reported success but moved
+// nothing. The official AdobeDocs/uxp-premiere-pro-samples reference panel (projectPanel.ts,
+// moveItem()) always calls it on the project's rootItem regardless of the item's actual current
+// location, with the destination explicitly re-cast via FolderItem.cast() - both details this
+// function now matches exactly rather than the plausible-looking assumption that failed silently.
+async function ensureBinAndMoveProjectItem(project, projectItem, binName) {
+  const rootItem = await project.getRootItem();
+  let targetBin = await findDirectChildBin(rootItem, binName);
+  let binCreated = false;
+  if (!targetBin) {
+    let createTransactionSucceeded = false;
+    project.lockedAccess(() => {
+      const createAction = rootItem.createBinAction(binName, false);
+      createTransactionSucceeded = project.executeTransaction((compoundAction) => {
+        compoundAction.addAction(createAction);
+      }, `FX.palette: Create ${binName} bin`);
+    });
+    if (!createTransactionSucceeded) throw new Error(`Premiere rejected creating the "${binName}" bin.`);
+    targetBin = await findDirectChildBin(rootItem, binName);
+    if (!targetBin) throw new Error(`Premiere created the "${binName}" bin but it could not be found afterward.`);
+    binCreated = true;
+  }
+
+  let moveTransactionSucceeded = false;
+  project.lockedAccess(() => {
+    const moveAction = rootItem.createMoveItemAction(projectItem, premiere.FolderItem.cast(targetBin));
+    moveTransactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(moveAction);
+    }, `FX.palette: Move ${projectItem.name || "Nest"} into ${binName}`);
+  });
+  if (!moveTransactionSucceeded) throw new Error(`Premiere rejected moving the Nest into the "${binName}" bin.`);
+  return { binName, binCreated, moveTransactionSucceeded };
+}
+
 async function createNestFromSelection(action) {
   const requestedName = typeof action.payload.name === "string" ? action.payload.name.trim() : "";
   if (!requestedName) throw new Error("A Nest name is required.");
+  const binName = typeof action.payload.binName === "string" && action.payload.binName.trim()
+    ? action.payload.binName.trim()
+    : "Nested Clips";
 
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("Open a project before creating a Nest.");
@@ -2055,9 +2111,21 @@ async function createNestFromSelection(action) {
     instanceRenameTransactionSucceeded,
     insertedInstanceCount: insertedInstances.length,
     renamedInstances,
+    binPlacement: await (async () => {
+      // A separate try/catch on purpose: by this point the Nest itself already exists and
+      // replaced the selection successfully, so a bin-placement failure (e.g. a name collision
+      // Premiere itself rejects) should be reported, not thrown - throwing here would misreport
+      // an already-successful Nest creation as a total failure.
+      try {
+        return await ensureBinAndMoveProjectItem(project, createdProjectItem, binName);
+      } catch (error) {
+        return { binName, error: error && error.message ? error.message : String(error) };
+      }
+    })(),
     originalSelectionExpectedRemoved: true,
     nestedItemExpectedInserted: true,
     undoModelExpected: [
+      "Undo move into bin",
       "Undo Timeline instance rename transaction",
       "Undo replacement and ProjectItem rename transaction",
       "Undo subsequence creation"
