@@ -473,6 +473,25 @@ name-based "already recorded" check in the generator's own JSON-merge step left 
 sequenceIDs in the config whenever a sequence got rebuilt between debug rounds, which is what made
 `Project.importSequences` on the UXP side return `true` while importing nothing.
 
+## Seventh slice: Timeline-clip Label and Label group
+
+Re-verified from scratch against the current official API surface (`TrackItem`, `VideoClipTrackItem`,
+`AudioClipTrackItem` - every property and method listed, none related to color/label) rather than
+trusting the Stage 4 conclusion unchecked: still no DOM API on either platform. But CEP's own real
+mechanism for this was never DOM in the first place - it resolves `cmd.edit.label.N`/
+`cmd.edit.labelgroup`'s keyboard-shortcut binding out of the user's active `.kys` profile and
+synthesizes the matching keystroke (`keybd_event`), independent of CEP vs UXP. `companion/app.py`
+already carried this ported verbatim (`send_native_shortcut`, `find_premiere_command_shortcut`,
+`load_premiere_label_preferences`, `_execute_label_action`, wired into both the Tk and Qt search/apply
+paths) - it never depended on the execution backend, so there was no UXP-side code to write. The only
+real gap was that this repo had no equivalent of the CEP installer's `configure_premiere.ps1`, which
+guarantees those 16 label commands plus `cmd.edit.labelgroup`/`cmd.clip.nestify` have a shortcut bound
+by adding an obscure internal one (`Ctrl+Alt+Shift+<key>`) for any that don't. Ported as
+`scripts/configure_premiere_shortcuts.ps1` (same logic, only the log destination adapted since this
+repo has no installer/InstallDir concept yet). Host-run: on this machine every command was already
+bound from the earlier CEP install, so nothing needed adding - but the script is what makes this
+resilient on a machine that never had CEP installed at all.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and
@@ -493,8 +512,8 @@ how should future UXP releases be watched for capabilities that close the remain
 | Nest, auto-routed native/API | ✅ Full parity, host-tested | The routing signal itself (multi-track-audio detection) had gone silently stale under this migration and was restored via a new `diagnostics.read` field, not something UXP was missing |
 | Nest: default codename, bin placement | ✅ Full parity, host-tested | `FXN-NNN` scheme and filing into a project bin (`FolderItem.createBinAction`/`createMoveItemAction`) both ported |
 | Create a new Timeline track when none is free | ❌ Confirmed platform gap | Exhaustive check: every plausibly relevant class (`Sequence`, `SequenceEditor`, `VideoTrack`, `AudioTrack`, `SequenceSettings`, `Application`) plus the complete official changelog from the 25.2.0 public beta through 26.3.0 - track *renaming* was added along the way, track *creation* never was |
-| Set a Timeline clip's Label | ❌ Confirmed platform gap (Stage 4) | No `TrackItem` label API, and no UXP equivalent to CEP's own `app.executeCommand()` escape hatch was found either (checked `Application` and the full class index) - CEP's own route to this is closed off in UXP twice over |
-| Select a Label group | ❌ Confirmed platform gap (Stage 4) | Same absence; CEP itself only reaches this via a native OS keystroke, not through `bridge.js`/`host.jsx` at all, so there was never a DOM path to port in the first place |
+| Set a Timeline clip's Label | ✅ Full parity, host-tested | Neither CEP nor UXP has a `TrackItem` label API - CEP's own real mechanism was never DOM at all, it's `companion/app.py` resolving `cmd.edit.label.N`'s bound shortcut out of the user's `.kys` profile and synthesizing the keystroke (`send_native_shortcut`/`find_premiere_command_shortcut`), independent of CEP vs UXP. That code was already ported verbatim; the only missing piece was `scripts/configure_premiere_shortcuts.ps1` (ported from the CEP installer's `configure_premiere.ps1`) to guarantee the 16 `cmd.edit.label.N` + `cmd.edit.labelgroup` shortcuts exist in the user's profile - on this machine they already did, from the earlier CEP install |
+| Select a Label group | ✅ Full parity, host-tested | Same mechanism (`cmd.edit.labelgroup`), same fix |
 | Set a **Project item's** color label | — Removed by product decision | `projectItems.setColorLabel` worked and was tested, but the user confirmed it isn't a real workflow they use - removed from `SUPPORTED_ACTIONS`/`ACTION_HANDLERS` rather than kept as unused surface area. `setSelectedProjectItemLabel` itself stays as a private helper, called directly (not through the shared allowlist) only so the 0.16.0 headless-command proof keeps working |
 | Global shortcuts / Stream Deck F13-F24 bindings | — Not a UXP question | Native Win32 `RegisterHotKey` in the Python companion, unaffected by CEP vs UXP either way |
 | Aliases, recent actions, actionable diagnostics | — Not a UXP question | Companion-side product features (search index, history, settings-panel health checks), independent of the execution backend |
@@ -504,10 +523,11 @@ how should future UXP releases be watched for capabilities that close the remain
 
 Every ❌ above traces back to exactly one of three walls, not five different problems:
 
-1. **The legacy QE DOM** (`qe.project.*`) - CEP's own escape hatch for creating tracks and most
-   generic items, deliberately out of scope for this project from the start (`TECHNICAL_PLAN.md`'s
-   own "Scope and invariants"). Audio transitions and Timeline-clip Label are not QE-DOM cases -
-   they are missing from *both* the documented and the QE surface.
+1. **The legacy QE DOM** (`qe.project.*`) - CEP's own escape hatch for creating tracks and Universal
+   Counting Leader, deliberately out of scope for this project from the start (`TECHNICAL_PLAN.md`'s
+   own "Scope and invariants"). Audio transitions are not a QE-DOM case - it is missing from *both*
+   the documented and the QE surface. (Timeline-clip Label/Label group looked like a QE-DOM case too,
+   but turned out not to be a DOM question at all - see the seventh slice above.)
 2. **No generic command-execution API** - UXP has nothing resembling CEP's `app.executeCommand()`,
    so even the "just run the same menu command CEP runs" fallback that a couple of these gaps might
    otherwise have doesn't exist either.
