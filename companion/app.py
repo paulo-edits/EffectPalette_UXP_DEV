@@ -2536,7 +2536,7 @@ def execute_configured_hotkey_action(palette, action: dict) -> bool:
         if not effect:
             return False
         effect.update({
-            "nestMode": resolve_nest_mode("auto"),
+            "nestMode": resolve_nest_mode("auto", getattr(palette, "execution_adapter", None)),
             "nestName": str(action.get("name", "")).strip(),
             "nestBin": DEFAULT_NEST_BIN,
         })
@@ -2564,7 +2564,11 @@ def execute_configured_hotkey_action(palette, action: dict) -> bool:
             return False
         effect = dict(items[0])
         if effect.get("action") == "nest":
-            effect.update({"nestMode": resolve_nest_mode("auto"), "nestName": "", "nestBin": DEFAULT_NEST_BIN})
+            effect.update({
+                "nestMode": resolve_nest_mode("auto", getattr(palette, "execution_adapter", None)),
+                "nestName": "",
+                "nestBin": DEFAULT_NEST_BIN,
+            })
         if effect.get("type") in {"transition_video", "transition_audio"}:
             effect["transitionPlacement"] = "auto"
     else:
@@ -2604,9 +2608,24 @@ def _load_json_file(file_path: Path, fallback):
         return fallback
 
 
-def resolve_nest_mode(requested_mode: str) -> str:
+def resolve_nest_mode(requested_mode: str, adapter=None) -> str:
     if requested_mode in {"premiere", "api"}:
         return requested_mode
+
+    # The UXP adapter can ask the plugin directly whether the current selection spans more than
+    # one audio track - native Nest leaves those unmerged, which is the whole reason this
+    # function exists rather than always using the native shortcut. The CEP adapter has no such
+    # live signal (current_selection.json only bridge.js ever kept updated) and falls through to
+    # the same has_audio/has_video heuristic this function always used.
+    if adapter is not None and hasattr(adapter, "has_multi_track_audio_selection"):
+        multi_track_audio = adapter.has_multi_track_audio_selection()
+        if multi_track_audio is True:
+            return "api"
+        if multi_track_audio is False:
+            shortcut, _shortcut_file = find_premiere_command_shortcut("cmd.clip.nestify")
+            return "premiere" if shortcut is not None else "api"
+        # None: the live check failed (not connected, timeout) - fall through to the file-based
+        # heuristic below rather than guessing.
 
     selection = _load_json_file(SELECTION_FILE, [])
     if not isinstance(selection, list):
@@ -4614,7 +4633,7 @@ class EffectPalette:
             return
         effect = dict(effect)
         effect.update({
-            "nestMode": resolve_nest_mode("auto"),
+            "nestMode": resolve_nest_mode("auto", self.execution_adapter),
             "nestName": self._nest_inline_name_var.get().strip(),
             "nestBin": DEFAULT_NEST_BIN,
         })
@@ -7170,7 +7189,7 @@ if HAS_QT:
                 return
             effect = dict(effect)
             effect.update({
-                "nestMode": resolve_nest_mode("auto"),
+                "nestMode": resolve_nest_mode("auto", self.execution_adapter),
                 "nestName": self._nest_inline_name_entry.text().strip(),
                 "nestBin": DEFAULT_NEST_BIN,
             })

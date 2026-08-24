@@ -49,7 +49,7 @@ RECONSTRUCT_EASING_DEFAULT = True
 # effect["type"] values translated so far. Every other type returns error_not_supported
 # immediately - callers see a clear failure instead of a hang. "transition_audio" is
 # deliberately absent: the plugin exposes no audio-transition action at all.
-_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset", "transition_video"}
+_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset", "transition_video", "timeline_action"}
 
 # Vendor prefixes literally encoded in transition matchNames, longest-first so
 # "Universe_Transitions" is recognized before the shorter "Universe". Extracting this is not a
@@ -342,6 +342,29 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             payload = {"matchName": match_name, "position": "END" if placement == "END" else "START"}
             # VideoTransition exposes no readable identity, so there is nothing to verify against.
             requested_display_name = None
+        elif effect_type == "timeline_action":
+            # "nest" is the only sub-action this app.py ever builds (app.py:592) - and only when
+            # nestMode resolves to "api"; "premiere" (native Ctrl+/-style keystroke) never reaches
+            # execute_effect_through_adapter at all, so this adapter never needs to handle it.
+            if effect.get("action") != "nest":
+                self._pending[request_id] = {"status": "error_not_supported"}
+                return timestamp
+            nest_name = str(effect.get("nestName") or "").strip()
+            if not nest_name:
+                # A blank name field means "give it CEP's default codename" (FXN-001, FXN-002...),
+                # not the generic UI label "Nest clips" - confirmed against host.jsx's own
+                # _uniqueNestSequenceName, which falls back to _nextNestCodeName() the same way.
+                nest_name = self.next_nest_codename() or display_name
+            nest_name = nest_name.strip()
+            if not nest_name:
+                self._pending[request_id] = {"status": "error_nest_name_required"}
+                return timestamp
+            action_type = "timeline.createNest"
+            payload = {"name": nest_name}
+            # timeline.createNest has no bin-placement equivalent to CEP's DEFAULT_NEST_BIN
+            # organizing step (TECHNICAL_PLAN.md) - the created sequence lands wherever Premiere
+            # itself puts a new Nest, not necessarily effect.get("nestBin").
+            requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)
             if match_name is None:
@@ -440,3 +463,85 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "authenticated": self._authenticated,
             "video_catalog_entries": len(self._video_match_names_by_display),
         }
+
+    def _blocking_request(self, action_type: str, request_id: str, timeout_ms: int) -> dict | None:
+        """Send one action and block the caller (via a nested Qt event loop) for its response.
+
+        Only for UI-callback call sites that need a synchronous-looking answer and cannot
+        themselves be made async - a nested QEventLoop is the standard Qt pattern for that.
+        Returns the raw ok:true response's `data`, or None on any failure (not connected,
+        timeout, ok:false, malformed) so the caller always has an explicit "couldn't find out"
+        case to fall back from, instead of a guess.
+        """
+        if self._client is None or not self._authenticated:
+            return None
+
+        outcome: dict = {}
+        loop = QtCore.QEventLoop()
+
+        def on_message(raw: str):
+            try:
+                message = json.loads(raw)
+            except (ValueError, TypeError):
+                return
+            if isinstance(message, dict) and message.get("requestId") == request_id:
+                outcome["message"] = message
+                loop.quit()
+
+        self._client.textMessageReceived.connect(on_message)
+        timer = QtCore.QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        self._send({"schemaVersion": 1, "type": action_type, "requestId": request_id, "payload": {}})
+        loop.exec()
+        timer.stop()
+        try:
+            self._client.textMessageReceived.disconnect(on_message)
+        except (RuntimeError, TypeError):
+            pass  # client already gone (disconnected mid-wait)
+
+        message = outcome.get("message")
+        if not message or not message.get("ok"):
+            return None
+        return message.get("data") or {}
+
+    def has_multi_track_audio_selection(self, timeout_ms: int = 1200) -> bool | None:
+        """Does the current Timeline selection span more than one audio track?
+
+        CEP's `resolve_nest_mode` used this to route a native Nest away from the API path,
+        because native `cmd.clip.nestify` leaves multiple selected audio tracks unmerged instead
+        of consolidating them onto one - a real behavior gap, not a CEP-vs-UXP one. It read this
+        from `current_selection.json`, a file `bridge.js` no longer exists to keep updated under
+        this adapter, so that signal went permanently stale. This asks the plugin directly instead.
+
+        Returns None (not True/False) on any failure so the caller can fall back to its own
+        default instead of silently picking a mode.
+        """
+        data = self._blocking_request("diagnostics.read", "adapter-selection-audio-check", timeout_ms)
+        if data is None:
+            return None
+        items = (data.get("timelineSelection") or {}).get("items") or []
+        audio_tracks = {item.get("trackIndex") for item in items if item.get("isAudio")}
+        return len(audio_tracks) > 1
+
+    def next_nest_codename(self, timeout_ms: int = 1200) -> str | None:
+        """The same default Nest name CEP generated for a blank name field: "FXN-NNN", the
+        existing highest such name in the project plus one, zero-padded to 3 digits
+        (host.jsx `_nextNestCodeName`). UXP's `timeline.createNest` requires a non-empty name
+        up front - it has no equivalent server-side fallback - so this has to be resolved before
+        sending the action, using the real project's sequence list rather than a local counter
+        that could silently collide with a sequence the user (or CEP, historically) already named.
+
+        Returns None on failure (not connected, timeout) so the caller can fall back further.
+        """
+        data = self._blocking_request("diagnostics.read", "adapter-nest-codename", timeout_ms)
+        if data is None:
+            return None
+        sequence_names = (data.get("project") or {}).get("sequenceNames") or []
+        highest = 0
+        for name in sequence_names:
+            match = re.match(r"^FXN-(\d+)$", str(name or ""), re.IGNORECASE)
+            if match:
+                highest = max(highest, int(match.group(1)))
+        return f"FXN-{highest + 1:03d}"

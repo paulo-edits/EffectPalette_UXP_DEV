@@ -300,3 +300,56 @@ transition by search landed the correct transition on the selected clip, confirm
 Premiere - the readability work above happened only after that mutation was already proven correct,
 so the several label redesigns changed only what the user reads in the search list, never what
 `timeline.applyVideoTransition` was actually sent.
+
+### Fourth slice: Nest, and a signal CEP had that this migration silently dropped
+
+`effect["type"] == "timeline_action"` with `action == "nest"` maps to `timeline.createNest`. Unlike
+the earlier slices, this is not the only action reachable for this effect - `nestMode == "premiere"`
+(a native `cmd.clip.nestify` keystroke) never reaches `execute_effect_through_adapter`/this adapter
+at all; only `nestMode == "api"` does, exactly as under CEP.
+
+`resolve_nest_mode("auto")` decided between those two modes by reading `data/current_selection.json`
+- a file only `bridge.js` ever kept updated. Nothing in this migration replaced that writer, so under
+the UXP-backed companion the file is permanently stale, `has_audio`/`has_video` are always false, and
+`resolve_nest_mode` always falls through to whichever mode `cmd.clip.nestify`'s shortcut lookup picks
+- in practice always "premiere". The consequence is real, not cosmetic: CEP's `nestSelectionApi` path
+existed specifically because native Nest leaves a selection spanning multiple audio tracks unmerged
+instead of consolidating them onto one track, and losing that routing silently reintroduces the bug
+it was written to avoid. The user found this by describing the actual Premiere behavior
+("as camadas de áudio continuam lá, não ficam em uma camada de áudio unificada"), not by reading code.
+
+The fix asks the plugin directly instead of trusting a file nothing writes to anymore.
+`describeTrackItem`/`readDiagnostics` (`index.js`) now classify each selected item with `isAudio`,
+computed the same way every apply-effect/transition handler already does (compare against the
+sequence's own audio-track media types) - exposed as a read instead of staying a side effect only
+mutations could see. `PremiereUxpExecutionAdapter.has_multi_track_audio_selection()` asks for it via
+a `diagnostics.read` round trip, and - because `resolve_nest_mode` is called synchronously from a UI
+callback that cannot itself be made async - blocks the caller on a nested `QEventLoop` for up to
+1.2s, returning `None` (not a guessed True/False) on any failure so `resolve_nest_mode` falls back to
+the old file-based heuristic rather than picking a mode on no information. Host-confirmed: a real
+selection with audio on two different tracks (`trackIndex` 0 and 1) resolved to `api`, applied via
+`timeline.createNest`, and the created Nest's `audioTrackIndex` in the response was `0` for both -
+consolidated onto one track, not left split.
+
+A second, unrelated regression surfaced from the very same host test: applying a Nest with a blank
+name field produced the generic UI label "Nest clips" as the literal sequence name. Checked against
+the real host.jsx (`_uniqueNestSequenceName`/`_nextNestCodeName`, read-only reference): CEP's actual
+behavior for a blank name was never "use whatever text was on the button" - it generates
+`"FXN-" + zero-padded(highest existing FXN-NNN in the project + 1)`, scanning the real project's
+sequence names for collisions. `readDiagnostics` now also returns `project.sequenceNames` for exactly
+this; `PremiereUxpExecutionAdapter.next_nest_codename()` reuses the same blocking-round-trip helper
+(factored out as `_blocking_request` once a second caller needed the identical pattern) to compute the
+same `FXN-NNN` scheme against real project state, never a local counter that could drift from it. Unit
+logic verified with 6 cases (case-insensitivity, partial/embedded names correctly rejected, multi-digit
+numbers, `None`/empty entries); the `FXN-001` base case (no prior `FXN-*` sequences) is also
+host-confirmed - accidentally, when a stray test connection let the real plugin answer a test script
+instead of its intended fake peer, creating a real (immediately deleted) Nest in the user's project.
+That interference is itself a caution worth recording: an isolated test server on the same port a real,
+auto-reconnecting plugin instance is also trying to reach can get a live answer instead of its
+fake one, with a real side effect - future sessions should assume that risk rather than treat a
+"standalone" test script as isolated by construction.
+
+Still deferred: `timeline.createNest` has no bin-placement equivalent to CEP's
+`_organizeNestSequenceObject`/`DEFAULT_NEST_BIN` step - a created Nest lands wherever Premiere itself
+puts a new subsequence, not a configured bin; project-item insertion; generic-item creation from
+scratch; favorite-item import; Timeline-clip label and label-group selection.

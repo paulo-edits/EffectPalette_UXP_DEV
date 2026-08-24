@@ -45,13 +45,17 @@ async function describeProjectItem(item) {
   };
 }
 
-async function describeTrackItem(item) {
+async function describeTrackItem(item, audioMediaTypes) {
   const projectItem = typeof item.getProjectItem === "function" ? await item.getProjectItem() : null;
+  const mediaType = typeof item.getMediaType === "function" ? guidToString(await item.getMediaType()) : null;
   return {
     name: typeof item.getName === "function" ? await item.getName() : null,
     type: typeof item.getType === "function" ? await item.getType() : null,
     trackIndex: typeof item.getTrackIndex === "function" ? await item.getTrackIndex() : null,
-    mediaType: typeof item.getMediaType === "function" ? guidToString(await item.getMediaType()) : null,
+    mediaType,
+    // Same classification every apply-effect/transition handler already does (compare against the
+    // sequence's own audio-track media types) - just exposed here as a read instead of a side effect.
+    isAudio: audioMediaTypes instanceof Set ? audioMediaTypes.has(mediaType) : null,
     projectItem: projectItem ? {
       name: projectItem.name || null,
       id: typeof projectItem.getId === "function" ? await projectItem.getId() : null
@@ -2420,9 +2424,13 @@ async function readDiagnostics() {
   const project = await premiere.Project.getActiveProject();
   if (!project) return result;
 
+  const projectSequences = await project.getSequences();
   result.project = {
     name: project.name || null,
-    guid: guidToString(project.guid)
+    guid: guidToString(project.guid),
+    // Lets a caller compute a collision-free default name (e.g. the companion's FXN-NNN Nest
+    // codename scheme) against real project state instead of guessing at a number.
+    sequenceNames: (Array.isArray(projectSequences) ? projectSequences : []).map((entry) => entry.name || null)
   };
 
   const projectSelection = await premiere.ProjectUtils.getSelection(project);
@@ -2445,7 +2453,15 @@ async function readDiagnostics() {
     const trackItems = await selection.getTrackItems();
     const selectedTrackItems = Array.isArray(trackItems) ? trackItems : [];
     result.timelineSelection.count = selectedTrackItems.length;
-    result.timelineSelection.items = await Promise.all(selectedTrackItems.map(describeTrackItem));
+    const audioMediaTypes = new Set();
+    const audioTrackCount = await sequence.getAudioTrackCount();
+    for (let index = 0; index < audioTrackCount; index += 1) {
+      const audioTrack = await sequence.getAudioTrack(index);
+      audioMediaTypes.add(guidToString(await audioTrack.getMediaType()));
+    }
+    result.timelineSelection.items = await Promise.all(
+      selectedTrackItems.map((item) => describeTrackItem(item, audioMediaTypes))
+    );
   }
 
   return result;
