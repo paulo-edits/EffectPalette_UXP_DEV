@@ -246,3 +246,57 @@ import (CEP relies on undocumented `qe.project` calls with no known UXP equivale
 label and label-group selection (native-keystroke fallback stands per Stage 4 bucket C, though CEP's
 own `app.executeCommand("cmd.sequence.edit.label."+index)` suggests a documented UXP command-execution
 equivalent may be worth checking before accepting that as final); a single combined installer.
+
+### Third slice: video transitions, and the limits of guessing an identity
+
+`effect["type"] == "transition_video"` maps to `timeline.applyVideoTransition`. This slice took far
+longer than presets because, unlike effects, **there is no way to verify a transition's identity**:
+`VideoTransition` exposes no methods or properties at all (`CAPABILITY_MATRIX.md`), so nothing plays
+the role `verification.displayName` plays for `timeline.applyVideoEffect` - a wrong guess here cannot
+be caught after the fact.
+
+The CEP catalog's 340 display names could not be reused for this reason. Measured against the real
+host catalog: a vendor-aware textual match against UXP's 305 `matchNames` resolved only 105 of 340
+unambiguously, and even those are unverifiable by construction - Adobe documents no correspondence
+between a CEP-parsed name and a UXP `matchName`. An earlier attempt at showing the CEP names anyway
+had already shown why guessing here is dangerous, not just incomplete: a naive (non-vendor-aware)
+match put BCC's "Checker Wipe" onto Adobe's `ADBE Checker Wipe`, a different vendor's transition
+entirely, with no way to detect the error afterward.
+
+Three designs were tried and rejected by the user before landing on the current one - each rejection
+is preserved here because it rules out a design a future session might otherwise re-attempt:
+
+1. **Guessed word-splitting of UXP's own matchNames** (`RADIALWIPE` -> "Radial Wipe" via a
+   dictionary/vocabulary built from the catalog's own already-spaced words). Produced 305 unique,
+   fully readable labels, but the user rejected it outright as still unclear which real transition
+   some entries were - an interpretation of the identifier is not the identifier.
+2. **The bare matchName** (`transition_video` label = matchName minus its `AE.`/`PR.` prefix, no
+   reformatting at all). Technically the most honest option, but the user found it illegible for
+   BCC's `_ALLCAPS` and Sapphire's `camelCase` families.
+3. **Vendor as a category breadcrumb** (`Transicoes > Video > BCC`, plain core name). Matched how
+   presets already show their source pack, but the user wanted the vendor visible on the entry
+   itself, not implied by a subtitle.
+
+The shipped design: `(Vendor) rest-of-name`, where the vendor tag is extracted from a prefix that is
+*literally encoded* in the matchName (`BCC`, `AE_Impact`, `S_` for Sapphire, etc.) - not a guess about
+wording, since the prefix is either present, delimited by `_`/space/a capital letter, or it is not.
+36 entries remained fully glued/all-caps after this (`BCC_RADIALWIPE`, all BCC). Of those, 15 have an
+exact-string match elsewhere in the *same real catalog* - e.g. `BCC_RADIALWIPE` squashes to identical
+letters as the already-legible `ADBE Radial Wipe` - and borrow that spelling for display while keeping
+their own vendor tag and matchName, since this is an exact whole-string match against real catalog
+text, not a segmentation guess. The user explicitly declined guessing for the remaining 21
+(`BCC_SWISHGLOW`, `BCC_MLJUMPCUT`, etc., no match anywhere in the catalog): shown as-is, all-caps,
+rather than invented. Host-confirmed measurement: 305/305 unique labels, 0 collisions, 15/36
+previously-illegible entries fixed with real evidence, 21 left honestly unreadable.
+
+Applying a transition also required its own success check: `applyVideoTransitionToSelection`
+reports `verificationSucceeded` from a before/after transition count on the sequence rather than a
+per-item check (nothing else is available), so `_resolve_pending` now treats an explicit
+`verificationSucceeded: false` as `error_not_applied` for every action type, not just transitions -
+a transaction the plugin accepted but that measurably changed nothing must not read as success.
+
+Host-confirmed end to end through the real companion's real palette and hotkey: applying a video
+transition by search landed the correct transition on the selected clip, confirmed by the user in
+Premiere - the readability work above happened only after that mutation was already proven correct,
+so the several label redesigns changed only what the user reads in the search list, never what
+`timeline.applyVideoTransition` was actually sent.

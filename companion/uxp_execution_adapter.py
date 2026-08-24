@@ -18,7 +18,9 @@ negotiate one at runtime.
 from __future__ import annotations
 
 import json
+import re
 import time
+from pathlib import Path
 
 from PySide6 import QtCore
 from PySide6.QtNetwork import QHostAddress
@@ -30,6 +32,11 @@ TRANSPORT_TOKEN = "fxpalette-uxp-transport-v1-2eaf1cf6a94b4a5b8f0e3b7c9a5d6e21"
 REQUEST_TIMEOUT_SECONDS = 5.0
 PENDING_RETENTION_SECONDS = 60.0
 CATALOG_REQUEST_ID = "uxp-adapter-video-catalog"
+TRANSITION_CATALOG_REQUEST_ID = "uxp-adapter-video-transitions"
+
+# Written by this adapter from the plugin's own catalog and read back by EffectsLoader, so the
+# palette lists exactly the transitions UXP can actually apply, each carrying its exact matchName.
+UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_transitions.json"
 
 # On: the plugin rebuilds each animated parameter's curve from the .prfpset's own
 # speed/influence fields and frame-samples it, measured indistinguishable from a manual
@@ -39,9 +46,103 @@ CATALOG_REQUEST_ID = "uxp-adapter-video-catalog"
 # diagnostics panel keeps its own checkbox for isolating the two behaviours during testing.
 RECONSTRUCT_EASING_DEFAULT = True
 
-# effect["type"] values this first slice translates. Every other type returns
-# error_not_supported immediately - callers see a clear failure instead of a hang.
-_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset"}
+# effect["type"] values translated so far. Every other type returns error_not_supported
+# immediately - callers see a clear failure instead of a hang. "transition_audio" is
+# deliberately absent: the plugin exposes no audio-transition action at all.
+_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset", "transition_video"}
+
+# Vendor prefixes literally encoded in transition matchNames, longest-first so
+# "Universe_Transitions" is recognized before the shorter "Universe". Extracting this is not a
+# guess about wording - the prefix is either there, delimited by "_"/" "/a capital letter, or it
+# is not; nothing about where the *rest* of the name's words begin is invented.
+_TRANSITION_VENDOR_PREFIXES = (
+    ("Universe_Transitions", "Universe"),
+    ("AE_Custom_Impact", "Impact"),
+    ("AE_Impact", "Impact"),
+    ("Impact", "Impact"),
+    ("RG_UNI", "Universe"),  # Red Giant Universe's alternate internal prefix
+    ("Universe", "Universe"),
+    ("ADBE", "Adobe"),
+    ("BCC", "BCC"),
+    ("GenArts", "GenArts"),
+    ("Mettle", "Mettle"),
+    ("S", "Sapphire"),
+)
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def build_transition_entries(match_names) -> list[dict]:
+    """Palette entries straight from the plugin's own catalog: "(Vendor) rest" label + matchName.
+
+    Two earlier versions were rejected: showing the bare matchName was unreadable, and guessing
+    word boundaries inside glued names (RADIALWIPE -> "Radial Wipe") was rejected as an
+    unverifiable interpretation - there is no official display-name API for transitions to check
+    a guess against (unlike video/audio effects, which can verify post-insertion). Tagging the
+    vendor is different: the prefix is literally encoded in the matchName, not invented, so this
+    strips only that known prefix and swaps "_" for spaces - nothing about where the *remaining*
+    words begin is guessed at, unlike the rejected all-caps/camelCase splitting.
+
+    A handful of BCC entries ship the same transition twice, once glued/all-caps
+    ("BCC_RADIALWIPE") and once already spelled out under a different naming convention -
+    sometimes BCC's own newer form ("BCC Radial WipePrTr"), sometimes another vendor's
+    ("ADBE Radial Wipe"). When a glued entry's squashed letters match another entry's spelled-out
+    letters exactly (not a segmentation guess - an exact whole-string match against real catalog
+    text), that spelling is borrowed for display. The vendor tag and matchName stay the glued
+    entry's own, so this never claims the two are the same transition, only that the words are
+    spelled the same way. Measured against the real catalog: this resolves 15 of 36 previously
+    all-caps entries; the remaining 21 have no such match anywhere in the catalog and are shown
+    as-is rather than guessed at.
+    """
+    parsed = []
+    for name in match_names:
+        rest = re.sub(r"^(?:AE\.|PR\.)", "", name)
+        vendor = ""
+        for prefix, label in _TRANSITION_VENDOR_PREFIXES:
+            match = re.match(rf"^{re.escape(prefix)}(?=[ _]|[A-Z]|$)", rest, re.IGNORECASE)
+            if match:
+                vendor = label
+                rest = rest[match.end():]
+                if rest[:1] in (" ", "_"):
+                    rest = rest[1:]
+                break
+        rest = re.sub(r"PrTr$", "", rest)  # BCC's Premiere-transition suffix, not part of the name
+        rest = re.sub(r"\s+", " ", rest.replace("_", " ")).strip() or rest
+        parsed.append((name, vendor, rest))
+
+    spellings_by_squash: dict[str, str] = {}
+    for _, _, rest in parsed:
+        if re.search(r"[a-z]", rest) or " " in rest:  # already spelled out, not glued/all-caps
+            spellings_by_squash.setdefault(_squash(rest), rest)
+
+    parsed = [
+        (name, vendor, spellings_by_squash.get(_squash(rest), rest) if rest.isupper() else rest)
+        for name, vendor, rest in parsed
+    ]
+
+    label_counts: dict[str, int] = {}
+    for _, vendor, rest in parsed:
+        label = f"({vendor}) {rest}" if vendor else rest
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    entries = []
+    for name, vendor, rest in parsed:
+        label = f"({vendor}) {rest}" if vendor else rest
+        if label_counts[label] > 1:
+            # Two different matchNames reduced to the same vendor+rest (BCC ships some
+            # transitions twice, e.g. "BCC Blur DissolvePrTr" and "BCC_BLURDISSOLVE"). Rather
+            # than show identical entries, fall back to the matchName as the discriminator.
+            technical = re.sub(r"^(?:AE\.|PR\.)", "", name)
+            label = f"{label} [{technical}]"
+        entries.append({
+            "name": label,
+            "category": "Transicoes > Video",
+            "type": "transition_video",
+            "matchName": name,
+        })
+    return entries
 
 
 def _error_code_to_status(code) -> str:
@@ -64,6 +165,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._authenticated = False
         self._pending: dict[str, dict] = {}
         self._video_match_names_by_display: dict[str, str] = {}
+        self._transition_match_names_by_label: dict[str, str] = {}
         self._catalog_requested = False
         self._server.newConnection.connect(self._on_new_connection)
         if not self._server.listen(QHostAddress.SpecialAddress.LocalHost, TRANSPORT_PORT):
@@ -107,7 +209,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 print("[UXP adapter] UXP plugin connected and authenticated over ws://localhost:"
                       f"{TRANSPORT_PORT}", flush=True)
                 self._send({"type": "hello-ack", "ok": True})
-                self._request_video_catalog()
+                self._request_catalogs()
             elif self._client is not None:
                 self._client.close()
             return
@@ -115,6 +217,9 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         request_id = message.get("requestId")
         if request_id == CATALOG_REQUEST_ID:
             self._handle_catalog_response(message)
+            return
+        if request_id == TRANSITION_CATALOG_REQUEST_ID:
+            self._handle_transition_catalog_response(message)
             return
         if request_id in self._pending:
             self._resolve_pending(request_id, message)
@@ -126,7 +231,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
 
     # ---- video match-name resolution -------------------------------------------
 
-    def _request_video_catalog(self):
+    def _request_catalogs(self):
         if self._catalog_requested:
             return
         self._catalog_requested = True
@@ -136,6 +241,39 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "requestId": CATALOG_REQUEST_ID,
             "payload": {},
         })
+        self._send({
+            "schemaVersion": 1,
+            "type": "catalog.videoTransitions.read",
+            "requestId": TRANSITION_CATALOG_REQUEST_ID,
+            "payload": {},
+        })
+
+    def _handle_transition_catalog_response(self, message: dict):
+        # The plugin's transition catalog exposes matchNames only - no display names, and
+        # VideoTransition itself exposes no readable identity after insertion, so nothing can
+        # verify a name-based guess the way applyVideoEffect's verification can. Rather than
+        # guess, the palette's transition list is generated straight from this catalog: each
+        # entry carries its exact matchName, so picking any entry can only apply that exact
+        # transition. Measured against the real host catalog: 305 match names -> 305 distinct
+        # labels, no collisions.
+        if not message.get("ok"):
+            return
+        match_names = (message.get("data") or {}).get("matchNames") or []
+        if not match_names:
+            return
+        entries = build_transition_entries(match_names)
+        self._transition_match_names_by_label = {e["name"]: e["matchName"] for e in entries}
+        try:
+            UXP_TRANSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"schemaVersion": 1, "source": "uxp", "transitions": entries}
+            tmp = UXP_TRANSITIONS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(UXP_TRANSITIONS_FILE)
+            print(f"[UXP adapter] {len(entries)} video transitions written to {UXP_TRANSITIONS_FILE}", flush=True)
+        except Exception as error:
+            # Non-fatal: this session can still apply transitions from the in-memory lookup;
+            # only the palette's own listing falls back to whatever it had before.
+            print(f"[UXP adapter] could not write the transition catalog: {error}", flush=True)
 
     def _handle_catalog_response(self, message: dict):
         if not message.get("ok"):
@@ -186,6 +324,24 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 "reconstructEasing": bool(effect.get("reconstructEasing", RECONSTRUCT_EASING_DEFAULT)),
             }
             requested_display_name = None
+        elif effect_type == "transition_video":
+            # The catalog entry carries its own matchName (see _handle_transition_catalog_response);
+            # the label is never used to look one up. An entry without it is a stale CEP-sourced
+            # item, which fails closed rather than being guessed at.
+            match_name = effect.get("matchName") or self._transition_match_names_by_label.get(display_name)
+            if not match_name:
+                status = (
+                    "error_catalog_not_ready"
+                    if not self._transition_match_names_by_label
+                    else "error_transition_not_found"
+                )
+                self._pending[request_id] = {"status": status}
+                return timestamp
+            action_type = "timeline.applyVideoTransition"
+            placement = str(effect.get("transitionPlacement", "auto")).upper()
+            payload = {"matchName": match_name, "position": "END" if placement == "END" else "START"}
+            # VideoTransition exposes no readable identity, so there is nothing to verify against.
+            requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)
             if match_name is None:
@@ -225,6 +381,13 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             return
 
         data = message.get("data") or {}
+        # Some actions report their own post-mutation check (transitions compare the sequence's
+        # transition count before/after). An explicit false means the transaction was accepted
+        # but nothing actually landed, which must not be reported to the user as success.
+        if data.get("verificationSucceeded") is False:
+            entry["status"] = "error_not_applied"
+            return
+
         verification = data.get("verification") or []
         requested = (entry.get("requested_display_name") or "").strip().casefold()
         if requested and verification:

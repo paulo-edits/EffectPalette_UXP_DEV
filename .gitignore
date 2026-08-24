@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Generated at runtime from the live plugin's catalog - regenerates on every connection.
+companion/data/uxp_video_transitions.json

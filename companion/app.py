@@ -85,10 +85,11 @@ except Exception:
     HAS_QT = False
 
 try:
-    from uxp_execution_adapter import PremiereUxpExecutionAdapter
+    from uxp_execution_adapter import PremiereUxpExecutionAdapter, UXP_TRANSITIONS_FILE
     HAS_UXP_ADAPTER = HAS_QT
 except Exception:
     PremiereUxpExecutionAdapter = None
+    UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_transitions.json"
     HAS_UXP_ADAPTER = False
 
 
@@ -727,6 +728,7 @@ class DataPaths:
     bridge_file: Path = BRIDGE_FILE
     selection_file: Path = SELECTION_FILE
     data_dir: Path = EXT_DATA
+    uxp_transitions_file: Path = UXP_TRANSITIONS_FILE
 
 
 @dataclass(frozen=True)
@@ -1970,6 +1972,7 @@ class EffectsLoader:
             "presets": self._safe_mtime(self.paths.presets_file),
             "project_items": self._safe_mtime(self.paths.project_items_file),
             "favorites": self._safe_mtime(self.paths.favorites_file),
+            "uxp_transitions": self._safe_mtime(self.paths.uxp_transitions_file),
         }
 
     def needs_reload(self) -> bool:
@@ -2043,7 +2046,7 @@ class EffectsLoader:
             presets = ()
             project_items = ()
             favorite_items = ()
-            mtimes = {"effects": 0.0, "presets": 0.0, "project_items": 0.0, "favorites": 0.0}
+            mtimes = {"effects": 0.0, "presets": 0.0, "project_items": 0.0, "favorites": 0.0, "uxp_transitions": 0.0}
         else:
             presets, preset_issues = self._load_presets()
             project_items, project_item_issues = self._load_project_items()
@@ -2091,11 +2094,46 @@ class EffectsLoader:
                 })
             if not effects:
                 raise ValueError("Lista vazia")
+            effects = self._apply_uxp_transition_catalog(effects)
             print(f"[Efeitos] {len(effects)} efeitos carregados")
             return tuple(effects), "premiere", ()
         except Exception as exc:
             print(f"[Efeitos] Erro ao ler arquivo: {exc} — usando fallback")
             return tuple(dict(item, type=item.get("type", "video")) for item in FALLBACK_EFFECTS), "fallback", (f"effects:{exc}",)
+
+    def _apply_uxp_transition_catalog(self, effects: list[dict]) -> list[dict]:
+        """Replace CEP-sourced video transitions with the UXP plugin's own catalog.
+
+        The CEP list is display names only, and there is no reliable mapping from those to the
+        matchNames UXP needs: measured against the real host, only 105 of 340 names resolved at
+        all, some to a different vendor's transition entirely (BCC's "Checker Wipe" onto Adobe's),
+        and VideoTransition exposes no identity to catch that after the fact. The plugin's catalog
+        is therefore the source of truth here - each entry already carries its exact matchName, so
+        a picked entry can only ever apply that one transition.
+        """
+        if not self.paths.uxp_transitions_file.exists():
+            return effects
+        try:
+            with open(self.paths.uxp_transitions_file, encoding="utf-8") as file_obj:
+                data = json.load(file_obj)
+            transitions = [
+                {
+                    "name": item["name"],
+                    "category": item.get("category", "Transicoes > Video"),
+                    "type": "transition_video",
+                    "matchName": item["matchName"],
+                }
+                for item in data.get("transitions", [])
+                if item.get("name") and item.get("matchName")
+            ]
+            if not transitions:
+                return effects
+            kept = [effect for effect in effects if effect.get("type") != "transition_video"]
+            print(f"[Transicoes] {len(transitions)} do catalogo UXP (substituindo {len(effects) - len(kept)} do CEP)")
+            return kept + transitions
+        except Exception as exc:
+            print(f"[Transicoes] Erro ao ler catalogo UXP: {exc} — mantendo lista do CEP")
+            return effects
 
     def _load_presets(self) -> tuple[tuple[dict, ...], tuple[str, ...]]:
         if not self.paths.presets_file.exists():
@@ -2336,6 +2374,24 @@ class PremiereExecutionAdapter:
             "bridge_file": str(BRIDGE_FILE),
             "bridge_exists": BRIDGE_FILE.exists(),
         }
+
+
+def watched_data_directories(paths: DataPaths) -> list[Path]:
+    """Directories the file watcher must observe.
+
+    The UXP adapter writes its transition catalog into the companion's own data folder, which is
+    not the CEP extension folder the watcher historically observed - without this the palette only
+    picked up a refreshed transition list on the next start.
+    """
+    directories = [paths.data_dir]
+    uxp_dir = paths.uxp_transitions_file.parent
+    try:
+        uxp_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return directories
+    if uxp_dir.resolve() != paths.data_dir.resolve():
+        directories.append(uxp_dir)
+    return directories
 
 
 def create_execution_adapter():
@@ -3887,7 +3943,8 @@ class EffectPalette:
         if HAS_WATCHDOG:
             handler = DataFilesChangeHandler(self)
             self._data_observer = Observer()
-            self._data_observer.schedule(handler, str(self.loader.paths.data_dir), recursive=False)
+            for directory in watched_data_directories(self.loader.paths):
+                self._data_observer.schedule(handler, str(directory), recursive=False)
             self._data_observer.start()
             return
 
@@ -7256,7 +7313,8 @@ if HAS_QT:
             if HAS_WATCHDOG:
                 handler = DataFilesChangeHandler(self)
                 self._data_observer = Observer()
-                self._data_observer.schedule(handler, str(self.loader.paths.data_dir), recursive=False)
+                for directory in watched_data_directories(self.loader.paths):
+                    self._data_observer.schedule(handler, str(directory), recursive=False)
                 self._data_observer.start()
                 return
 
