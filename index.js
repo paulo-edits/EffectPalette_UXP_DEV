@@ -7,6 +7,9 @@ const transport = require("./transport.js");
 let capturedTransformCurveReference = null;
 let importedEffectPresetCatalog = null;
 let importedEffectPresetXml = null;
+// A persistent token (require("uxp").storage) survives plugin reloads, so the user picks the
+// .prfpset file once instead of every session - the zero-configuration bar the transport is held to.
+const PRESET_CATALOG_TOKEN_KEY = "fxpalette.importedPresetCatalog.persistentToken";
 
 function text(id, value) {
   const node = document.getElementById(id);
@@ -609,11 +612,7 @@ function parsePrfpsetCatalog(xml) {
   return presets;
 }
 
-async function importPrfpsetCatalog() {
-  const { localFileSystem } = require("uxp").storage;
-  const file = await localFileSystem.getFileForOpening({ types: ["prfpset"] });
-  if (!file) throw new Error("No .prfpset file was selected.");
-  const xml = await file.read();
+function loadPrfpsetFileIntoCatalog(file, xml) {
   const presets = parsePrfpsetCatalog(xml);
   importedEffectPresetXml = xml;
   importedEffectPresetCatalog = { schemaVersion: 1, fileName: file.name, presets };
@@ -629,9 +628,48 @@ async function importPrfpsetCatalog() {
       transformParameterCount: preset.filters.find((filter) => filter.matchName === "AE.ADBE Geometry2").parameters.length
     })),
     truncated: transformPresets.length > 200,
-    catalogStorage: "in-memory-until-plugin-reload",
+    catalogStorage: "in-memory, re-read on plugin load from a stored persistent token",
     mutation: "none"
   };
+}
+
+async function importPrfpsetCatalog() {
+  const { localFileSystem } = require("uxp").storage;
+  const file = await localFileSystem.getFileForOpening({ types: ["prfpset"] });
+  if (!file) throw new Error("No .prfpset file was selected.");
+  const xml = await file.read();
+  const result = loadPrfpsetFileIntoCatalog(file, xml);
+  try {
+    const token = await localFileSystem.createPersistentToken(file);
+    localStorage.setItem(PRESET_CATALOG_TOKEN_KEY, token);
+    result.persistentTokenStored = true;
+  } catch (error) {
+    // Not fatal: the catalog is already loaded for this session, only the next-session
+    // auto-restore is affected. Surfaced in the result rather than thrown.
+    result.persistentTokenStored = false;
+    result.persistentTokenError = error && error.message ? error.message : String(error);
+  }
+  return result;
+}
+
+// Runs from entrypoints.plugin.create() so a previously imported catalog survives a plugin
+// reload without asking the user to re-pick the file. Best-effort: any failure (revoked
+// permission, moved/deleted file, no token stored yet) just leaves the catalog unset, exactly
+// as if importPrfpsetCatalog() had never been called - existing preset actions already fail
+// closed with "Import a .prfpset catalog first." in that case.
+async function restoreImportedPresetCatalogFromToken() {
+  const token = localStorage.getItem(PRESET_CATALOG_TOKEN_KEY);
+  if (!token) return { restored: false, reason: "no-stored-token" };
+  try {
+    const { localFileSystem } = require("uxp").storage;
+    const file = await localFileSystem.getEntryForPersistentToken(token);
+    const xml = await file.read();
+    loadPrfpsetFileIntoCatalog(file, xml);
+    return { restored: true, fileName: file.name, presetCount: importedEffectPresetCatalog.presets.length };
+  } catch (error) {
+    localStorage.removeItem(PRESET_CATALOG_TOKEN_KEY);
+    return { restored: false, reason: error && error.message ? error.message : String(error) };
+  }
 }
 
 function findImportedEffectPresets(name, category) {
@@ -3343,7 +3381,10 @@ entrypoints.setup({
   plugin: {
     // Fires automatically when Premiere loads the plugin, independent of the diagnostics panel ever
     // being opened - the actual "no configuration, just works" requirement behind the transport.
-    create() { transport.start(ACTION_HANDLERS, executionAdapter); },
+    create() {
+      transport.start(ACTION_HANDLERS, executionAdapter);
+      restoreImportedPresetCatalogFromToken();
+    },
     destroy() { transport.stop(); }
   },
   commands: {

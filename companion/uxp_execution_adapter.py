@@ -31,9 +31,17 @@ REQUEST_TIMEOUT_SECONDS = 5.0
 PENDING_RETENTION_SECONDS = 60.0
 CATALOG_REQUEST_ID = "uxp-adapter-video-catalog"
 
+# On: the plugin rebuilds each animated parameter's curve from the .prfpset's own
+# speed/influence fields and frame-samples it, measured indistinguishable from a manual
+# application in rendered output (0.016 px worst case, CAPABILITY_MATRIX.md). Off: only the
+# principal keyframes are written, so easing shape is lost - which is what a user notices
+# immediately on a preset built around its curve. Product default is therefore on; the plugin's
+# diagnostics panel keeps its own checkbox for isolating the two behaviours during testing.
+RECONSTRUCT_EASING_DEFAULT = True
+
 # effect["type"] values this first slice translates. Every other type returns
 # error_not_supported immediately - callers see a clear failure instead of a hang.
-_SUPPORTED_EFFECT_TYPES = {"video", "audio"}
+_SUPPORTED_EFFECT_TYPES = {"video", "audio", "preset"}
 
 
 def _error_code_to_status(code) -> str:
@@ -162,9 +170,22 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             self._pending[request_id] = {"status": "error_not_connected"}
             return timestamp
 
+        requested_display_name = display_name
         if effect_type == "audio":
             action_type = "timeline.applyAudioEffect"
             payload = {"displayName": display_name}
+        elif effect_type == "preset":
+            # No display-name -> matchName guessing here: the plugin resolves name/category
+            # directly against its own already-imported .prfpset catalog and fails closed on
+            # ambiguity or a missing match, so ok:true is sufficient - no separate identity
+            # check is needed the way video's same-index candidate lookup requires one.
+            action_type = "timeline.applyImportedEffectPreset"
+            payload = {
+                "name": display_name,
+                "category": effect.get("category", ""),
+                "reconstructEasing": bool(effect.get("reconstructEasing", RECONSTRUCT_EASING_DEFAULT)),
+            }
+            requested_display_name = None
         else:
             match_name = self._video_match_names_by_display.get(display_name)
             if match_name is None:
@@ -180,7 +201,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
 
         self._pending[request_id] = {
             "status": "pending",
-            "requested_display_name": display_name,
+            "requested_display_name": requested_display_name,
             "sent_at": timestamp,
         }
         print(f"[UXP adapter] -> {action_type} requestId={request_id} payload={payload}", flush=True)

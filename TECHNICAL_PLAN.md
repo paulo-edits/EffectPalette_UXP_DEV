@@ -213,9 +213,35 @@ every 300ms whenever it is actually running, sat unchanged for the entire test w
 returned clip name/component counts are live Premiere state the Python adapter has no other way to
 have produced.
 
-Deferred, not blocking: preset/transition/nest/project-item/generic-item/favorite-item translation
-(same adapter pattern, one action type at a time - preset is simpler than CEP's own approach since
-the plugin already parses `.prfpset` itself); generic-item creation from scratch and favorite-item
+### Second slice: presets
+
+`effect["type"] == "preset"` now translates to `timeline.applyImportedEffectPreset` with the
+preset's `name`/`category` passed straight through - no display-name guessing is involved, since the
+plugin resolves against its own parsed `.prfpset` catalog and already fails closed on an ambiguous or
+missing name, so `ok: true` needs no separate identity check the way video's same-index candidate
+lookup does.
+
+That catalog previously lived only in memory and vanished on every plugin reload, which would have
+meant re-picking the 42.8MB `.prfpset` by hand each session - the opposite of the zero-configuration
+requirement. `importPrfpsetCatalog` now also stores a `localFileSystem.createPersistentToken(file)`
+in `localStorage`, and `entrypoints.plugin.create()` calls `restoreImportedPresetCatalogFromToken()`
+to re-read it on load. Restoration is best-effort by design: a moved file, revoked permission or
+absent token clears the stored token and leaves the catalog unset, which is exactly the pre-existing
+"Import a .prfpset catalog first." failure rather than a new error path. Host-confirmed on 2026-08-23
+- after an explicit UDT unload/reload, `catalog.effectPresets.inspectImported` resolved a real preset
+(`TESTE PRESET - FINAL`, full filter chain) with no file picker shown.
+
+One real defect was found here by the user, not by the tests: the first implementation hardcoded
+`reconstructEasing: false`, which silently discarded the easing shape this project spent most of its
+effort decoding. Applying `Slide IN UP` wrote 2 principal keyframes (`sampleStrategy:
+principal-keys-only`) instead of the 52 frame-sampled ones (`frame-sampled-approximation`, 60fps
+detected) - values and timing correct, curve visibly wrong. The default is now
+`RECONSTRUCT_EASING_DEFAULT = True`, still overridable per action if this later becomes a real
+product setting per Stage 4 bucket B. The user confirmed visually that the curve now matches a manual
+application. Both applications are host evidence from the real companion, real palette, real hotkey.
+
+Deferred, not blocking: transition/nest/project-item/generic-item/favorite-item translation
+(same adapter pattern, one action type at a time); generic-item creation from scratch and favorite-item
 import (CEP relies on undocumented `qe.project` calls with no known UXP equivalent); Timeline-clip
 label and label-group selection (native-keystroke fallback stands per Stage 4 bucket C, though CEP's
 own `app.executeCommand("cmd.sequence.edit.label."+index)` suggests a documented UXP command-execution
