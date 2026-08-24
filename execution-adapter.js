@@ -6,7 +6,6 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "catalog.videoEffects.resolve",
   "catalog.videoEffects.read",
   "catalog.videoTransitions.read",
-  "projectItems.setColorLabel",
   "timeline.applyVideoEffect",
   "timeline.probeVideoEffectParameters",
   "timeline.probeStaticVideoEffectParameter",

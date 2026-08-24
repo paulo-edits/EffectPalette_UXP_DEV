@@ -2789,24 +2789,6 @@ async function refresh() {
   if (button) button.disabled = false;
 }
 
-async function runSetVioletLabel() {
-  const button = document.getElementById("set-label-violet");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "projectItems.setColorLabel",
-      requestId: String(Date.now()),
-      payload: { labelName: "VIOLET" }
-    },
-    { "projectItems.setColorLabel": setSelectedProjectItemLabel }
-  );
-
-  if (result.ok) await refresh();
-  text("action-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
 async function runApplyVideoEffect() {
   const button = document.getElementById("apply-video-effect");
   const input = document.getElementById("video-effect-match-name");
@@ -3510,11 +3492,6 @@ function wirePanel() {
     button.addEventListener("click", refresh);
     button.dataset.wired = "true";
   }
-  const labelButton = document.getElementById("set-label-violet");
-  if (labelButton && !labelButton.dataset.wired) {
-    labelButton.addEventListener("click", runSetVioletLabel);
-    labelButton.dataset.wired = "true";
-  }
   const effectButton = document.getElementById("apply-video-effect");
   if (effectButton && !effectButton.dataset.wired) {
     effectButton.addEventListener("click", runApplyVideoEffect);
@@ -3642,7 +3619,6 @@ const ACTION_HANDLERS = {
   "catalog.videoEffects.resolve": resolveVideoEffectCatalog,
   "catalog.videoEffects.read": readVideoEffectCatalog,
   "catalog.videoTransitions.read": readVideoTransitionCatalog,
-  "projectItems.setColorLabel": setSelectedProjectItemLabel,
   "timeline.applyVideoEffect": applyVideoEffectToSelection,
   "timeline.probeVideoEffectParameters": probeVideoEffectParameters,
   "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter,
@@ -3664,15 +3640,23 @@ const ACTION_HANDLERS = {
   "timeline.insertGenericItem": insertGenericItemAcrossSelection
 };
 
+// projectItems.setColorLabel is not a product feature (the user confirmed they don't use Project-
+// panel item labels) and was removed from ACTION_HANDLERS/SUPPORTED_ACTIONS - it is no longer
+// reachable via the transport or the diagnostics panel. setSelectedProjectItemLabel itself stays,
+// called directly here rather than through executionAdapter.execute(), only so the 0.16.0
+// headless-command proof ("the plugin can run with no panel open at all") keeps working without
+// needing a second action wired up just to prove the same thing again.
 async function runHeadlessSetVioletLabelCommand() {
-  const result = await executionAdapter.execute(
-    {
-      type: "projectItems.setColorLabel",
-      requestId: String(Date.now()),
-      payload: { labelName: "VIOLET" }
-    },
-    { "projectItems.setColorLabel": setSelectedProjectItemLabel }
-  );
+  let result;
+  try {
+    const data = await setSelectedProjectItemLabel({ payload: { labelName: "VIOLET" } });
+    result = { ok: true, schemaVersion: 1, actionType: "projectItems.setColorLabel", data };
+  } catch (error) {
+    result = {
+      ok: false, schemaVersion: 1, actionType: "projectItems.setColorLabel",
+      error: { code: "EXECUTION_FAILED", message: error && error.message ? error.message : String(error) }
+    };
+  }
   console.log("FX.palette headless command result:", JSON.stringify(result));
   return result;
 }

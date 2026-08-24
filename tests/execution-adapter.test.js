@@ -7,7 +7,7 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction(null).error.code, "INVALID_ACTION");
   assert.strictEqual(adapter.normalizeAction({}).error.code, "MISSING_ACTION_TYPE");
   assert.strictEqual(adapter.normalizeAction({ type: "arbitrary.execute" }).error.code, "UNSUPPORTED_ACTION");
-  assert.strictEqual(adapter.normalizeAction({ type: "projectItems.setColorLabel" }).ok, true);
+  assert.strictEqual(adapter.normalizeAction({ type: "projectItems.setColorLabel" }).error.code, "UNSUPPORTED_ACTION");
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoEffect" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeVideoEffectParameters" }).ok, true);
   assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeStaticVideoEffectParameter" }).ok, true);

@@ -21,7 +21,7 @@ The provisional boundary is `execution-adapter.js`:
 }
 ```
 
-Responses are plain serializable objects with `ok`, `schemaVersion`, `actionType`, `requestId`, and either `data` or `error`. The allowlist now contains 24 actions (`execution-adapter.js`'s `SUPPORTED_ACTIONS`), matching every mutation and read this proof of concept has host-tested. Unknown actions fail closed.
+Responses are plain serializable objects with `ok`, `schemaVersion`, `actionType`, `requestId`, and either `data` or `error`. The allowlist now contains 23 actions (`execution-adapter.js`'s `SUPPORTED_ACTIONS`), matching every mutation and read this proof of concept has host-tested. Unknown actions fail closed.
 
 `transport.js` (stage 5) is the first implementation of the "future optional localhost transport" this section originally deferred. It connects outbound to `ws://localhost:58756`, sends a token in an initial handshake message, and dispatches every message after that through `executionAdapter.execute(message, handlers)` with the identical handler map the diagnostics panel's own buttons use - a network caller can therefore never reach a code path the visible UI could not already reach. The token is a fixed constant baked into the plugin bundle, not a real secret: anything shipped to the user's machine is readable by anything else with code-execution capability on that same machine. Its purpose is avoiding accidental cross-talk with an unrelated local service, not defending against a co-located attacker; localhost-only Windows process isolation is what actually keeps other machines out, and this token is not a substitute for that.
 
@@ -134,7 +134,7 @@ with backoff if the companion is not running yet.
 to fire on plugin load, independent of any panel or command) opens a `WebSocket` to
 `ws://localhost:58756`, sends a `{type:"hello", token}` handshake, and after the companion
 acknowledges it, dispatches every subsequent message through `executionAdapter.execute()` with the
-same 24-action handler map (`ACTION_HANDLERS` in `index.js`) the diagnostics panel's own buttons use.
+same 23-action handler map (`ACTION_HANDLERS` in `index.js`) the diagnostics panel's own buttons use.
 A network caller therefore has exactly the same reach as the visible UI, nothing more. The
 diagnostics panel gained a read-only "Companion transport" section showing live connection status,
 for debugging this on the host - it does not control the connection beyond a manual reconnect button.
@@ -463,7 +463,7 @@ how should future UXP releases be watched for capabilities that close the remain
 | Create a new Timeline track when none is free | ❌ Confirmed platform gap | Exhaustive check: every plausibly relevant class (`Sequence`, `SequenceEditor`, `VideoTrack`, `AudioTrack`, `SequenceSettings`, `Application`) plus the complete official changelog from the 25.2.0 public beta through 26.3.0 - track *renaming* was added along the way, track *creation* never was |
 | Set a Timeline clip's Label | ❌ Confirmed platform gap (Stage 4) | No `TrackItem` label API, and no UXP equivalent to CEP's own `app.executeCommand()` escape hatch was found either (checked `Application` and the full class index) - CEP's own route to this is closed off in UXP twice over |
 | Select a Label group | ❌ Confirmed platform gap (Stage 4) | Same absence; CEP itself only reaches this via a native OS keystroke, not through `bridge.js`/`host.jsx` at all, so there was never a DOM path to port in the first place |
-| Set a **Project item's** color label | ⚠️ Implemented but narrow | `projectItems.setColorLabel` works and is tested, but the action still only accepts the hardcoded Violet label from its original diagnostic-probe form - generalizing to any of the ~8 label colors is a real but small remaining step, not a platform gap |
+| Set a **Project item's** color label | — Removed by product decision | `projectItems.setColorLabel` worked and was tested, but the user confirmed it isn't a real workflow they use - removed from `SUPPORTED_ACTIONS`/`ACTION_HANDLERS` rather than kept as unused surface area. `setSelectedProjectItemLabel` itself stays as a private helper, called directly (not through the shared allowlist) only so the 0.16.0 headless-command proof keeps working |
 | Global shortcuts / Stream Deck F13-F24 bindings | — Not a UXP question | Native Win32 `RegisterHotKey` in the Python companion, unaffected by CEP vs UXP either way |
 | Aliases, recent actions, actionable diagnostics | — Not a UXP question | Companion-side product features (search index, history, settings-panel health checks), independent of the execution backend |
 | `reconstructEasing` as a real user-facing setting | ⚠️ Wired, not yet exposed | Defaults on and is overridable per action already; Stage 4's own recommendation to ship it as a visible companion setting (not a diagnostic-only default) is still open |
