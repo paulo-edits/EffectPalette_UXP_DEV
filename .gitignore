@@ -4,6 +4,9 @@ __pycache__/
 # Generated at runtime from the live plugin's catalog - regenerates on every connection.
 companion/data/uxp_video_transitions.json
 companion/data/uxp_favorites.json
+companion/data/uxp_effects.json
+companion/data/uxp_project_items.json
+companion/data/uxp_presets.json
 
 # Written by scripts/configure_premiere_shortcuts.ps1 - machine-specific run log.
 companion/data/premiere_shortcut_configuration.log

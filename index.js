@@ -134,11 +134,18 @@ async function readVideoTransitionCatalog() {
 async function readVideoEffectCatalog() {
   const matchNames = await premiere.VideoFilterFactory.getMatchNames();
   const displayNames = await premiere.VideoFilterFactory.getDisplayNames();
+  // Audio piggybacks on this same action/response rather than a separate one: applyAudioEffectToSelection
+  // already resolves by display name only (AudioFilterFactory has no getMatchNames/matchName-based
+  // creation at all, confirmed against the official reference), so the catalog side needs nothing
+  // beyond what's already used for application - no separate identity concern to track for it the
+  // way video's same-index-candidate guess needs the matchNames array for.
+  const audioDisplayNames = await premiere.AudioFilterFactory.getDisplayNames();
   return {
     matchNameCount: matchNames.length,
     displayNameCount: displayNames.length,
     matchNames,
     displayNames,
+    audioDisplayNames,
     positionalPairingAssumed: false,
     warning: "The arrays are exported as independent evidence; Adobe does not document positional correspondence."
   };
@@ -674,6 +681,20 @@ async function restoreImportedPresetCatalogFromToken() {
     localStorage.removeItem(PRESET_CATALOG_TOKEN_KEY);
     return { restored: false, reason: error && error.message ? error.message : String(error) };
   }
+}
+
+// Registered as the catalog.effectPresets.read handler. Only name/category, not the full
+// filters/parameters detail: timeline.applyImportedEffectPreset (execute()) already sends just
+// {name, category} and re-resolves against this same in-memory catalog itself
+// (findImportedEffectPresets) - the companion never needs the deep structure to dispatch a click,
+// only enough to list one.
+async function readEffectPresetCatalog() {
+  if (!importedEffectPresetCatalog) return { available: false, presets: [] };
+  return {
+    available: true,
+    fileName: importedEffectPresetCatalog.fileName || null,
+    presets: importedEffectPresetCatalog.presets.map((preset) => ({ name: preset.name, category: preset.category }))
+  };
 }
 
 function findImportedEffectPresets(name, category) {
@@ -2317,6 +2338,75 @@ async function readFavoritesCatalog() {
   const items = [];
   await collectFavoriteItems(favoritesBin, "", [], items);
   return { applicable: true, items, sourceProjectPath: project.path };
+}
+
+// --- Project items catalog (host.jsx's getProjectItemsListSafe/_collectProjectItemsRecursive,
+// read-only reference) ---------------------------------------------------------------------
+//
+// Unlike favorites, this scans whatever project is currently open unconditionally - CEP itself has
+// no template-project guard here either. The one thing worth excluding is the bundled template
+// project's own contents (Adjustment Layer/Bars and Tone/... templates, favorites) if the user
+// happens to have it open: none of that is meant to show up as an ordinary "project item" to insert,
+// only through the generic-item/favorite mechanisms that already exist for it.
+//
+// treePath mirrors host.jsx's own convention exactly, since findProjectItemByTreePath (already
+// built and host-tested for timeline.insertProjectItem) parses this exact shape: a leading "\",
+// the project's own filename (with extension), then each bin name down to the item, all "\"-joined.
+async function collectProjectItemCatalog(folderItem, categoryPath, treeSegments, out) {
+  const children = await folderItem.getItems();
+  for (const child of Array.isArray(children) ? children : []) {
+    let childFolder = null;
+    try { childFolder = premiere.FolderItem.cast(child); } catch (error) { childFolder = null; }
+    if (childFolder) {
+      const nextCategory = categoryPath ? `${categoryPath} > ${child.name}` : String(child.name || "");
+      await collectProjectItemCatalog(childFolder, nextCategory, [...treeSegments, child.name || ""], out);
+      continue;
+    }
+
+    let clipItem = null;
+    try { clipItem = premiere.ClipProjectItem.cast(child); } catch (error) { clipItem = null; }
+    let isSeq = false;
+    let mediaPath = "";
+    if (clipItem) {
+      try { isSeq = await clipItem.isSequence(); } catch (error) { isSeq = false; }
+      if (!isSeq) {
+        try { mediaPath = (await clipItem.getMediaFilePath()) || ""; } catch (error) { mediaPath = ""; }
+      }
+    }
+
+    let nodeId = "";
+    try { nodeId = await child.getId(); } catch (error) { nodeId = ""; }
+
+    out.push({
+      name: child.name || "",
+      category: categoryPath || "Projeto",
+      nodeId,
+      itemType: String(child.type || ""),
+      isSequence: isSeq,
+      treePath: "\\" + [...treeSegments, child.name || ""].join("\\"),
+      mediaPath
+    });
+  }
+}
+
+// Registered as the catalog.projectItems.read handler.
+async function readProjectItemCatalog() {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) return { items: [] };
+
+  const templatePath = await getBundledTemplateProjectPath();
+  if (normalizePath(project.path) === normalizePath(templatePath)) {
+    // The template project's own contents (generic-item templates, favorites) aren't ordinary
+    // project items - matching host.jsx's isTemplateAsset exclusion, just done by skipping the
+    // whole scan here instead of filtering per-item, since this entire project is template-only.
+    return { items: [] };
+  }
+
+  const projectFileName = String(project.path || "").split(/[\\/]/).pop() || project.name || "Project";
+  const rootItem = await project.getRootItem();
+  const items = [];
+  await collectProjectItemCatalog(rootItem, "", [projectFileName], items);
+  return { items };
 }
 
 // Mirrors host.jsx's _importFavoriteProjectItem: search the whole project for an already-imported
@@ -4004,12 +4094,14 @@ const ACTION_HANDLERS = {
   "catalog.videoEffects.read": readVideoEffectCatalog,
   "catalog.videoTransitions.read": readVideoTransitionCatalog,
   "catalog.favorites.read": readFavoritesCatalog,
+  "catalog.projectItems.read": readProjectItemCatalog,
   "timeline.applyVideoEffect": applyVideoEffectToSelection,
   "timeline.probeVideoEffectParameters": probeVideoEffectParameters,
   "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter,
   "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter,
   "timeline.captureTransformCurveReference": captureTransformCurveReference,
   "timeline.applyTransformCurveReference": applyTransformCurveReference,
+  "catalog.effectPresets.read": readEffectPresetCatalog,
   "catalog.effectPresets.importPrfpset": importPrfpsetCatalog,
   "catalog.effectPresets.inspectImported": inspectImportedEffectPreset,
   "catalog.effectPresets.inspectBridgeCandidate": inspectImportedPresetBridgeCandidate,

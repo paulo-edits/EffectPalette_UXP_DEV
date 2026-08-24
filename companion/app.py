@@ -85,12 +85,22 @@ except Exception:
     HAS_QT = False
 
 try:
-    from uxp_execution_adapter import PremiereUxpExecutionAdapter, UXP_TRANSITIONS_FILE, UXP_FAVORITES_FILE
+    from uxp_execution_adapter import (
+        PremiereUxpExecutionAdapter,
+        UXP_TRANSITIONS_FILE,
+        UXP_FAVORITES_FILE,
+        UXP_EFFECTS_FILE,
+        UXP_PROJECT_ITEMS_FILE,
+        UXP_PRESETS_FILE,
+    )
     HAS_UXP_ADAPTER = HAS_QT
 except Exception:
     PremiereUxpExecutionAdapter = None
     UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_transitions.json"
     UXP_FAVORITES_FILE = Path(__file__).resolve().parent / "data" / "uxp_favorites.json"
+    UXP_EFFECTS_FILE = Path(__file__).resolve().parent / "data" / "uxp_effects.json"
+    UXP_PROJECT_ITEMS_FILE = Path(__file__).resolve().parent / "data" / "uxp_project_items.json"
+    UXP_PRESETS_FILE = Path(__file__).resolve().parent / "data" / "uxp_presets.json"
     HAS_UXP_ADAPTER = False
 
 
@@ -745,6 +755,9 @@ class DataPaths:
     data_dir: Path = EXT_DATA
     uxp_transitions_file: Path = UXP_TRANSITIONS_FILE
     uxp_favorites_file: Path = UXP_FAVORITES_FILE
+    uxp_effects_file: Path = UXP_EFFECTS_FILE
+    uxp_project_items_file: Path = UXP_PROJECT_ITEMS_FILE
+    uxp_presets_file: Path = UXP_PRESETS_FILE
 
 
 @dataclass(frozen=True)
@@ -1990,6 +2003,9 @@ class EffectsLoader:
             "favorites": self._safe_mtime(self.paths.favorites_file),
             "uxp_transitions": self._safe_mtime(self.paths.uxp_transitions_file),
             "uxp_favorites": self._safe_mtime(self.paths.uxp_favorites_file),
+            "uxp_effects": self._safe_mtime(self.paths.uxp_effects_file),
+            "uxp_project_items": self._safe_mtime(self.paths.uxp_project_items_file),
+            "uxp_presets": self._safe_mtime(self.paths.uxp_presets_file),
         }
 
     def needs_reload(self) -> bool:
@@ -2063,7 +2079,11 @@ class EffectsLoader:
             presets = ()
             project_items = ()
             favorite_items = ()
-            mtimes = {"effects": 0.0, "presets": 0.0, "project_items": 0.0, "favorites": 0.0, "uxp_transitions": 0.0, "uxp_favorites": 0.0}
+            mtimes = {
+                "effects": 0.0, "presets": 0.0, "project_items": 0.0, "favorites": 0.0,
+                "uxp_transitions": 0.0, "uxp_favorites": 0.0, "uxp_effects": 0.0,
+                "uxp_project_items": 0.0, "uxp_presets": 0.0,
+            }
         else:
             presets, preset_issues = self._load_presets()
             project_items, project_item_issues = self._load_project_items()
@@ -2112,6 +2132,7 @@ class EffectsLoader:
             if not effects:
                 raise ValueError("Lista vazia")
             effects = self._apply_uxp_transition_catalog(effects)
+            effects = self._apply_uxp_effect_catalog(effects)
             print(f"[Efeitos] {len(effects)} efeitos carregados")
             return tuple(effects), "premiere", ()
         except Exception as exc:
@@ -2152,11 +2173,43 @@ class EffectsLoader:
             print(f"[Transicoes] Erro ao ler catalogo UXP: {exc} — mantendo lista do CEP")
             return effects
 
+    def _apply_uxp_effect_catalog(self, effects: list[dict]) -> list[dict]:
+        """Replace CEP-sourced video/audio filter effects with the UXP plugin's own catalog.
+
+        CEP's list comes from the undocumented QE DOM (qe.project.getVideoEffectList/
+        getAudioEffectList) - out of scope for this project from the start. UXP's
+        VideoFilterFactory/AudioFilterFactory give display names directly with no QE dependency;
+        video effect *application* was already identity-verified independently of this catalog's
+        source, so replacing the list here doesn't change that guarantee.
+        """
+        if not self.paths.uxp_effects_file.exists():
+            return effects
+        try:
+            with open(self.paths.uxp_effects_file, encoding="utf-8") as file_obj:
+                data = json.load(file_obj)
+            uxp_effects = [
+                {"name": item["name"], "category": item.get("category", ""), "type": item.get("type", "video")}
+                for item in data.get("effects", [])
+                if item.get("name") and item.get("type") in {"video", "audio"}
+            ]
+            if not uxp_effects:
+                return effects
+            kept = [effect for effect in effects if effect.get("type") not in {"video", "audio"}]
+            print(f"[Efeitos] {len(uxp_effects)} efeitos (video/audio) do catalogo UXP (substituindo {len(effects) - len(kept)} do CEP)")
+            return kept + uxp_effects
+        except Exception as exc:
+            print(f"[Efeitos] Erro ao ler catalogo UXP: {exc} — mantendo lista do CEP")
+            return effects
+
     def _load_presets(self) -> tuple[tuple[dict, ...], tuple[str, ...]]:
-        if not self.paths.presets_file.exists():
+        # Prefers the UXP plugin's own .prfpset-derived catalog (once the user has granted this
+        # plugin one-time access to that file) over the CEP worker's filesystem auto-scan, the same
+        # override pattern _load_favorites already uses.
+        source_file = self.paths.uxp_presets_file if self.paths.uxp_presets_file.exists() else self.paths.presets_file
+        if not source_file.exists():
             return (), ()
         try:
-            with open(self.paths.presets_file, encoding="utf-8") as file_obj:
+            with open(source_file, encoding="utf-8") as file_obj:
                 data = json.load(file_obj)
             presets = []
             for preset in data.get("presets", []):
@@ -2173,10 +2226,14 @@ class EffectsLoader:
             return (), (f"presets:{exc}",)
 
     def _load_project_items(self) -> tuple[tuple[dict, ...], tuple[str, ...]]:
-        if not self.paths.project_items_file.exists():
+        # Prefers the UXP plugin's own live scan (index.js's readProjectItemCatalog, no template-
+        # project guard - it scans whatever's currently open) over the CEP worker's export, once it
+        # exists - same override pattern as _load_favorites/_load_presets.
+        source_file = self.paths.uxp_project_items_file if self.paths.uxp_project_items_file.exists() else self.paths.project_items_file
+        if not source_file.exists():
             return (), ()
         try:
-            with open(self.paths.project_items_file, encoding="utf-8") as file_obj:
+            with open(source_file, encoding="utf-8") as file_obj:
                 data = json.load(file_obj)
             items = []
             for item in data.get("items", []):

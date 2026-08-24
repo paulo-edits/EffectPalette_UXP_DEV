@@ -538,6 +538,37 @@ Host-tested: first-time import (real file path, `verificationSucceeded: true`) a
 shares the same import/organize/insert mechanism, host-tested elsewhere in this project for
 generic items, but has not itself been exercised against a real favorited sequence.
 
+## Ninth slice: video/audio effects, presets, and project items become UXP-native catalogs
+
+Closes the discovery-layer gap the eighth slice found: `readVideoEffectCatalog` now also returns
+`AudioFilterFactory.getDisplayNames()` (audio has no `getMatchNames`/matchName-based creation at
+all, confirmed against the official reference - already how `applyAudioEffectToSelection` resolves
+by display name, so the catalog needed nothing new for identity); `readProjectItemCatalog` walks
+the current project unconditionally (no template-project guard - CEP's own `getProjectItemsListSafe`
+has none either), reconstructing `treePath` by hand the same way favorites' `sourceTreePath` already
+does, since UXP documents no `treePath` property directly; `readEffectPresetCatalog` exposes
+whatever `.prfpset` catalog is already loaded via the existing one-time-picker-plus-persistent-token
+flow (`importPrfpsetCatalog`/`restoreImportedPresetCatalogFromToken`) - no new consent needed on this
+machine, since preset application was already tested earlier in this project. Companion mirrors the
+same override-file pattern for all three (`uxp_effects.json`/`uxp_project_items.json`/
+`uxp_presets.json`), with project items re-polled on a timer like favorites (they change as the user
+edits) and effects/presets fetched once per connection (Premiere's own installed catalog doesn't).
+Host-tested: video effect, audio effect, preset, and project-item insertion, all sourced from the new
+files, all applying correctly.
+
+One real bug found and fixed: `restoreImportedPresetCatalogFromToken()` is fire-and-forget from
+`entrypoints.plugin.create()`, started around the same time as the transport itself - the companion's
+first `catalog.effectPresets.read` could genuinely arrive before that async restore finished reading
+and parsing the `.prfpset` file, intermittently reporting "no catalog" right after a plugin reload.
+Fixed with one companion-side retry after a short delay rather than blocking the whole transport's
+connection on presets specifically.
+
+Presets remain the one catalog with a real (if one-time) UX cost: UXP has no silent-scan equivalent
+of CEP's `fs.readdirSync` walk of `Documents/Adobe/Premiere Pro/*/Profile-*/` - every path outside
+the plugin's own sandboxed folders requires a user-approved picker, at least once, ever (a persisted
+token then makes every later session fully silent). Not a new limitation introduced here - the
+existing `importPrfpsetCatalog` picker this session reused already had this constraint.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and
@@ -547,11 +578,11 @@ how should future UXP releases be watched for capabilities that close the remain
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Video/audio effect apply | ✅ Full parity, host-tested | Identity-verified both directions (video: same-index candidate + post-insert display-name check; audio: exact `displayName` match, no guessing needed) |
-| Preset apply | ✅ Full parity, host-tested | Easing reconstruction on by default; catalog survives plugin reload via a persistent file token |
+| Video/audio effect apply | ✅ Full parity, host-tested | Identity-verified both directions (video: same-index candidate + post-insert display-name check; audio: exact `displayName` match, no guessing needed); catalog (the listing itself, not just apply-time resolution) is UXP-native since the ninth slice |
+| Preset apply | ✅ Full parity, host-tested | Easing reconstruction on by default; catalog survives plugin reload via a persistent file token (a real one-time picker cost - see ninth slice - but no ongoing CEP dependency once granted) |
 | Video transition apply | ✅ Functional, host-tested | Label readability is permanently constrained - `VideoTransition` exposes no properties at all, so no name can ever be verified the way effects are |
 | **Audio** transition apply | ❌ Confirmed platform gap | `TransitionFactory` and `AudioClipTrackItem` (full class references checked) have no transition-related method at all - not unwired, not possible today |
-| Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx` |
+| Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx`; catalog is UXP-native since the ninth slice, no template-project guard (scans whatever's currently open, matching CEP) |
 | Insert favorite item (media) | ✅ Full parity, host-tested | Import-then-dedup mirrors host.jsx's `_importFavoriteProjectItem` exactly, using documented `Project.importFiles`; catalog scanning is now UXP-native too (see eighth slice below), replacing the CEP worker dependency this capability quietly still had |
 | Insert favorite item (sequence) | ⚠️ Built, not yet host-tested; intentionally not full parity | Imports and inserts as a **nested** clip, not host.jsx's flatten-then-fallback-to-nest behavior - flattening (`_insertSequenceContentsAtPlayhead`) is QE-DOM/dynamic-track-creation-gated, the same confirmed platform wall as the track-creation row below. Accepted by the user, who doesn't favorite whole sequences in practice but wants the path to exist |
 | Create generic item: Adjustment Layer, Bars and Tone, Black Video, Transparent Video | ✅ Full parity, host-tested | Not built fresh on either platform - CEP has no creation API for these either (for Adjustment Layer) or only reaches them via undocumented QE DOM (the other three); both work around it the same way, importing a pre-built `.prproj` template. `tools/template_generator/` (a throwaway CEP dev panel) built the three new templates; sixth-slice section above has the details |

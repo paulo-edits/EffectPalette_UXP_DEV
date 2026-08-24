@@ -34,11 +34,17 @@ PENDING_RETENTION_SECONDS = 60.0
 CATALOG_REQUEST_ID = "uxp-adapter-video-catalog"
 TRANSITION_CATALOG_REQUEST_ID = "uxp-adapter-video-transitions"
 FAVORITES_CATALOG_REQUEST_ID = "uxp-adapter-favorites"
+PROJECT_ITEM_CATALOG_REQUEST_ID = "uxp-adapter-project-items"
+EFFECT_PRESET_CATALOG_REQUEST_ID = "uxp-adapter-effect-presets"
 # The plugin can only scan FX.palette_Favorites while the bundled template project happens to be
 # the one currently open in Premiere (index.js's readFavoritesCatalog) - re-requested on a timer
 # instead of once per connection so a favorite curated mid-session (open the template project, add
 # one, switch back) shows up without needing the plugin to reload.
 FAVORITES_REFRESH_INTERVAL_MS = 5000
+# Project items reflect whatever the user is actively editing right now (media imported, sequences
+# created) - unlike favorites/presets/effects, which only change when the user deliberately curates
+# them, this needs to stay live throughout a normal editing session.
+PROJECT_ITEMS_REFRESH_INTERVAL_MS = 5000
 
 # Written by this adapter from the plugin's own catalog and read back by EffectsLoader, so the
 # palette lists exactly the transitions UXP can actually apply, each carrying its exact matchName.
@@ -47,6 +53,17 @@ UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_tra
 # worker's premiere_favorites.json the same way UXP_TRANSITIONS_FILE replaces the CEP transition
 # export, once index.js has ever seen the template project open and reported at least one item.
 UXP_FAVORITES_FILE = Path(__file__).resolve().parent / "data" / "uxp_favorites.json"
+# Written from index.js's readVideoEffectCatalog/readAudioFilterFactory.getDisplayNames() response -
+# replaces the CEP worker's QE-DOM-sourced premiere_effects.json (video + audio filters only; video/
+# audio transitions already have their own separate UXP-native catalogs).
+UXP_EFFECTS_FILE = Path(__file__).resolve().parent / "data" / "uxp_effects.json"
+# Written from index.js's readProjectItemCatalog - replaces premiere_project_items.json.
+UXP_PROJECT_ITEMS_FILE = Path(__file__).resolve().parent / "data" / "uxp_project_items.json"
+# Written from index.js's readEffectPresetCatalog, itself sourced from whatever .prfpset the user
+# already granted this plugin persistent access to (importPrfpsetCatalog's one-time picker,
+# restored silently via restoreImportedPresetCatalogFromToken on every plugin load since) - replaces
+# premiere_presets.json's CEP-side filesystem auto-scan, which UXP has no silent equivalent for.
+UXP_PRESETS_FILE = Path(__file__).resolve().parent / "data" / "uxp_presets.json"
 
 # On: the plugin rebuilds each animated parameter's curve from the .prfpset's own
 # speed/influence fields and frame-samples it, measured indistinguishable from a manual
@@ -195,6 +212,8 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._catalog_requested = False
         self._favorites_timer = QtCore.QTimer(self)
         self._favorites_timer.timeout.connect(self._request_favorites_catalog)
+        self._project_items_timer = QtCore.QTimer(self)
+        self._project_items_timer.timeout.connect(self._request_project_item_catalog)
         self._server.newConnection.connect(self._on_new_connection)
         if not self._server.listen(QHostAddress.SpecialAddress.LocalHost, TRANSPORT_PORT):
             raise RuntimeError(
@@ -223,11 +242,14 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._authenticated = False
         self._catalog_requested = False
         self._favorites_timer.stop()
+        self._project_items_timer.stop()
         # Reset so the next connection's first response always logs, regardless of whether it
         # happens to match whatever this now-dead connection last reported.
         self._favorites_last_applicable = None
         self._favorites_last_error_code = None
         self._favorites_last_logged_count = None
+        self._project_items_last_count = None
+        self._effect_preset_retry_scheduled = False
 
     def _on_message(self, raw: str):
         try:
@@ -262,6 +284,12 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         if request_id == FAVORITES_CATALOG_REQUEST_ID:
             self._handle_favorites_catalog_response(message)
             return
+        if request_id == PROJECT_ITEM_CATALOG_REQUEST_ID:
+            self._handle_project_item_catalog_response(message)
+            return
+        if request_id == EFFECT_PRESET_CATALOG_REQUEST_ID:
+            self._handle_effect_preset_catalog_response(message)
+            return
         if request_id in self._pending:
             self._resolve_pending(request_id, message)
 
@@ -288,8 +316,84 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "requestId": TRANSITION_CATALOG_REQUEST_ID,
             "payload": {},
         })
+        self._request_effect_preset_catalog()
         self._request_favorites_catalog()
         self._favorites_timer.start(FAVORITES_REFRESH_INTERVAL_MS)
+        self._request_project_item_catalog()
+        self._project_items_timer.start(PROJECT_ITEMS_REFRESH_INTERVAL_MS)
+
+    def _request_project_item_catalog(self):
+        self._send({
+            "schemaVersion": 1,
+            "type": "catalog.projectItems.read",
+            "requestId": PROJECT_ITEM_CATALOG_REQUEST_ID,
+            "payload": {},
+        })
+
+    def _handle_project_item_catalog_response(self, message: dict):
+        if not message.get("ok"):
+            return
+        items = (message.get("data") or {}).get("items") or []
+        try:
+            UXP_PROJECT_ITEMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"schemaVersion": 1, "source": "uxp", "items": items}
+            tmp = UXP_PROJECT_ITEMS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(UXP_PROJECT_ITEMS_FILE)
+            # Repeats every PROJECT_ITEMS_REFRESH_INTERVAL_MS - only log on an actual count change.
+            if len(items) != getattr(self, "_project_items_last_count", None):
+                self._project_items_last_count = len(items)
+                print(f"[UXP adapter] {len(items)} project items written to {UXP_PROJECT_ITEMS_FILE}", flush=True)
+        except Exception as error:
+            print(f"[UXP adapter] could not write the project item catalog: {error}", flush=True)
+
+    def _request_effect_preset_catalog(self):
+        self._send({
+            "schemaVersion": 1,
+            "type": "catalog.effectPresets.read",
+            "requestId": EFFECT_PRESET_CATALOG_REQUEST_ID,
+            "payload": {},
+        })
+
+    def _request_effect_preset_catalog_retry(self):
+        # QTimer.singleShot still fires even if the connection that scheduled it has since dropped;
+        # _on_disconnected resets the pending flag but there is nothing to send to a closed socket.
+        if self._client is None or not self._authenticated:
+            return
+        self._request_effect_preset_catalog()
+
+    def _handle_effect_preset_catalog_response(self, message: dict):
+        if not message.get("ok"):
+            return
+        data = message.get("data") or {}
+        if not data.get("available"):
+            # index.js's restoreImportedPresetCatalogFromToken() is fire-and-forget from
+            # entrypoints.plugin.create(), started around the same time as the transport itself -
+            # this response can genuinely arrive before that async restore has finished reading and
+            # parsing the .prfpset file. One retry after a short delay covers that race without
+            # delaying the whole transport's connection just for presets specifically.
+            if not getattr(self, "_effect_preset_retry_scheduled", False):
+                self._effect_preset_retry_scheduled = True
+                QtCore.QTimer.singleShot(3000, self._request_effect_preset_catalog_retry)
+            else:
+                print("[UXP adapter] catalog.effectPresets.read: no .prfpset catalog imported in the plugin yet", flush=True)
+            return
+        self._effect_preset_retry_scheduled = False
+        presets = data.get("presets") or []
+        try:
+            UXP_PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schemaVersion": 1,
+                "source": "uxp",
+                "fileName": data.get("fileName"),
+                "presets": [{"name": p["name"], "category": p.get("category", ""), "filterPresets": []} for p in presets if p.get("name")],
+            }
+            tmp = UXP_PRESETS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(UXP_PRESETS_FILE)
+            print(f"[UXP adapter] {len(payload['presets'])} presets written to {UXP_PRESETS_FILE}", flush=True)
+        except Exception as error:
+            print(f"[UXP adapter] could not write the preset catalog: {error}", flush=True)
 
     def _request_favorites_catalog(self):
         self._send({
@@ -384,6 +488,25 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         for display_name, match_name in zip(display_names, match_names):
             lookup.setdefault(display_name, match_name)
         self._video_match_names_by_display = lookup
+
+        # Same response, second purpose: build the UXP-native effects catalog (video + audio filter
+        # names only - video/audio transitions already have their own separate catalogs). Audio
+        # effects apply by display name alone (AudioFilterFactory has no matchNames, confirmed
+        # against the official reference), so unlike video there's no identity concern to carry
+        # into the catalog entry itself.
+        audio_display_names = data.get("audioDisplayNames") or []
+        entries = [{"name": name, "category": "Video", "type": "video"} for name in dict.fromkeys(display_names)]
+        entries += [{"name": name, "category": "Audio", "type": "audio"} for name in dict.fromkeys(audio_display_names)]
+        if entries:
+            try:
+                UXP_EFFECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                payload = {"schemaVersion": 1, "source": "uxp", "effects": entries}
+                tmp = UXP_EFFECTS_FILE.with_suffix(".tmp")
+                tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(UXP_EFFECTS_FILE)
+                print(f"[UXP adapter] {len(entries)} effects written to {UXP_EFFECTS_FILE}", flush=True)
+            except Exception as error:
+                print(f"[UXP adapter] could not write the effect catalog: {error}", flush=True)
 
     # ---- adapter interface -------------------------------------------------
 
