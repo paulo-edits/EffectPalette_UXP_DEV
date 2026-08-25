@@ -92,6 +92,7 @@ try:
         UXP_EFFECTS_FILE,
         UXP_PROJECT_ITEMS_FILE,
         UXP_PRESETS_FILE,
+        RECONSTRUCT_EASING_DEFAULT,
     )
     HAS_UXP_ADAPTER = HAS_QT
 except Exception:
@@ -99,6 +100,7 @@ except Exception:
     UXP_TRANSITIONS_FILE = Path(__file__).resolve().parent / "data" / "uxp_video_transitions.json"
     UXP_FAVORITES_FILE = Path(__file__).resolve().parent / "data" / "uxp_favorites.json"
     UXP_EFFECTS_FILE = Path(__file__).resolve().parent / "data" / "uxp_effects.json"
+    RECONSTRUCT_EASING_DEFAULT = True
     UXP_PROJECT_ITEMS_FILE = Path(__file__).resolve().parent / "data" / "uxp_project_items.json"
     UXP_PRESETS_FILE = Path(__file__).resolve().parent / "data" / "uxp_presets.json"
     HAS_UXP_ADAPTER = False
@@ -134,7 +136,7 @@ SETTINGS_FILE = APPDATA / "Adobe" / "CEP" / "extensions" / "EffectPalette" / "se
 SUPPORTED_LANGUAGES = ("en", "pt")
 NEST_MODES = ("auto", "premiere", "api")
 DEFAULT_NEST_BIN = "Nested Clips"
-DEFAULT_APP_PREFERENCES = {"animations": True}
+DEFAULT_APP_PREFERENCES = {"animations": True, "reconstructEasing": True}
 
 
 def _load_settings_data() -> dict:
@@ -185,15 +187,19 @@ def load_app_preferences() -> dict:
     raw = _load_settings_data().get("app", {})
     if not isinstance(raw, dict):
         raw = {}
-    return {"animations": raw.get("animations", DEFAULT_APP_PREFERENCES["animations"]) is not False}
+    return {
+        "animations": raw.get("animations", DEFAULT_APP_PREFERENCES["animations"]) is not False,
+        "reconstructEasing": raw.get("reconstructEasing", DEFAULT_APP_PREFERENCES["reconstructEasing"]) is not False,
+    }
 
 
-def save_app_preferences(*, animations: bool) -> None:
+def save_app_preferences(*, animations: bool, reconstruct_easing: bool) -> None:
     data = _load_settings_data()
     raw = data.get("app", {})
     if not isinstance(raw, dict):
         raw = {}
     raw["animations"] = bool(animations)
+    raw["reconstructEasing"] = bool(reconstruct_easing)
     data["app"] = raw
     _save_settings_data(data)
 
@@ -2568,6 +2574,11 @@ def collect_diagnostics(palette) -> list[dict]:
 
 
 def execute_effect_through_adapter(palette, effect: dict) -> float:
+    # The palette's own Settings > General checkbox is the only place this is user-facing;
+    # EffectsLoader never puts "reconstructEasing" on a preset's own dict, so this is the sole
+    # point deciding it before the adapter's own RECONSTRUCT_EASING_DEFAULT fallback would apply.
+    if effect.get("type") == "preset" and "reconstructEasing" not in effect:
+        effect = dict(effect, reconstructEasing=getattr(palette, "reconstruct_easing_enabled", RECONSTRUCT_EASING_DEFAULT))
     adapter = getattr(palette, "execution_adapter", None) or PremiereExecutionAdapter()
     return adapter.execute(effect)
 
@@ -6324,6 +6335,11 @@ if HAS_QT:
             self.animations_check = QtWidgets.QCheckBox(self._text("Usar animações da interface", "Use interface animations"))
             self.animations_check.setChecked(load_app_preferences()["animations"])
             form.addRow("", self.animations_check)
+            self.reconstruct_easing_check = QtWidgets.QCheckBox(self._text(
+                "Recriar curva de easing dos presets (mais fiel, mais lento)",
+                "Reconstruct preset easing curves (more faithful, slower)"))
+            self.reconstruct_easing_check.setChecked(load_app_preferences()["reconstructEasing"])
+            form.addRow("", self.reconstruct_easing_check)
             self.startup_check = QtWidgets.QCheckBox(self._text("Iniciar com o Windows", "Start with Windows"))
             self.startup_check.setChecked(startup_registry_enabled())
             form.addRow("", self.startup_check)
@@ -6546,9 +6562,11 @@ if HAS_QT:
             # Premiere/API modes remain implementation details and fallbacks.
             save_nest_preferences("auto")
             animations = self.animations_check.isChecked()
-            save_app_preferences(animations=animations)
+            reconstruct_easing = self.reconstruct_easing_check.isChecked()
+            save_app_preferences(animations=animations, reconstruct_easing=reconstruct_easing)
             save_alias_entries(alias_entries)
             self.palette.animations_enabled = animations
+            self.palette.reconstruct_easing_enabled = reconstruct_easing
             startup_ok = set_startup_registry_enabled(self.startup_check.isChecked())
             if not startup_ok and IS_WINDOWS:
                 QtWidgets.QMessageBox.warning(self, "FX.palette", self._text(
@@ -6602,6 +6620,7 @@ if HAS_QT:
             self.loader = EffectsLoader()
             self.execution_adapter = create_execution_adapter()
             self.animations_enabled = load_app_preferences()["animations"]
+            self.reconstruct_easing_enabled = load_app_preferences()["reconstructEasing"]
             self.is_open = False
             self._active_category = None
             self._current_results: list[dict] = []

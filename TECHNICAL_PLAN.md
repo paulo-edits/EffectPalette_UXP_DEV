@@ -609,6 +609,31 @@ extreme influence values. Left as a documented, known limitation (comment on
 real capture/compare data points across different speed/influence combinations to empirically derive
 that correction, which the user chose not to pursue further this session.
 
+## Eleventh slice: reconstructEasing as a real setting, and confirming the no-panel architecture
+
+`reconstructEasing` was a code-level default (`RECONSTRUCT_EASING_DEFAULT`, `uxp_execution_adapter.py`)
+with no user-facing control on the companion side (the plugin's own diagnostics-panel checkbox was
+a testing-only affordance, not reachable by a real user). Exposed as a persistent checkbox in the
+Qt settings dialog's General tab (`companion/app.py`), following the exact same pattern as the
+existing `animations` toggle: `DEFAULT_APP_PREFERENCES`/`load_app_preferences`/`save_app_preferences`
+extended for a `reconstructEasing` key in the same `"app"` settings.json sub-dict,
+`QtSettingsCenter`'s General tab gets a matching `QCheckBox`, and `execute_effect_through_adapter`
+injects the live `palette.reconstruct_easing_enabled` value onto a preset effect's dict before
+`adapter.execute()` (the sole point deciding this, since `EffectsLoader` never puts the key on a
+preset's own catalog entry). Host-tested: toggled off in the running companion, applied a preset,
+and the plugin log confirmed `reconstructEasing: False` reached it and produced
+`principal-keyframes-only` output as expected - the setting genuinely reaches the execution path,
+not just the UI.
+
+Separately, confirmed (not just re-asserted from the architecture note) that the palette works with
+the diagnostics panel never opened: closing the panel (while leaving the plugin loaded) and applying
+a preset through the companion succeeded, log-verified end to end. This does depend on the plugin
+staying loaded, though - closing UDT itself unloads an unsigned dev-mode plugin entirely (confirmed:
+it disappears from Window > UXP Plugins once UDT closes), which is expected behavior for how
+unsigned plugins are sideloaded for development, not a gap in this project's own "no panel required"
+design - a properly signed, distributed build would be loaded by Premiere itself, with no external
+tool needing to stay open at all.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and
@@ -635,7 +660,7 @@ how should future UXP releases be watched for capabilities that close the remain
 | Set a **Project item's** color label | — Removed by product decision | `projectItems.setColorLabel` worked and was tested, but the user confirmed it isn't a real workflow they use - removed from `SUPPORTED_ACTIONS`/`ACTION_HANDLERS` rather than kept as unused surface area. `setSelectedProjectItemLabel` itself stays as a private helper, called directly (not through the shared allowlist) only so the 0.16.0 headless-command proof keeps working |
 | Global shortcuts / Stream Deck F13-F24 bindings | — Not a UXP question | Native Win32 `RegisterHotKey` in the Python companion, unaffected by CEP vs UXP either way |
 | Aliases, recent actions, actionable diagnostics | — Not a UXP question | Companion-side product features (search index, history, settings-panel health checks), independent of the execution backend |
-| `reconstructEasing` as a real user-facing setting | ⚠️ Wired, not yet exposed | Defaults on and is overridable per action already; Stage 4's own recommendation to ship it as a visible companion setting (not a diagnostic-only default) is still open |
+| `reconstructEasing` as a real user-facing setting | ✅ Full parity, host-tested | Checkbox in the Qt Settings dialog's General tab, persisted in settings.json, confirmed to actually reach the execution path (see eleventh slice) |
 
 ### Reading the gaps as a group
 
