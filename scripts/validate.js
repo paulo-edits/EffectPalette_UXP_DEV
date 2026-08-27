@@ -19,8 +19,11 @@ expect(manifest.main === "index.html", "main must point to index.html");
 expect(manifest.host && manifest.host.app === "premierepro", "host.app must be premierepro");
 expect(manifest.host && manifest.host.minVersion === "25.6.0", "host.minVersion must be 25.6.0");
 expect(Array.isArray(manifest.entrypoints) && manifest.entrypoints.length > 0, "at least one entrypoint is required");
-expect(manifest.entrypoints.some((item) => item.type === "panel" && item.id === "effectPaletteDiagnostics"), "diagnostics panel entrypoint is required");
 expect(manifest.entrypoints.some((item) => item.type === "command" && item.id === "headlessSetVioletLabel"), "headless command entrypoint is required");
+// The shipped manifest deliberately declares no "panel" entrypoint - the real product has no UI
+// inside Premiere at all, only the companion's own search palette. The former diagnostics panel
+// was removed; its git history holds it if a probe UI is ever needed again.
+expect(!manifest.entrypoints.some((item) => item.type === "panel"), "the shipped manifest must not declare a panel entrypoint");
 // Stage 5 (TECHNICAL_PLAN.md) added one exact, allowlisted localhost network permission for the
 // optional companion transport; this check still fails on any other/extra permission appearing.
 const expectedNetworkDomains = ["ws://localhost:58756"];
@@ -28,13 +31,13 @@ expect(
   manifest.requiredPermissions &&
     Object.keys(manifest.requiredPermissions).length === 3 &&
     manifest.requiredPermissions.clipboard === "readAndWrite" &&
-    manifest.requiredPermissions.localFileSystem === "request" &&
+    manifest.requiredPermissions.localFileSystem === "fullAccess" &&
     manifest.requiredPermissions.network &&
     Object.keys(manifest.requiredPermissions.network).length === 1 &&
     Array.isArray(manifest.requiredPermissions.network.domains) &&
     manifest.requiredPermissions.network.domains.length === expectedNetworkDomains.length &&
     manifest.requiredPermissions.network.domains.every((domain, index) => domain === expectedNetworkDomains[index]),
-  "PoC must request only clipboard readAndWrite, user-requested localFileSystem and the exact stage-5 localhost network domain"
+  "must request only clipboard readAndWrite, fullAccess localFileSystem (auto-locates the user's .prfpset, no per-file picker) and the exact stage-5 localhost network domain"
 );
 expect(fs.existsSync(path.join(root, manifest.main)), "manifest main file does not exist");
 expect(fs.existsSync(identityMatrixPath), "EFFECT_IDENTITY_MATRIX.json is required");

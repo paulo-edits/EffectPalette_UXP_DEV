@@ -1,5 +1,10 @@
 # Technical plan
 
+> This is an append-only log of the migration, slice by slice. Early sections still say "proof of
+> concept" and cite smaller numbers (e.g. "23 actions"); those are the state at the time of writing,
+> not today. For the current state read `STATUS.md`. The fourteenth slice onward, the "proof of
+> concept" framing no longer applies.
+
 ## Scope and invariants
 
 This proof of concept establishes actual Premiere UXP capability boundaries without changing the stable Python + CEP product. It uses only official UXP and Premiere DOM APIs. It does not contain CEP, ExtendScript, native shortcuts, arbitrary script execution, or unreviewed filesystem permissions. As of stage 5, it does contain one deliberate, narrow exception to the earlier "no network, no Python communication" boundary: an outbound-only WebSocket client to a fixed, pre-declared `ws://localhost:58756`, per the user's explicit direction to build toward replacing CEP rather than stay a permanently isolated PoC. It still contains no listener - official UXP documentation describes no capability for a plugin to accept inbound connections, so the companion process is necessarily the server and this plugin the client, per `PRESET_UXP_RESEARCH.md`/this section's own research.
@@ -21,7 +26,7 @@ The provisional boundary is `execution-adapter.js`:
 }
 ```
 
-Responses are plain serializable objects with `ok`, `schemaVersion`, `actionType`, `requestId`, and either `data` or `error`. The allowlist now contains 23 actions (`execution-adapter.js`'s `SUPPORTED_ACTIONS`), matching every mutation and read this proof of concept has host-tested. Unknown actions fail closed.
+Responses are plain serializable objects with `ok`, `schemaVersion`, `actionType`, `requestId`, and either `data` or `error`. The allowlist (`execution-adapter.js`'s `SUPPORTED_ACTIONS`) matches every mutation and read the companion actually sends; unknown actions fail closed. It grew to 32 during the capability-probe phase, then dropped back to 21 in the 2026-08 cleanup once the diagnostic probes and the rejected preset bridge were removed (see `STATUS.md`).
 
 `transport.js` (stage 5) is the first implementation of the "future optional localhost transport" this section originally deferred. It connects outbound to `ws://localhost:58756`, sends a token in an initial handshake message, and dispatches every message after that through `executionAdapter.execute(message, handlers)` with the identical handler map the diagnostics panel's own buttons use - a network caller can therefore never reach a code path the visible UI could not already reach. The token is a fixed constant baked into the plugin bundle, not a real secret: anything shipped to the user's machine is readable by anything else with code-execution capability on that same machine. Its purpose is avoiding accidental cross-talk with an unrelated local service, not defending against a co-located attacker; localhost-only Windows process isolation is what actually keeps other machines out, and this token is not a substitute for that.
 
@@ -634,6 +639,199 @@ unsigned plugins are sideloaded for development, not a gap in this project's own
 design - a properly signed, distributed build would be loaded by Premiere itself, with no external
 tool needing to stay open at all.
 
+## Twelfth slice: closing the track-creation gap
+
+The Fifth slice's "confirmed platform boundary" conclusion about track creation still holds for
+what UXP itself can do - but the user found a workable path around it entirely outside UXP's API
+surface: Premiere's own "Add Tracks..." dialog, reachable via the same native-keystroke mechanism
+already used for Timeline-clip Label (an unbound-but-real internal command, `cmd.sequence.addtracks`,
+resolved from the user's own `.kys` profile at runtime and bound to a fresh internal shortcut by
+`scripts/configure_premiere_shortcuts.ps1` exactly like the Label commands were). Host-confirmed:
+the dialog's Video/Audio Amount fields default to their track type's normal add-count with the
+value pre-selected on open (so typing overwrites it directly, no select-all needed), Tab from the
+video Amount field reaches the audio Amount field, and Enter confirms from either field - zeroing
+out the Amount for a track type that isn't needed keeps the dialog from creating an unused track
+every time. `fill_and_confirm_native_add_tracks_dialog`/`schedule_native_add_tracks_dialog`
+(`companion/app.py`) drive this, mirroring the existing Nest dialog's own "wait for the dialog to
+take the foreground, then fill it" pattern.
+
+**First design, abandoned after a real host hang**: since `timeline.insertProjectItem` always
+inserts unconditionally (the existing `trackFallback: {video, audio}` flags only report that an
+occupied track was *reused*, never skip the insertion to ask first), the first attempt tried
+undoing that placement after the fact - locate the just-inserted TrackItem(s), build a
+`TrackItemSelection` via `premiere.TrackItemSelection.createEmptySelection`/`addItem` (documented,
+but never used anywhere in this project before this attempt), remove them with the same
+`SequenceEditor.createRemoveItemsAction` the Nest feature already uses successfully, signal the
+companion to create the track, then re-send the original request. A real host test (a sequence with
+every track already occupied) showed the item still landed in Premiere, but the response never
+reached the companion at all - not even an error, just a silent timeout. `createEmptySelection`/
+`addItem` is the prime suspect (the only genuinely new, unverified API in that path), but the exact
+failure was never root-caused; the whole remove-and-signal branch was reverted rather than shipped
+on a guess.
+
+**Current design**: check *before* inserting instead of undoing after. A new read-only
+`timeline.checkTrackAvailability` action (`checkTrackAvailability` in `index.js`) reuses the
+existing, already-proven `resolveInsertionTracks`/`findAvailableVideoTrackAtTicks`/
+`findAvailableAudioTrackAtTicks` - no new Premiere API at all - to report whether a free track
+already exists, at the current playhead, for whatever media kind(s) the item needs. Which kind(s)
+an item needs is known precisely for generic items (`GENERIC_ITEM_MEDIA_KINDS`, since those are
+fixed templates); for an arbitrary favorite or Project-panel item, both kinds are assumed needed
+rather than guessed at (no `hasVideo`/`hasAudio`-style API exists on `ClipProjectItem` per the
+official docs) - the accepted tradeoff is an occasional harmless extra empty track in the rare
+all-tracks-occupied case, not a wrong or duplicated placement. `companion/app.py`'s `_begin_apply`
+now runs this check first for `project_item`/`generic_item`/`favorite_item` effects
+(`_begin_apply_with_track_check`), drives the Add Tracks dialog only for the missing kind(s), and
+then dispatches the real (entirely unchanged) insertion either way - so any imprecision in the
+check (adapter unavailable, timeout, dialog failure) just falls through to the insertion's own
+already-safe accurate fallback (reusing an occupied track), never to a worse outcome.
+
+**Two real bugs found via host testing, both fixed**: (1) the palette window itself still held OS
+focus at the moment the native shortcut needed to reach Premiere, so the very first end-to-end test
+sent `Ctrl+Alt+Shift+B` nowhere useful and the dialog never opened (`dialog_timeout` in telemetry
+every time) - worse, the palette's own focus-loss recovery (`_on_focus_out`/`_hide_if_focus_lost`,
+Tk only) would have fought to reclaim focus the instant it was stolen. Fixed by forcing focus onto
+Premiere first (`activate_window_handle_native`) and, on the Tk build, extending
+`_focus_out_grace_until` to cover the whole dialog interaction so the palette's own recovery logic
+stays quiet during it. (2) Once focus was fixed, the dialog reliably opened and the track was
+visibly created, but the very next insertion still reported `trackFallback.video: true` at exactly
+the pre-creation track count - sending Enter only dispatches the keystroke, it doesn't wait for
+Premiere to finish acting on it, so the real insertion was firing before the new track was actually
+committed. Fixed by polling for the dialog to actually close (foreground back on Premiere's main
+window) before telling the caller it's safe to insert. Host-confirmed working end to end after both
+fixes: a new track is created only for the missing media kind, and the item lands on it cleanly.
+
+## Thirteenth slice: dropping the diagnostics panel, and closing the preset-picker gap for real
+
+Moving from "proof of concept" toward a real installer started with the manifest itself:
+`manifest.json`'s `id`/`name` changed to definitive values (`com.effectpalette.uxp`/`FX.palette`),
+and its `"panel"` entrypoint was removed entirely - real users never open Premiere's own UXP UI at
+all, only the companion's hotkey-triggered search palette, so the panel had no reason to exist in
+the shipped build. UXP still requires at least one entrypoint; the existing `"command"` one
+(originally the 0.16.0 no-panel-required proof) stays as that minimum, invisible unless someone
+digs into Window > UXP Plugins on purpose. `index.html`/`wirePanel()`'s diagnostics UI code is
+untouched for local development - only its manifest declaration and `entrypoints.setup()`'s
+`panels` wiring were removed - re-add both temporarily to use it again.
+
+**A real regression, caught by the user immediately after reloading**: presets stopped applying.
+The `id` change reset `.prfpset` access - UXP's persistent-token grant (and the whole
+`importPrfpsetCatalog`/`restoreImportedPresetCatalogFromToken` flow the ninth slice built) turned
+out to be scoped to the plugin's own `id`, so changing it silently invalidated the prior consent.
+Worse, the *only* way to re-grant it had been a button inside the diagnostics panel just removed -
+a real, permanent product gap this exposed rather than caused (any fresh install would have hit the
+same dead end, `id` change or not).
+
+First fix (superseded below, but still in place as a fallback): a new "Preset catalog" row in the
+Settings dialog's Diagnostics tab, wired to a new `PremiereUxpExecutionAdapter.import_prfpset_catalog()`
+(reusing the existing `_blocking_request` pattern, just with a much longer timeout since it blocks
+on a real native file-picker interaction, not a quick round trip).
+
+**Real fix**: the user pushed back - a Settings-tab button to fix is still a manual step, not the
+"zero-configuration" bar this project holds itself to. Checking Adobe's own distribution docs (never
+consulted before this slice) turned up `requiredPermissions.localFileSystem: "fullAccess"` - grants
+the plugin unrestricted file access with **one confirmation at install time**, not per file, unlike
+`"request"`'s per-file picker. `manifest.json` now declares `"fullAccess"`; a new
+`readPrfpsetFileAtPath`/`catalog.effectPresets.readFromPath` action reads a `.prfpset` at a
+companion-supplied absolute path directly (`localFileSystem.getEntryWithUrl("file:/" + path)`), no
+picker at all. The companion locates that path itself - `find_prfpset_file()`
+(`uxp_execution_adapter.py`) mirrors the stable CEP product's own `bridge.js::findPresetFile()`
+glob (`Documents/Adobe/Premiere Pro/*/Profile-*/Effect Presets and Custom Items.prfpset`), something
+only practical because the *companion*, unlike the sandboxed plugin, always had unrestricted
+filesystem access. `readPrfpsetFileAtPath`'s response is shaped identically to the existing
+`readEffectPresetCatalog`'s, so it reuses `_handle_effect_preset_catalog_response` unchanged.
+Host-confirmed: after reloading the plugin with the new manifest, the companion found and loaded
+1844 presets with zero user interaction, and a real preset application succeeded end to end.
+
+The manual picker (`importPrfpsetCatalog`) and the Settings-tab fallback button both stay in place
+- a safety net for a non-default install location the automatic glob wouldn't find - but are no
+longer the primary path.
+
+## Fourteenth slice: a real installer
+
+Ports `EffectPalette/packaging/`'s own PyInstaller + Inno Setup shape (`packaging/pyinstaller/
+FXPalette.spec`, `packaging/inno/FXPalette.iss`, `packaging/build_release.ps1`), with one
+structural difference the CEP version never had to deal with: the UXP plugin and the Python
+companion are no longer one bundle in one folder. The plugin ships as a `.ccx` (built once via the
+UXP Developer Tool's own "Package" menu - no signing required, confirmed against Adobe's own
+distribution docs, and not something scriptable from here since UDT has no CLI for it) and gets
+installed silently through Adobe's `UnifiedPluginInstallerAgent.exe /install` - no Marketplace
+review, no per-user click-through beyond the one install-time permission confirmation. The
+companion still installs and runs exactly like the CEP product's own `.exe` always did (same
+single-instance mutex name, so `AppMutex`/`CloseApplications` behave identically).
+
+Host-tested: PyInstaller output launched standalone (dev-mode companion stopped first), reconnected
+to the already-loaded plugin, auto-loaded the preset catalog with zero interaction - confirming the
+thirteenth slice's fixes hold in a frozen build too, not just running from source.
+
+One real bug, caught by the user's own first real install attempt: the installer reported "Creative
+Cloud Desktop not found" despite it being genuinely installed. Root cause - Inno Setup builds
+32-bit by default, so `{commoncf}` (Common Files) silently resolved to the WOW64-redirected
+`Program Files (x86)\Common Files`, not the real 64-bit path Creative Cloud Desktop actually
+installs UPIA into (host-confirmed: the 32-bit path had no Adobe folder at all, the real one
+existed exactly where expected). Fixed with `ArchitecturesAllowed=x64compatible`/
+`ArchitecturesInstallIn64BitMode=x64compatible` in `[Setup]`. Host-confirmed working end to end
+after the fix: full silent install, plugin registered, companion running, no UDT or Developer Mode
+involved at any point - the original "proof of concept" framing no longer applies.
+
+## Fifteenth slice: Motion Tracker, ported from pFX_moTracker
+
+Re-hosts a separate, previously-CEP extension (`pFX-Tracker`, point tracking → stabilize/follow,
+writing keyframes onto a Transform effect) inside FX.palette's own Qt companion, per the plan at
+`idempotent-weaving-pebble.md`. The UXP-native port attempt (`pFX-Tracker_UXP`) was unusably slow
+for the interactive scrub/click/drag UI (UXP's `<canvas>` has no real `drawImage`, forcing DOM
+reflows on every frame); the tracking algorithm and Premiere-side operations were host-agnostic
+already, so only the interactive UI needed rebuilding, natively, in Qt (`QGraphicsView` +
+`QGraphicsPixmapItem`, a single `setPixmap()` blit per scrub step). New package
+`companion/motracker/` (`tracker_engine.py` ported verbatim, `extraction.py` rebuilt on `QProcess`
+instead of asyncio, `qt_tracker_window.py` new); two new `index.js` actions
+(`motracker.getClipInfo`, `motracker.applyTrack`) plus adapter methods
+(`get_clip_info`/`begin_apply_track`); a new `TOOL_WINDOWS` palette entry
+(`show_motion_tracker`), Qt-only (no Tk fallback). All six staged steps host-tested working.
+
+**Apply Track ("follow" mode)'s coordinate mapping — three wrong guesses before the real fix.**
+Stabilize (target === the tracked footage) worked immediately: found via the real, working CEP
+`host.jsx` that Position is normalised over the target clip's own native frame on this Premiere
+build (not always plain pixels, despite Effect Controls always displaying pixel-looking numbers),
+mirrored using the Anchor Point exactly as `host.jsx` does. Follow (target is an unrelated,
+differently-sized object, e.g. a small icon layered over footage) kept moving the object
+imperceptibly or overflowing to `32767,0`, through three wrong hypotheses about what pixel base
+Follow's delta should scale against:
+1. Sequence-normalised (`1/seqW`) — numerically plausible, visually no movement. Ruled out only
+   after adding a *full-range* min/max diagnostic (203 frames, not just 6-7 sampled ones — the
+   earlier per-sample diagnostic could miss mid-clip motion entirely).
+2. Confirmed via real Effect Controls values (`189.0 → 194.6` across the clip) that
+   `189.0 = 0.525 × 360` exactly — the scale base is the *followed object's own* native pixel width
+   (~360 for that PNG), not the sequence's (1920). This ruled out guess 1 with hard evidence, not
+   reasoning alone.
+3. Tried reading that native size *from Premiere itself*, via the target clip's own built-in
+   `"AE.ADBE Motion"` effect's Anchor Point (hypothesis: unlike our own Transform, Motion's Anchor
+   reads as real, non-normalised pixels). Host-tested and disproven: the lookup silently returned
+   `null` (fell back to `seqW`/`seqH`, reproducing guess 1's exact wrong scale) — Motion's own
+   Anchor Point is *also* normalised at the scripting-API level, despite showing pixel-looking
+   values in Effect Controls, same pattern as Position.
+
+**Real fix**: stopped guessing which Premiere-side parameter reveals real pixels at all. New action
+`motracker.getFollowTargetMediaPath` resolves the followed clip and returns its media file path;
+companion-side `get_follow_target_native_size()` reads the *actual* file directly via OpenCV
+(`cv2.imread`, falling back to `cv2.VideoCapture` for video media) — unambiguous, independently
+verifiable, no Premiere-side reference-frame ambiguity at all. `qt_tracker_window.py`'s
+`_on_apply_clicked` fetches this only for follow mode and threads it into the `applyTrack` request
+as `followedObjectW`/`followedObjectH`; `applyTrack` uses it directly (falling back to the sequence
+size only if the companion couldn't read it). Host-confirmed working: logged diagnostics showed
+`followNativeW/H: 360/360` (the real PNG's own pixel size, not the previous fallback's 1920/1080),
+and Position moved from `0.5` to `~0.73` across the tracked range — a real, visible follow, where
+every earlier attempt had been imperceptible or overflowed. User-confirmed: "OPA! AGORA SIM
+FUNCIONOU!"
+
+The temporary `motrackerDebug` diagnostics (per-frame readback, full-range min/max, reset-state
+tracking) added during this debugging arc have been removed from `applyTrack`'s response now that
+the mapping is confirmed correct.
+
+**Still open**: `GEOMETRY2_USE_COMP_SHUTTER_INDEX = 9` (the no-display-name motion-blur toggle
+param) has not yet been independently re-verified against this Premiere build — it was carried over
+from the source project's own comment, not re-derived here. Packaging (`cv2` + bundled `ffmpeg.exe`
+inside a frozen PyInstaller build, and the resulting installer size) has not yet been re-validated
+since this feature was added.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and
@@ -644,7 +842,7 @@ how should future UXP releases be watched for capabilities that close the remain
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Video/audio effect apply | ✅ Full parity, host-tested | Identity-verified both directions (video: same-index candidate + post-insert display-name check; audio: exact `displayName` match, no guessing needed); catalog (the listing itself, not just apply-time resolution) is UXP-native since the ninth slice |
-| Preset apply | ✅ Functional, host-tested | Easing reconstruction on by default; catalog survives plugin reload via a persistent file token (a real one-time picker cost - see ninth slice - but no ongoing CEP dependency once granted). Curve fidelity is an approximation with two real fixes and one known-remaining gap - see tenth slice |
+| Preset apply | ✅ Full parity, host-tested | Easing reconstruction on by default; catalog is located and loaded fully automatically (`fullAccess` + companion-side glob, no picker at all - see thirteenth slice), no ongoing CEP dependency. Curve fidelity is an approximation with two real fixes and one known-remaining gap - see tenth slice |
 | Video transition apply | ✅ Functional, host-tested | Label readability is permanently constrained - `VideoTransition` exposes no properties at all, so no name can ever be verified the way effects are |
 | **Audio** transition apply | ❌ Confirmed platform gap | `TransitionFactory` and `AudioClipTrackItem` (full class references checked) have no transition-related method at all - not unwired, not possible today |
 | Insert existing Project item | ✅ Full parity, host-tested | Track auto-targets the current selection, avoids an occupied track, stretches Adjustment-Layer-like items to match a video selection - all three ported from `host.jsx`; catalog is UXP-native since the ninth slice, no template-project guard (scans whatever's currently open, matching CEP) |
@@ -654,7 +852,7 @@ how should future UXP releases be watched for capabilities that close the remain
 | Create generic item: Color Matte, Universal Counting Leader | ❌ Confirmed platform gap (Color Matte: by product decision) | Color Matte: neither platform can set its color after creation, so a template built once could never be recolored per use - excluded by the user's own call, not attempted. Universal Counting Leader: CEP only reaches it via undocumented QE DOM and no template was built for it - not attempted |
 | Nest, auto-routed native/API | ✅ Full parity, host-tested | The routing signal itself (multi-track-audio detection) had gone silently stale under this migration and was restored via a new `diagnostics.read` field, not something UXP was missing |
 | Nest: default codename, bin placement | ✅ Full parity, host-tested | `FXN-NNN` scheme and filing into a project bin (`FolderItem.createBinAction`/`createMoveItemAction`) both ported |
-| Create a new Timeline track when none is free | ❌ Confirmed platform gap | Exhaustive check: every plausibly relevant class (`Sequence`, `SequenceEditor`, `VideoTrack`, `AudioTrack`, `SequenceSettings`, `Application`) plus the complete official changelog from the 25.2.0 public beta through 26.3.0 - track *renaming* was added along the way, track *creation* never was |
+| Create a new Timeline track when none is free | ✅ Full parity, host-tested (via native automation, not a UXP API) | UXP itself still has no track-creation API (exhaustive check: every plausibly relevant class plus the full changelog through 26.3.0 confirms this). Closed anyway by checking availability before inserting (`timeline.checkTrackAvailability`) and, when needed, driving Premiere's own "Add Tracks..." dialog via `cmd.sequence.addtracks` - see twelfth slice |
 | Set a Timeline clip's Label | ✅ Full parity, host-tested | Neither CEP nor UXP has a `TrackItem` label API - CEP's own real mechanism was never DOM at all, it's `companion/app.py` resolving `cmd.edit.label.N`'s bound shortcut out of the user's `.kys` profile and synthesizing the keystroke (`send_native_shortcut`/`find_premiere_command_shortcut`), independent of CEP vs UXP. That code was already ported verbatim; the only missing piece was `scripts/configure_premiere_shortcuts.ps1` (ported from the CEP installer's `configure_premiere.ps1`) to guarantee the 16 `cmd.edit.label.N` + `cmd.edit.labelgroup` shortcuts exist in the user's profile - on this machine they already did, from the earlier CEP install |
 | Select a Label group | ✅ Full parity, host-tested | Same mechanism (`cmd.edit.labelgroup`), same fix |
 | Set a **Project item's** color label | — Removed by product decision | `projectItems.setColorLabel` worked and was tested, but the user confirmed it isn't a real workflow they use - removed from `SUPPORTED_ACTIONS`/`ACTION_HANDLERS` rather than kept as unused surface area. `setSelectedProjectItemLabel` itself stays as a private helper, called directly (not through the shared allowlist) only so the 0.16.0 headless-command proof keeps working |

@@ -401,6 +401,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "status_no_response": {"en": "Premiere did not respond", "pt": "Premiere nao respondeu"},
     "status_applied": {"en": "[Applied] {name}", "pt": "[Aplicado] {name}"},
     "status_send_failed": {"en": "Failed to send command", "pt": "Falha ao enviar comando"},
+    "status_creating_track": {"en": "Creating track...", "pt": "Criando track..."},
     "status_apply_cancelled": {"en": "Application cancelled", "pt": "Aplicacao cancelada"},
     "status_no_results": {"en": "0 results", "pt": "0 resultados"},
     "status_results_count": {"en": "{visible}/{total} results", "pt": "{visible}/{total} resultados"},
@@ -439,6 +440,7 @@ STRINGS: dict[str, dict[str, str]] = {
     # Inline Nest configuration
     "nest_dialog_title": {"en": "Create Nest", "pt": "Criar Nest"},
     "timeline_action_nest": {"en": "Nest clips", "pt": "Aninhar clipes"},
+    "tool_motion_tracker": {"en": "Motion Tracker", "pt": "Motion Tracker"},
     "repeat_last_action": {"en": "Repeat last action", "pt": "Repetir ultima acao"},
     "nest_dialog_question": {"en": "Create a nested sequence", "pt": "Criar sequencia aninhada"},
     "nest_mode_label": {"en": "Method", "pt": "Metodo"},
@@ -639,6 +641,18 @@ TIMELINE_ACTIONS = [
         "action": "nest",
     },
 ]
+
+# Qt-only (the tracker window has no Tk fallback) - empty on the Tk build so it never shows up
+# as a dead entry there.
+TOOL_WINDOWS = [
+    {
+        "name": tr("tool_motion_tracker"),
+        "searchText": "Motion tracker rastreamento de movimento tracking",
+        "category": "Ferramentas",
+        "type": "tool_window",
+        "toolId": "motion_tracker",
+    },
+] if HAS_QT else []
 
 BG = "#0D0C14"
 BG2 = "#111019"
@@ -1170,6 +1184,97 @@ def schedule_native_nest_dialog_confirmation(palette, premiere_hwnd: int, nest_n
             return
         if time.monotonic() >= deadline:
             beta_report.write_event("native_nest_dialog_autofill_unavailable", {"reason": "dialog_timeout"})
+            return
+        palette.root.after(50, poll)
+
+    palette.root.after(100, poll)
+
+
+VK_TAB = 0x09
+
+
+def fill_and_confirm_native_add_tracks_dialog(*, need_video: bool, need_audio: bool) -> bool:
+    """Drive Premiere's own "Add Tracks..." dialog (opened separately via cmd.sequence.addtracks)
+    to add only the track type(s) actually needed.
+
+    Host-confirmed layout: it opens with the video Amount field focused and its default "1"
+    pre-selected; two Tabs from there land on the audio Amount field, also pre-selected; Enter
+    confirms from either field. Zeroing out the Amount for a track type that isn't needed is what
+    keeps this from creating an extra, unused track every time.
+    """
+    if not need_video and not send_native_keyboard_text("0"):
+        return False
+    if not send_native_shortcut(PremiereCommandShortcut(vk=VK_TAB)):
+        return False
+    if not send_native_shortcut(PremiereCommandShortcut(vk=VK_TAB)):
+        return False
+    if not need_audio and not send_native_keyboard_text("0"):
+        return False
+    return send_native_shortcut(PremiereCommandShortcut(vk=0x0D))  # Enter
+
+
+def schedule_native_add_tracks_dialog(palette, premiere_hwnd: int, *, need_video: bool, need_audio: bool, on_done) -> None:
+    """Send cmd.sequence.addtracks, wait for its dialog to take the foreground, then fill and
+    confirm it. Calls on_done(True) only once the dialog was actually driven; on_done(False) for
+    every other case (shortcut not bound, send failed, dialog never appeared) so the caller can
+    fall back to accepting whatever the original insertion already produced instead of hanging.
+    """
+    shortcut, _shortcut_file = find_premiere_command_shortcut("cmd.sequence.addtracks")
+    if shortcut is None:
+        beta_report.write_event("native_add_tracks_unavailable", {"reason": "shortcut_unbound"})
+        on_done(False)
+        return
+    premiere_process_id = native_window_process_id(premiere_hwnd)
+    if premiere_process_id is None:
+        beta_report.write_event("native_add_tracks_unavailable", {"reason": "process_unknown"})
+        on_done(False)
+        return
+    if not send_native_shortcut(shortcut):
+        beta_report.write_event("native_add_tracks_unavailable", {"reason": "shortcut_send_failed"})
+        on_done(False)
+        return
+
+    deadline = time.monotonic() + 3.0
+
+    def poll():
+        foreground_hwnd = foreground_window_handle_native()
+        foreground_process_id = native_window_process_id(foreground_hwnd)
+        if (
+            foreground_hwnd
+            and foreground_hwnd != premiere_hwnd
+            and foreground_process_id == premiere_process_id
+        ):
+            confirmed = fill_and_confirm_native_add_tracks_dialog(need_video=need_video, need_audio=need_audio)
+            beta_report.write_event("native_add_tracks_dialog_autofill", {
+                "confirmed": confirmed,
+                "need_video": need_video,
+                "need_audio": need_audio,
+            })
+            if not confirmed:
+                on_done(False)
+                return
+            # Sending Enter only means the keystroke was dispatched, not that Premiere has finished
+            # acting on it - a real host test showed the very next insertion still landing on a
+            # reused track because the new one hadn't actually been created yet by the time it ran.
+            # Wait for the dialog to actually close (foreground back on Premiere's own main window)
+            # before telling the caller it's safe to insert.
+            settle_deadline = time.monotonic() + 2.0
+
+            def wait_for_dialog_close():
+                if foreground_window_handle_native() == premiere_hwnd:
+                    on_done(True)
+                    return
+                if time.monotonic() >= settle_deadline:
+                    beta_report.write_event("native_add_tracks_unavailable", {"reason": "dialog_close_timeout"})
+                    on_done(True)
+                    return
+                palette.root.after(50, wait_for_dialog_close)
+
+            palette.root.after(50, wait_for_dialog_close)
+            return
+        if time.monotonic() >= deadline:
+            beta_report.write_event("native_add_tracks_unavailable", {"reason": "dialog_timeout"})
+            on_done(False)
             return
         palette.root.after(50, poll)
 
@@ -2108,7 +2213,8 @@ class EffectsLoader:
 
         generic_items = tuple(dict(item) for item in GENERIC_ITEMS)
         timeline_actions = tuple(dict(item) for item in TIMELINE_ACTIONS)
-        all_items = effects + presets + project_items + favorite_items + generic_items + timeline_actions
+        tool_windows = tuple(dict(item) for item in TOOL_WINDOWS)
+        all_items = effects + presets + project_items + favorite_items + generic_items + timeline_actions + tool_windows
         indexed_items, exact_name_map, prefix_map, token_prefix_map, trigram_map = self._build_indexes(all_items)
 
         return LoaderSnapshot(
@@ -2443,8 +2549,44 @@ class EffectsLoader:
             return 0.0
 
 
+class _UnavailableExecutionAdapter:
+    """Returned when the UXP transport server cannot start (e.g. its port is already bound).
+
+    Keeps the companion usable - search palette, catalogs and global shortcuts all still work -
+    while every Premiere action fails closed with a clear status, instead of silently falling
+    back to the CEP bridge (removed as a runtime path once UXP reached parity, see STATUS.md).
+    """
+
+    backend_name = "unavailable"
+
+    def __init__(self, reason: str = ""):
+        self._reason = reason
+
+    def execute(self, effect: dict) -> float:
+        return time.time()
+
+    def poll_status(self, timestamp: float | None) -> str | None:
+        return "error_not_connected"
+
+    @staticmethod
+    def is_terminal(status: str | None) -> bool:
+        return bool(status and str(status).startswith("error"))
+
+    @staticmethod
+    def is_success(status: str | None) -> bool:
+        return False
+
+    def diagnostics(self) -> dict:
+        return {"backend": self.backend_name, "reason": self._reason}
+
+
 class PremiereExecutionAdapter:
-    """Host boundary shared by shortcuts, macros and future UXP execution."""
+    """Legacy CEP bridge backend. No longer selected at runtime (see STATUS.md / TECHNICAL_PLAN.md
+    stage 5) - kept because the native-Nest watch path (arm_native_nest_watch /
+    dispatch_when_native_nest_watch_ready) still shares send_command's BRIDGE_FILE semantics.
+    Removing this class and its send_command/read_bridge_status helpers is a separate task that
+    needs the native-Nest path re-tested first.
+    """
 
     backend_name = "cep"
 
@@ -2489,17 +2631,24 @@ def watched_data_directories(paths: DataPaths) -> list[Path]:
 
 
 def create_execution_adapter():
-    """Prefer the UXP transport (stage 5); fall back to the CEP bridge if unavailable."""
+    """The UXP transport (TECHNICAL_PLAN.md stage 5) is the only Premiere execution backend.
+
+    The CEP bridge fallback was removed once UXP reached parity for everything the product uses
+    (STATUS.md). If the UXP adapter cannot start, return a stub that fails every action closed
+    rather than silently degrading to a backend nothing is listening on.
+    """
     # QWebSocketServer needs a running Qt event loop to ever fire a signal, so this
-    # only applies when the Qt UI actually created a QApplication - the Tk fallback UI
-    # has no such loop even when PySide6 happens to be importable.
+    # only applies when the Qt UI actually created a QApplication.
     qt_app_running = HAS_QT and QtWidgets.QApplication.instance() is not None
-    if HAS_UXP_ADAPTER and qt_app_running:
-        try:
-            return PremiereUxpExecutionAdapter()
-        except Exception as error:
-            print(f"[Aviso] Falha ao iniciar o adapter UXP, usando CEP: {error}")
-    return PremiereExecutionAdapter()
+    if not (HAS_UXP_ADAPTER and qt_app_running):
+        return _UnavailableExecutionAdapter(
+            "UXP adapter unavailable (requires the Qt UI and companion/uxp_execution_adapter.py)"
+        )
+    try:
+        return PremiereUxpExecutionAdapter()
+    except Exception as error:
+        print(f"[Aviso] Falha ao iniciar o adapter UXP: {error}")
+        return _UnavailableExecutionAdapter(str(error))
 
 
 def collect_diagnostics(palette) -> list[dict]:
@@ -2507,15 +2656,12 @@ def collect_diagnostics(palette) -> list[dict]:
     snapshot = palette.loader.snapshot
     premiere_running = premiere_is_running()
     catalog_healthy = snapshot.source != "fallback" and snapshot.count > 0 and not snapshot.load_issues
-    bridge_exists = BRIDGE_FILE.exists()
     _nest_shortcut, kys_file = find_premiere_command_shortcut("cmd.clip.nestify")
     listener = getattr(palette, "hotkey_listener", None)
     registered = len(getattr(listener, "_registered_hotkey_ids", ())) if listener is not None else 0
     configured = len(getattr(listener, "_specs", ())) if listener is not None else 0
     adapter = palette.execution_adapter.diagnostics()
-    executor_healthy = bool(adapter.get("backend")) and (
-        adapter.get("backend") != "cep" or bool(adapter.get("bridge_exists"))
-    )
+    executor_healthy = adapter.get("backend") == "uxp"
 
     catalog_details = f"{snapshot.count} items · {snapshot.source}"
     if snapshot.load_issues:
@@ -2539,12 +2685,16 @@ def collect_diagnostics(palette) -> list[dict]:
             "action": "refresh_catalog" if not catalog_healthy else "open_data_folder",
         },
         {
-            "key": "cep_bridge",
-            "name": "CEP Bridge",
-            "healthy": bridge_exists,
-            "details": str(BRIDGE_FILE),
-            "recommendation": "Ready" if bridge_exists else "Start Premiere or deploy the CEP development build",
-            "action": "open_data_folder",
+            "key": "uxp_transport",
+            "name": "UXP plugin",
+            "healthy": bool(adapter.get("authenticated")),
+            "details": (
+                f"connected on port {adapter.get('port')}" if adapter.get("authenticated")
+                else "listening, waiting for the plugin" if adapter.get("listening")
+                else str(adapter.get("reason") or "transport not started")
+            ),
+            "recommendation": "Ready" if adapter.get("authenticated") else "Load the FX.palette UXP plugin in Premiere (UDT: Load & Watch)",
+            "action": "",
         },
         {
             "key": "shortcut_profile",
@@ -2567,8 +2717,19 @@ def collect_diagnostics(palette) -> list[dict]:
             "name": "Premiere executor",
             "healthy": executor_healthy,
             "details": str(adapter.get("backend", "unknown")).upper(),
-            "recommendation": "Ready" if executor_healthy else "Verify the CEP bridge before executing actions",
+            "recommendation": "Ready" if executor_healthy else "The UXP plugin must be loaded in Premiere for actions to run",
             "action": "open_data_folder",
+        },
+        {
+            "key": "preset_catalog",
+            "name": "Preset catalog",
+            # Only the UXP backend needs an explicit import - CEP scans .prfpset from disk itself.
+            # None means "not yet known" (still waiting on the plugin's own restore-from-token
+            # round trip), treated as healthy rather than flashing a false alarm on every startup.
+            "healthy": adapter.get("backend") != "uxp" or adapter.get("preset_catalog_available") is not False,
+            "details": "Imported" if adapter.get("preset_catalog_available") else "Not imported",
+            "recommendation": "Ready" if adapter.get("preset_catalog_available") is not False else "Pick a .prfpset file to enable preset apply",
+            "action": "import_preset_catalog" if (adapter.get("backend") == "uxp" and adapter.get("preset_catalog_available") is False) else "",
         },
     ]
 
@@ -2579,7 +2740,7 @@ def execute_effect_through_adapter(palette, effect: dict) -> float:
     # point deciding it before the adapter's own RECONSTRUCT_EASING_DEFAULT fallback would apply.
     if effect.get("type") == "preset" and "reconstructEasing" not in effect:
         effect = dict(effect, reconstructEasing=getattr(palette, "reconstruct_easing_enabled", RECONSTRUCT_EASING_DEFAULT))
-    adapter = getattr(palette, "execution_adapter", None) or PremiereExecutionAdapter()
+    adapter = getattr(palette, "execution_adapter", None) or _UnavailableExecutionAdapter("no adapter on palette")
     return adapter.execute(effect)
 
 
@@ -4485,6 +4646,64 @@ class EffectPalette:
         self._current_apply_effect = effect
         self._set_apply_busy(True, f"{self._apply_action_label(effect)}: {name}")
         self.root.update_idletasks()
+        if effect.get("type") in {"project_item", "generic_item", "favorite_item"}:
+            self._begin_apply_with_track_check(effect)
+            return
+        self._dispatch_apply(effect)
+
+    def _begin_apply_with_track_check(self, effect: dict):
+        """Pre-flight before an insertion: ask the plugin whether a free Timeline track already
+        exists for whatever media kind(s) this item needs, and if not, drive Premiere's native
+        "Add Tracks..." dialog for the missing kind(s) before actually inserting - checking first
+        avoids ever needing to undo a placement, unlike an earlier attempt that removed the item
+        after the fact and hung on a Premiere API call never used elsewhere in this project. Any
+        imprecision here (adapter unavailable, check times out, dialog fails) just falls through to
+        the normal insertion, which still does its own accurate check and safely reuses an occupied
+        track exactly as it always could - this pre-check can only ever save that degradation, not
+        cause a worse one.
+        """
+        adapter = getattr(self, "execution_adapter", None)
+        if adapter is None or not hasattr(adapter, "check_track_availability"):
+            self._dispatch_apply(effect)
+            return
+        generic_key = str(effect.get("genericKey") or "")
+        check_timestamp = adapter.check_track_availability(generic_key)
+        deadline = time.monotonic() + 2.0
+
+        def poll():
+            status = adapter.poll_status(check_timestamp)
+            if status is None:
+                if time.monotonic() >= deadline:
+                    self._dispatch_apply(effect)
+                    return
+                self.root.after(APPLY_STATUS_POLL_MS, poll)
+                return
+            data = adapter.last_response_data(check_timestamp) or {}
+            need_video = bool(data.get("needsVideo")) and not bool(data.get("videoAvailable", True))
+            need_audio = bool(data.get("needsAudio")) and not bool(data.get("audioAvailable", True))
+            premiere_hwnd = self._previous_foreground_hwnd
+            if (need_video or need_audio) and premiere_hwnd:
+                self.status_label.config(text=tr("status_creating_track"))
+                # The palette window itself still holds OS focus here (unlike the Nest/Label
+                # native-dispatch flows, which fire-and-close and so never fight this) - the native
+                # shortcut has to reach Premiere, not the palette, so force focus over there first.
+                # Without extending the focus-out grace window, the palette's own focus-loss
+                # recovery (_on_focus_out/_hide_if_focus_lost) would race to reclaim focus (or hide,
+                # if the pointer isn't over it) within ~140ms of losing it - stealing the keystroke
+                # right back or vanishing mid-flight. Covers the send + dialog wait + fill/confirm.
+                self._focus_out_grace_until = time.monotonic() + 5.0
+                activate_window_handle_native(premiere_hwnd)
+                self.root.after(80, lambda: schedule_native_add_tracks_dialog(
+                    self, premiere_hwnd, need_video=need_video, need_audio=need_audio,
+                    on_done=lambda _confirmed: self._dispatch_apply(effect),
+                ))
+            else:
+                self._dispatch_apply(effect)
+
+        self.root.after(APPLY_STATUS_POLL_MS, poll)
+
+    def _dispatch_apply(self, effect: dict):
+        name = effect.get("name", "")
         try:
             self._apply_command_timestamp = execute_effect_through_adapter(self, effect)
         except Exception as exc:
@@ -6493,10 +6712,10 @@ if HAS_QT:
                 "Ready": "Pronto",
                 "Start Premiere Pro, then refresh": "Inicie o Premiere Pro e atualize",
                 "Refresh the catalog and inspect load issues": "Atualize o catálogo e verifique os erros",
-                "Start Premiere or deploy the CEP development build": "Inicie o Premiere ou implante a build CEP",
+                "Load the FX.palette UXP plugin in Premiere (UDT: Load & Watch)": "Carregue o plugin UXP FX.palette no Premiere (UDT: Load & Watch)",
                 "Open Premiere and save a keyboard shortcut profile": "Abra o Premiere e salve um perfil de atalhos",
                 "Review assignments and reload shortcuts": "Revise as atribuições e recarregue os atalhos",
-                "Verify the CEP bridge before executing actions": "Verifique o CEP Bridge antes de executar ações",
+                "The UXP plugin must be loaded in Premiere for actions to run": "O plugin UXP precisa estar carregado no Premiere para executar ações",
             }
             if CURRENT_LANGUAGE == "pt":
                 recommendation = translations.get(recommendation, recommendation)
@@ -6507,7 +6726,7 @@ if HAS_QT:
 
         def _refresh_diagnostics(self):
             self.diagnostics_tree.clear()
-            names_pt = {"Catalog": "Catálogo", "Shortcut profile": "Perfil de atalhos", "Global shortcuts": "Atalhos globais", "Premiere executor": "Executor do Premiere"}
+            names_pt = {"Catalog": "Catálogo", "Shortcut profile": "Perfil de atalhos", "Global shortcuts": "Atalhos globais", "Premiere executor": "Executor do Premiere", "Preset catalog": "Catálogo de presets"}
             for diagnostic in collect_diagnostics(self.palette):
                 if CURRENT_LANGUAGE == "pt":
                     diagnostic = dict(diagnostic, name=names_pt.get(diagnostic["name"], diagnostic["name"]))
@@ -6539,6 +6758,26 @@ if HAS_QT:
                     "Inicie o Adobe Premiere Pro e clique em Atualizar diagnóstico.",
                     "Start Adobe Premiere Pro, then click Refresh diagnostics.",
                 ))
+            elif action == "import_preset_catalog":
+                adapter = getattr(self.palette, "execution_adapter", None)
+                if adapter is None or not hasattr(adapter, "import_prfpset_catalog"):
+                    return
+                self.diagnostic_action.setEnabled(False)
+                self.diagnostic_action.setText(self._text("Aguardando seleção do arquivo...", "Waiting for file selection..."))
+                self.palette.app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+                result = adapter.import_prfpset_catalog()
+                self.diagnostic_action.setText(self._text("Executar ação recomendada", "Run recommended action"))
+                if result is None:
+                    QtWidgets.QMessageBox.warning(self, "FX.palette", self._text(
+                        "Nenhum arquivo .prfpset foi importado.",
+                        "No .prfpset file was imported.",
+                    ))
+                else:
+                    QtWidgets.QMessageBox.information(self, "FX.palette", self._text(
+                        "Catálogo de presets importado com sucesso.",
+                        "Preset catalog imported successfully.",
+                    ))
+                self._refresh_diagnostics()
 
         def _save(self):
             alias_entries = self._alias_entries()
@@ -7182,6 +7421,50 @@ if HAS_QT:
             self._current_apply_effect = effect
             self._set_apply_busy(True, f"{action}: {name}")
             self.app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            if effect.get("type") in {"project_item", "generic_item", "favorite_item"}:
+                self._begin_apply_with_track_check(effect)
+                return
+            self._dispatch_apply(effect)
+
+        def _begin_apply_with_track_check(self, effect: dict):
+            """See the Tk _begin_apply_with_track_check - same reasoning, Qt widget calls."""
+            adapter = getattr(self, "execution_adapter", None)
+            if adapter is None or not hasattr(adapter, "check_track_availability"):
+                self._dispatch_apply(effect)
+                return
+            generic_key = str(effect.get("genericKey") or "")
+            check_timestamp = adapter.check_track_availability(generic_key)
+            deadline = time.monotonic() + 2.0
+
+            def poll():
+                status = adapter.poll_status(check_timestamp)
+                if status is None:
+                    if time.monotonic() >= deadline:
+                        self._dispatch_apply(effect)
+                        return
+                    self.root.after(APPLY_STATUS_POLL_MS, poll)
+                    return
+                data = adapter.last_response_data(check_timestamp) or {}
+                need_video = bool(data.get("needsVideo")) and not bool(data.get("videoAvailable", True))
+                need_audio = bool(data.get("needsAudio")) and not bool(data.get("audioAvailable", True))
+                premiere_hwnd = self._previous_foreground_hwnd
+                if (need_video or need_audio) and premiere_hwnd:
+                    self.status_label.setText(tr("status_creating_track"))
+                    # The palette still holds OS focus here - force it onto Premiere first so the
+                    # native shortcut actually reaches it, with a short delay for Windows to
+                    # complete the switch before the shortcut is sent.
+                    activate_window_handle_native(premiere_hwnd)
+                    self.root.after(80, lambda: schedule_native_add_tracks_dialog(
+                        self, premiere_hwnd, need_video=need_video, need_audio=need_audio,
+                        on_done=lambda _confirmed: self._dispatch_apply(effect),
+                    ))
+                else:
+                    self._dispatch_apply(effect)
+
+            self.root.after(APPLY_STATUS_POLL_MS, poll)
+
+        def _dispatch_apply(self, effect: dict):
+            name = effect.get("name", "")
             try:
                 self._apply_command_timestamp = execute_effect_through_adapter(self, effect)
             except Exception as exc:
@@ -7407,6 +7690,10 @@ if HAS_QT:
                 return
             if effect.get("type") == "timeline_action" and effect.get("action") == "nest":
                 self._show_nest_options(effect)
+                return
+            if effect.get("type") == "tool_window" and effect.get("toolId") == "motion_tracker":
+                self.show_motion_tracker()
+                self.hide()
                 return
             if self._execute_label_action(effect):
                 return
@@ -7741,6 +8028,24 @@ if HAS_QT:
             center.show()
             center.raise_()
             center.activateWindow()
+
+        def show_motion_tracker(self):
+            # Lifetime independent of the palette on purpose (per the user's own explicit call) -
+            # hiding/reopening the palette must never touch this window, only its own close button.
+            window = getattr(self, "_motion_tracker", None)
+            if window is None or not window.isVisible():
+                from motracker.qt_tracker_window import MotionTrackerWindow
+                window = MotionTrackerWindow(
+                    adapter=self.execution_adapter,
+                    ui_font_family=self.ui_font_family,
+                    accent=ACCENT,
+                )
+                window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+                window.destroyed.connect(lambda: setattr(self, "_motion_tracker", None))
+                self._motion_tracker = window
+            window.show()
+            window.raise_()
+            window.activateWindow()
 
         def show_message(self, title: str, text: str, *, error: bool = False):
             box = QtWidgets.QMessageBox(self.window)

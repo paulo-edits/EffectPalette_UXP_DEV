@@ -3,31 +3,26 @@
 const ACTION_SCHEMA_VERSION = 1;
 const SUPPORTED_ACTIONS = Object.freeze([
   "diagnostics.read",
-  "catalog.videoEffects.resolve",
   "catalog.videoEffects.read",
   "catalog.videoTransitions.read",
   "catalog.favorites.read",
   "catalog.projectItems.read",
   "timeline.applyVideoEffect",
-  "timeline.probeVideoEffectParameters",
-  "timeline.probeStaticVideoEffectParameter",
-  "timeline.probeAnimatedVideoEffectParameter",
-  "timeline.captureTransformCurveReference",
-  "timeline.applyTransformCurveReference",
   "catalog.effectPresets.read",
+  "catalog.effectPresets.readFromPath",
   "catalog.effectPresets.importPrfpset",
-  "catalog.effectPresets.inspectImported",
-  "catalog.effectPresets.inspectBridgeCandidate",
-  "catalog.effectPresets.exportBridge",
-  "catalog.effectPresets.compareImportedTransform",
-  "timeline.inspectSelectedVideoComponents",
   "timeline.applyImportedEffectPreset",
   "timeline.applyAudioEffect",
   "timeline.applyVideoTransition",
   "timeline.createSubsequence",
   "timeline.createNest",
   "timeline.insertProjectItem",
-  "timeline.insertGenericItem"
+  "timeline.insertGenericItem",
+  "timeline.checkTrackAvailability",
+  "motracker.getClipInfo",
+  "motracker.getFollowTargetMediaPath",
+  "motracker.testNest",
+  "motracker.applyTrack"
 ]);
 
 function failure(code, message, actionType) {

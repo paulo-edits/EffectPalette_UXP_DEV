@@ -8,28 +8,50 @@ async function run() {
   assert.strictEqual(adapter.normalizeAction({}).error.code, "MISSING_ACTION_TYPE");
   assert.strictEqual(adapter.normalizeAction({ type: "arbitrary.execute" }).error.code, "UNSUPPORTED_ACTION");
   assert.strictEqual(adapter.normalizeAction({ type: "projectItems.setColorLabel" }).error.code, "UNSUPPORTED_ACTION");
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoEffect" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeVideoEffectParameters" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeStaticVideoEffectParameter" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.probeAnimatedVideoEffectParameter" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.captureTransformCurveReference" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyTransformCurveReference" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.importPrfpset" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.inspectImported" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.inspectBridgeCandidate" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.exportBridge" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.effectPresets.compareImportedTransform" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.inspectSelectedVideoComponents" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyImportedEffectPreset" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyAudioEffect" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.applyVideoTransition" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.createSubsequence" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.createNest" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.insertProjectItem" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "timeline.insertGenericItem" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.resolve" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoEffects.read" }).ok, true);
-  assert.strictEqual(adapter.normalizeAction({ type: "catalog.videoTransitions.read" }).ok, true);
+
+  // Every action the companion actually sends must resolve.
+  for (const type of [
+    "diagnostics.read",
+    "catalog.videoEffects.read",
+    "catalog.videoTransitions.read",
+    "catalog.favorites.read",
+    "catalog.projectItems.read",
+    "catalog.effectPresets.read",
+    "catalog.effectPresets.readFromPath",
+    "catalog.effectPresets.importPrfpset",
+    "timeline.applyVideoEffect",
+    "timeline.applyImportedEffectPreset",
+    "timeline.applyAudioEffect",
+    "timeline.applyVideoTransition",
+    "timeline.createSubsequence",
+    "timeline.createNest",
+    "timeline.insertProjectItem",
+    "timeline.insertGenericItem",
+    "timeline.checkTrackAvailability",
+    "motracker.getClipInfo",
+    "motracker.getFollowTargetMediaPath",
+    "motracker.testNest",
+    "motracker.applyTrack"
+  ]) {
+    assert.strictEqual(adapter.normalizeAction({ type }).ok, true, `expected ${type} to be supported`);
+  }
+
+  // Research / diagnostic probes were removed from the shipped allowlist (git history keeps them).
+  for (const type of [
+    "catalog.videoEffects.resolve",
+    "timeline.probeVideoEffectParameters",
+    "timeline.probeStaticVideoEffectParameter",
+    "timeline.probeAnimatedVideoEffectParameter",
+    "timeline.captureTransformCurveReference",
+    "timeline.applyTransformCurveReference",
+    "catalog.effectPresets.inspectImported",
+    "catalog.effectPresets.inspectBridgeCandidate",
+    "catalog.effectPresets.exportBridge",
+    "catalog.effectPresets.compareImportedTransform",
+    "timeline.inspectSelectedVideoComponents"
+  ]) {
+    assert.strictEqual(adapter.normalizeAction({ type }).error.code, "UNSUPPORTED_ACTION", `expected ${type} to be removed`);
+  }
 
   const action = adapter.normalizeAction({
     type: "diagnostics.read",

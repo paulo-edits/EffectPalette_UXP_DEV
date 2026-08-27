@@ -18,9 +18,12 @@ negotiate one at runtime.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
+
+import cv2
 
 from PySide6 import QtCore
 from PySide6.QtNetwork import QHostAddress
@@ -194,6 +197,28 @@ def _error_code_to_status(code) -> str:
     return "error_" + str(code).lower()
 
 
+def find_prfpset_file() -> Path | None:
+    """Locate the user's "Effect Presets and Custom Items.prfpset", mirroring the stable CEP
+    product's own bridge.js::findPresetFile() - same well-known layout
+    (Documents/Adobe/Premiere Pro/<version>/Profile-<name>/Effect Presets and Custom Items.prfpset).
+    Done here, in Python, because the companion already has unrestricted filesystem access - the
+    plugin only needs the exact path handed to it (manifest.json's "fullAccess" localFileSystem
+    permission lets it then read that one file directly, no native file picker required)."""
+    documents = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
+    root = documents / "Adobe" / "Premiere Pro"
+    if not root.exists():
+        return None
+    try:
+        candidates = sorted(
+            root.glob("*/Profile-*/Effect Presets and Custom Items.prfpset"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    return candidates[0] if candidates else None
+
+
 class PremiereUxpExecutionAdapter(QtCore.QObject):
     """Host boundary backed by the UXP transport - drop-in for PremiereExecutionAdapter."""
 
@@ -210,6 +235,11 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._video_match_names_by_display: dict[str, str] = {}
         self._transition_match_names_by_label: dict[str, str] = {}
         self._catalog_requested = False
+        # None until the first catalog.effectPresets.read round-trip settles (including its one
+        # retry) - surfaced in diagnostics() so the settings center can tell the user a preset
+        # catalog needs (re-)importing, now that the diagnostics panel's own import button is gone
+        # from the shipped build.
+        self._preset_catalog_available: bool | None = None
         self._favorites_timer = QtCore.QTimer(self)
         self._favorites_timer.timeout.connect(self._request_favorites_catalog)
         self._project_items_timer = QtCore.QTimer(self)
@@ -348,6 +378,20 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             print(f"[UXP adapter] could not write the project item catalog: {error}", flush=True)
 
     def _request_effect_preset_catalog(self):
+        prfpset_path = find_prfpset_file()
+        if prfpset_path is not None:
+            # readFromPath's response is shaped identically to catalog.effectPresets.read's, so
+            # the same requestId/handler below covers both without any extra routing.
+            self._send({
+                "schemaVersion": 1,
+                "type": "catalog.effectPresets.readFromPath",
+                "requestId": EFFECT_PRESET_CATALOG_REQUEST_ID,
+                "payload": {"path": str(prfpset_path)},
+            })
+            return
+        # No .prfpset found automatically (non-default install, or none exists yet) - fall back
+        # to asking whether something was already loaded (e.g. via the Diagnostics tab's manual
+        # native-picker fallback).
         self._send({
             "schemaVersion": 1,
             "type": "catalog.effectPresets.read",
@@ -377,8 +421,10 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 QtCore.QTimer.singleShot(3000, self._request_effect_preset_catalog_retry)
             else:
                 print("[UXP adapter] catalog.effectPresets.read: no .prfpset catalog imported in the plugin yet", flush=True)
+                self._preset_catalog_available = False
             return
         self._effect_preset_retry_scheduled = False
+        self._preset_catalog_available = True
         presets = data.get("presets") or []
         try:
             UXP_PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -650,6 +696,29 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         })
         return timestamp
 
+    def check_track_availability(self, generic_key: str = "") -> float:
+        """Read-only pre-flight before an insertion-family effect: does a free Timeline track
+        already exist for whatever media kind(s) this item needs? Same request/poll bookkeeping as
+        execute() (reuses _pending/poll_status/last_response_data), just not shaped as a user-facing
+        effect - app.py calls this before insertProjectItem so it can drive the native "Add
+        Tracks..." dialog first when needed, rather than after (see TECHNICAL_PLAN.md for why an
+        after-the-fact undo-and-retry was tried first and abandoned).
+        """
+        self._prune_pending()
+        timestamp = time.time()
+        request_id = f"{timestamp:.6f}"
+        if self._client is None or not self._authenticated:
+            self._pending[request_id] = {"status": "error_not_connected"}
+            return timestamp
+        self._pending[request_id] = {"status": "pending", "sent_at": timestamp}
+        self._send({
+            "schemaVersion": 1,
+            "type": "timeline.checkTrackAvailability",
+            "requestId": request_id,
+            "payload": {"genericKey": generic_key},
+        })
+        return timestamp
+
     def _resolve_pending(self, request_id: str, message: dict):
         entry = self._pending.get(request_id)
         if entry is None:
@@ -662,6 +731,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             return
 
         data = message.get("data") or {}
+        entry["data"] = data
         # Some actions report their own post-mutation check (transitions compare the sequence's
         # transition count before/after). An explicit false means the transaction was accepted
         # but nothing actually landed, which must not be reported to the user as success.
@@ -704,6 +774,14 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             entry["status"] = "error_timeout"
         return None if entry["status"] == "pending" else entry["status"]
 
+    def last_response_data(self, timestamp) -> dict | None:
+        """Raw `data` payload from a completed request - e.g. an insertion's own trackFallback
+        flags, which poll_status's plain status string has no room to carry."""
+        if timestamp is None:
+            return None
+        entry = self._pending.get(f"{float(timestamp):.6f}")
+        return entry.get("data") if entry else None
+
     @staticmethod
     def is_terminal(status) -> bool:
         return status == "done" or bool(status and str(status).startswith("error"))
@@ -720,7 +798,132 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "client_connected": self._client is not None,
             "authenticated": self._authenticated,
             "video_catalog_entries": len(self._video_match_names_by_display),
+            "preset_catalog_available": self._preset_catalog_available,
         }
+
+    def import_prfpset_catalog(self, timeout_ms: int = 120000) -> dict | None:
+        """Open the plugin's native file picker for a .prfpset file and grant it persistent access
+        - the same one-time consent cost `TECHNICAL_PLAN.md` already documents, just reachable from
+        the settings center now that the diagnostics panel that used to trigger it is gone from the
+        shipped build. A generous timeout since this blocks on the user actually picking a file in
+        a native dialog, not a quick round trip. Returns None on any failure (not connected, no
+        selection, plugin-side error) - the caller shows that as "still not imported", not a crash.
+        """
+        result = self._blocking_request(
+            "catalog.effectPresets.importPrfpset", "adapter-import-prfpset", timeout_ms
+        )
+        if result is not None:
+            self._request_effect_preset_catalog()
+        return result
+
+    def get_clip_info(self, timeout_ms: int = 5000) -> dict | None:
+        """Motion Tracker's "Load clip" button: read the selected Timeline clip's media path, fps,
+        frame size and in/out points. A direct, short-lived, user-initiated request that wants an
+        immediate answer to decide what to show next - same _blocking_request pattern as
+        import_prfpset_catalog/has_multi_track_audio_selection, not the poll-loop pattern
+        begin_apply_track uses below (that one does real Premiere-side writes and must not risk
+        freezing the app if it runs long)."""
+        return self._blocking_request("motracker.getClipInfo", "motracker-get-clip-info", timeout_ms)
+
+    def get_follow_target_native_size(self, timeout_ms: int = 5000) -> dict | None:
+        """Motion Tracker's Apply Track (follow mode): the object being followed needs its own
+        real native pixel size to scale Position correctly (Position, like the built-in Motion
+        effect's own Anchor Point, reads as a clip-normalised fraction over the scripting API even
+        though Effect Controls displays pixel-looking numbers - both were tried and disproven as a
+        way to read real pixels straight from Premiere, see TECHNICAL_PLAN.md's Motion Tracker
+        slice). Reads the currently-selected clip's own media file path from the plugin, then opens
+        it directly with OpenCV (already a hard dependency for tracking) to get the unambiguous
+        real width/height. Returns None if the plugin has no valid selection or the file can't be
+        opened/decoded - the caller falls back to the sequence size (the old, wrong-but-safe
+        behaviour), same as if this had never been called.
+        """
+        result = self._blocking_request(
+            "motracker.getFollowTargetMediaPath", "motracker-get-follow-target-path", timeout_ms
+        )
+        media_path = result.get("mediaPath") if isinstance(result, dict) else None
+        if not media_path:
+            return None
+        image = cv2.imread(media_path)
+        if image is not None:
+            height, width = image.shape[:2]
+            return {"width": int(width), "height": int(height)}
+        capture = cv2.VideoCapture(media_path)
+        try:
+            if not capture.isOpened():
+                return None
+            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        finally:
+            capture.release()
+        if width <= 0 or height <= 0:
+            return None
+        return {"width": width, "height": height}
+
+    def begin_apply_track(self, request: dict) -> float:
+        """Motion Tracker's Apply Track/Stabilize: same request_id/_pending/timestamp bookkeeping
+        as execute(), polled via poll_status/is_terminal/is_success exactly like any other
+        effect - kept as a standalone method rather than a new effect["type"] branch inside
+        execute() itself, since this feature's own explicit buttons are a different concept from
+        the searchable-palette-item dispatch execute() otherwise handles."""
+        self._prune_pending()
+        timestamp = time.time()
+        request_id = f"{timestamp:.6f}"
+        if self._client is None or not self._authenticated:
+            self._pending[request_id] = {"status": "error_not_connected"}
+            return timestamp
+        self._pending[request_id] = {"status": "pending", "sent_at": timestamp}
+        self._send({
+            "schemaVersion": 1,
+            "type": "motracker.applyTrack",
+            "requestId": request_id,
+            "payload": request,
+        })
+        return timestamp
+
+    def test_nest(self, native_w: int, native_h: int, timeout_ms: int = 20000) -> dict | None:
+        """TEMPORARY - isolated host test for motrackerTestNest/motrackerNestAndNormalizeTarget
+        (TECHNICAL_PLAN.md's Motion Tracker slice), before wiring the Nest-and-normalize step into
+        the real Stabilize/Follow apply flow. Remove alongside the JS-side test action once
+        confirmed working. Blocking (a one-off manual test click, not part of the main apply loop),
+        with a generous timeout since Nest creation does real Premiere-side work."""
+        if self._client is None or not self._authenticated:
+            return None
+        request_id = f"test-nest-{time.time():.6f}"
+        outcome: dict = {}
+        loop = QtCore.QEventLoop()
+
+        def on_message(raw: str):
+            try:
+                message = json.loads(raw)
+            except (ValueError, TypeError):
+                return
+            if isinstance(message, dict) and message.get("requestId") == request_id:
+                outcome["message"] = message
+                loop.quit()
+
+        self._client.textMessageReceived.connect(on_message)
+        timer = QtCore.QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        self._send({
+            "schemaVersion": 1,
+            "type": "motracker.testNest",
+            "requestId": request_id,
+            "payload": {"nativeW": native_w, "nativeH": native_h},
+        })
+        loop.exec()
+        timer.stop()
+        try:
+            self._client.textMessageReceived.disconnect(on_message)
+        except (RuntimeError, TypeError):
+            pass
+        message = outcome.get("message")
+        if not message:
+            return {"ok": False, "error": "timeout"}
+        if not message.get("ok"):
+            return {"ok": False, "error": message.get("error")}
+        return message.get("data") or {}
 
     def _blocking_request(self, action_type: str, request_id: str, timeout_ms: int) -> dict | None:
         """Send one action and block the caller (via a nested Qt event loop) for its response.

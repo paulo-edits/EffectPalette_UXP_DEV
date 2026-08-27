@@ -11,29 +11,8 @@ let importedEffectPresetXml = null;
 // .prfpset file once instead of every session - the zero-configuration bar the transport is held to.
 const PRESET_CATALOG_TOKEN_KEY = "fxpalette.importedPresetCatalog.persistentToken";
 
-function text(id, value) {
-  const node = document.getElementById(id);
-  if (node) node.textContent = value == null || value === "" ? "—" : String(value);
-}
-
 function guidToString(guid) {
   return guid && typeof guid.toString === "function" ? guid.toString() : null;
-}
-
-async function copyOutput(button) {
-  const target = document.getElementById(button.dataset.copyTarget);
-  if (!target) return;
-  const originalLabel = button.textContent;
-
-  try {
-    await navigator.clipboard.setContent({ "text/plain": target.textContent || "" });
-    button.textContent = "Copied!";
-  } catch (error) {
-    button.textContent = "Copy failed";
-    console.error("Unable to copy diagnostic output:", error);
-  }
-
-  setTimeout(() => { button.textContent = originalLabel; }, 1600);
 }
 
 async function describeProjectItem(item) {
@@ -88,36 +67,6 @@ async function readCatalogs() {
       status: "unknown",
       reason: "No official effect-preset catalog API identified in the current Premiere UXP reference."
     }
-  };
-}
-
-async function resolveVideoEffectCatalog() {
-  const startedAt = Date.now();
-  const matchNames = await premiere.VideoFilterFactory.getMatchNames();
-  const displayNames = await premiere.VideoFilterFactory.getDisplayNames();
-  const sampleMatchName = matchNames[0] || null;
-  const sampleComponent = sampleMatchName
-    ? await premiere.VideoFilterFactory.createComponent(sampleMatchName)
-    : null;
-  const canReadDisplayNameBeforeInsertion = Boolean(
-    sampleComponent && typeof sampleComponent.getDisplayName === "function"
-  );
-
-  return {
-    status: canReadDisplayNameBeforeInsertion ? "runtime-extension-detected" : "unsupported-by-official-api",
-    matchNameCount: matchNames.length,
-    displayNameCount: displayNames.length,
-    canReadDisplayNameBeforeInsertion,
-    positionalPairingAssumed: false,
-    impactMatchNameCount: matchNames.filter((name) => /impact/i.test(name)).length,
-    impactMatchNames: matchNames.filter((name) => /impact/i.test(name)),
-    sampleMatchName,
-    sampleMatchNames: matchNames.slice(0, 10),
-    sampleDisplayNames: displayNames.slice(0, 10),
-    explanation: canReadDisplayNameBeforeInsertion
-      ? "The runtime exposes an undocumented method; the proof of concept will not depend on it."
-      : "VideoFilterComponent has no official display-name API, and Adobe does not document positional correspondence between the two catalog arrays.",
-    durationMs: Date.now() - startedAt,
   };
 }
 
@@ -331,16 +280,6 @@ function cubicBezierProgress(progress, x1, y1, x2, y2) {
   return cubicBezierCoordinate(parameter, y1, y2);
 }
 
-function unwrapNumericHostValue(value) {
-  let current = value;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (typeof current === "number") return current;
-    if (!current || typeof current !== "object" || !("value" in current)) break;
-    current = current.value;
-  }
-  return typeof current === "number" ? current : null;
-}
-
 async function getSequenceFramesPerSecond(sequence) {
   const settings = await sequence.getSettings();
   if (settings && typeof settings.getVideoFrameRate === "function") {
@@ -365,12 +304,6 @@ async function getSelectedVideoClips(sequence) {
   }
   if (clips.length === 0) throw new Error("Select at least one video clip.");
   return clips;
-}
-
-async function getSingleSelectedVideoClip(sequence) {
-  const clips = await getSelectedVideoClips(sequence);
-  if (clips.length !== 1) throw new Error("Select exactly one video clip.");
-  return clips[0];
 }
 
 async function getSelectedAudioClips(sequence) {
@@ -420,24 +353,6 @@ async function findLastComponentByMatchName(chain, matchName) {
     if (await component.getMatchName() === matchName) return { component, index };
   }
   return null;
-}
-
-function normalizeCapturedValue(value) {
-  let current = value;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (typeof current === "number") return { type: "number", value: current };
-    if (typeof current === "boolean") return { type: "boolean", value: current };
-    if (typeof current === "string") return { type: "string", value: current };
-    if (Array.isArray(current) && current.length === 2 && current.every(Number.isFinite)) {
-      return { type: "point", value: [current[0], current[1]] };
-    }
-    if (current && typeof current === "object" && Number.isFinite(current.x) && Number.isFinite(current.y)) {
-      return { type: "point", value: [current.x, current.y] };
-    }
-    if (!current || typeof current !== "object" || !("value" in current)) break;
-    current = current.value;
-  }
-  return { type: "unsupported", value: serializePresetProbeValue(value) };
 }
 
 function createHostValue(captured) {
@@ -697,6 +612,24 @@ async function readEffectPresetCatalog() {
   };
 }
 
+// Registered as catalog.effectPresets.readFromPath - the companion already knows exactly where
+// the user's .prfpset lives (it globs Documents/Adobe/Premiere Pro/*/Profile-*/ itself, mirroring
+// the stable CEP product's own bridge.js::findPresetFile(), no plugin-side directory listing
+// needed) and hands this the absolute path directly. Requires "fullAccess" in manifest.json's
+// localFileSystem permission - granted once at install time, unlike importPrfpsetCatalog's native
+// file picker below, which still exists as a manual fallback if this path ever doesn't resolve
+// (a non-default install location, for instance).
+async function readPrfpsetFileAtPath(action) {
+  const rawPath = typeof action.payload.path === "string" ? action.payload.path.trim() : "";
+  if (!rawPath) throw new Error("A .prfpset file path is required.");
+  const { localFileSystem } = require("uxp").storage;
+  // The file:/ URL scheme wants forward slashes even for a Windows path (file:/C:/Users/...).
+  const file = await localFileSystem.getEntryWithUrl("file:/" + rawPath.replace(/\\/g, "/"));
+  const xml = await file.read();
+  loadPrfpsetFileIntoCatalog(file, xml);
+  return readEffectPresetCatalog();
+}
+
 function findImportedEffectPresets(name, category) {
   const requestedName = String(name || "").trim();
   const requestedCategory = String(category || "").trim().replace(/^Presets\s*>\s*/i, "");
@@ -708,122 +641,6 @@ function findImportedEffectPresets(name, category) {
   return { requestedName, requestedCategory, named, matches };
 }
 
-function stablePresetAlias(preset) {
-  const identity = `${preset.category}>${preset.name}>${preset.sourceObjectId || ""}`;
-  let hash = 2166136261;
-  for (let index = 0; index < identity.length; index += 1) {
-    hash ^= identity.charCodeAt(index);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  const suffix = preset.name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "PRESET";
-  return `FXP_${hash.toString(16).toUpperCase().padStart(8, "0")}__${suffix}`;
-}
-
-function inspectImportedPresetBridgeCandidate(action) {
-  if (!importedEffectPresetCatalog || !importedEffectPresetXml) throw new Error("Import a .prfpset catalog first.");
-  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
-  if (!preset.sourceObjectId) throw new Error("The imported preset has no source ObjectID.");
-  const documentNode = parseXmlTree(importedEffectPresetXml);
-  const objectIndex = {};
-  xmlDescendants(documentNode).forEach((element) => {
-    if (element.attributes.ObjectID) objectIndex[element.attributes.ObjectID] = element;
-  });
-  const visited = new Set();
-  const unresolved = new Set();
-  const tagCounts = {};
-  function visitObject(objectId) {
-    if (!objectId || visited.has(objectId)) return;
-    const element = objectIndex[objectId];
-    if (!element) { unresolved.add(objectId); return; }
-    visited.add(objectId);
-    tagCounts[element.tagName] = (tagCounts[element.tagName] || 0) + 1;
-    xmlDescendants(element).forEach((node) => {
-      if (node.attributes.ObjectRef) visitObject(node.attributes.ObjectRef);
-    });
-  }
-  visitObject(preset.sourceObjectId);
-  return {
-    preset: { name: preset.name, category: preset.category, sourceObjectId: preset.sourceObjectId, dataObjectId: preset.dataObjectId },
-    alias: stablePresetAlias(preset),
-    sameNameCount: importedEffectPresetCatalog.presets.filter((entry) => entry.name.toLocaleLowerCase() === preset.name.toLocaleLowerCase()).length,
-    dependencyObjectCount: visited.size,
-    dependencyTagCounts: tagCounts,
-    unresolvedObjectRefs: Array.from(unresolved),
-    preservesOpaquePayloads: unresolved.size === 0,
-    nextMutation: "none-export-not-yet-enabled",
-    mutation: "none"
-  };
-}
-
-function encodeXmlText(value) {
-  return String(value == null ? "" : value)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function encodeXmlAttribute(value) {
-  return encodeXmlText(value).replace(/"/g, "&quot;");
-}
-
-function serializeXmlNode(node) {
-  if (node.tagName === "#document") return (node.children || []).map(serializeXmlNode).join("");
-  const attributes = Object.keys(node.attributes || {}).map((name) => ` ${name}="${encodeXmlAttribute(node.attributes[name])}"`).join("");
-  const content = encodeXmlText(node.text || "") + (node.children || []).map(serializeXmlNode).join("");
-  return content ? `<${node.tagName}${attributes}>${content}</${node.tagName}>` : `<${node.tagName}${attributes}/>`;
-}
-
-function buildImportedPresetBridge(action) {
-  if (!importedEffectPresetCatalog || !importedEffectPresetXml) throw new Error("Import a .prfpset catalog first.");
-  const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
-  const alias = stablePresetAlias(preset);
-  const documentNode = parseXmlTree(importedEffectPresetXml);
-  const objectIndex = {};
-  xmlDescendants(documentNode).forEach((element) => {
-    if (element.attributes.ObjectID) objectIndex[element.attributes.ObjectID] = element;
-  });
-  const sourceTreeItem = objectIndex[preset.sourceObjectId];
-  if (!sourceTreeItem || sourceTreeItem.tagName !== "TreeItem") throw new Error("Could not resolve the preset TreeItem for bridge generation.");
-  const nameElement = xmlPath(sourceTreeItem, ["TreeItemBase", "Name"]);
-  if (!nameElement) throw new Error("Could not resolve the preset name element.");
-  nameElement.text = alias;
-  nameElement.children = [];
-  let rootBin = null;
-  for (const bin of xmlDescendants(documentNode, "BinTreeItem")) {
-    if (xmlText(xmlPath(bin, ["TreeItemBase", "Name"])) === "Presets") { rootBin = bin; break; }
-  }
-  if (!rootBin) throw new Error("Could not resolve the root Presets bin.");
-  const items = xmlChild(rootBin, "Items");
-  if (!items) throw new Error("The root Presets bin has no Items container.");
-  items.children = (items.children || []).filter((item) => item.tagName === "Item" && item.attributes.ObjectRef === preset.sourceObjectId);
-  if (items.children.length !== 1) throw new Error("The selected preset is not a direct child of the root Presets bin; nested bridge wrapping is not implemented yet.");
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>${serializeXmlNode(documentNode)}`;
-  const reparsed = parsePrfpsetCatalog(xml);
-  if (reparsed.length !== 1 || reparsed[0].name !== alias) throw new Error("Generated bridge failed its one-preset alias validation.");
-  if (reparsed[0].filters.length !== preset.filters.length) throw new Error("Generated bridge lost one or more filters during validation.");
-  const originalSignature = JSON.stringify(preset.filters);
-  const generatedSignature = JSON.stringify(reparsed[0].filters.map((filter) => ({ ...filter })));
-  if (originalSignature !== generatedSignature) throw new Error("Generated bridge changed the parsed filter payload.");
-  return { xml, alias, preset, reparsedPreset: reparsed[0] };
-}
-
-async function exportImportedPresetBridge(action) {
-  const bridge = buildImportedPresetBridge(action);
-  const { localFileSystem } = require("uxp").storage;
-  const file = await localFileSystem.getFileForSaving(`${bridge.alias}.prfpset`, { types: ["prfpset"] });
-  if (!file) return { cancelled: true, mutation: "none" };
-  await file.write(bridge.xml);
-  return {
-    fileName: file.name,
-    alias: bridge.alias,
-    originalPreset: { name: bridge.preset.name, category: bridge.preset.category },
-    presetCount: 1,
-    filterCount: bridge.reparsedPreset.filters.length,
-    parameterCount: bridge.reparsedPreset.filters.reduce((total, filter) => total + filter.parameters.length, 0),
-    validation: "reparsed-name-filter-and-parameter-payload-exact",
-    originalCatalogUnmodified: true,
-    mutation: "user-approved-new-file"
-  };
-}
-
 function resolveUniqueImportedEffectPreset(name, category) {
   const result = findImportedEffectPresets(name, category);
   if (result.matches.length !== 1) {
@@ -832,42 +649,6 @@ function resolveUniqueImportedEffectPreset(name, category) {
     throw new Error(`Expected one imported preset match, found ${result.matches.length}.${categories ? ` Candidate categories: ${categories}` : ""}`);
   }
   return { ...result, preset: result.matches[0] };
-}
-
-function inspectImportedEffectPreset(action) {
-  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
-  const { requestedName, requestedCategory, named, matches } = findImportedEffectPresets(action.payload.name, action.payload.category);
-  if (matches.length !== 1) {
-    return {
-      requestedName,
-      requestedCategory,
-      exactMatchCount: matches.length,
-      namedMatchCount: named.length,
-      candidates: named.slice(0, 50).map((preset) => ({ name: preset.name, category: preset.category, filterCount: preset.filters.length })),
-      mutation: "none"
-    };
-  }
-  const preset = matches[0];
-  return {
-    requestedName,
-    requestedCategory,
-    exactMatchCount: 1,
-    preset,
-    summary: {
-      filterCount: preset.filters.length,
-      filters: preset.filters.map((filter) => ({
-        matchName: filter.matchName,
-        displayName: filter.displayName,
-        intrinsic: filter.intrinsic,
-        isAudio: filter.isAudio,
-        audioChannelCount: filter.audioChannelCount,
-        parameterCount: filter.parameters.length,
-        animatedParameterCount: filter.parameters.filter((parameter) => parameter.timeVarying || parameter.keyframes).length,
-        arbitraryParameterCount: filter.parameters.filter((parameter) => parameter.arbitrary).length
-      }))
-    },
-    mutation: "none"
-  };
 }
 
 function parsePrfpsetValue(rawValue, controlType) {
@@ -1137,600 +918,6 @@ function sampleImportedScalarCurve(sourceKeys, offsetSeconds, fps) {
     segmentIndex,
     segmentProgress: progress,
     curve
-  };
-}
-
-function compareImportedTransformWithCapture(action) {
-  if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
-  if (!capturedTransformCurveReference) throw new Error("Capture the manually applied Transform preset from clip A first.");
-  const requestedName = String(action.payload.name || "").trim();
-  const requestedCategory = String(action.payload.category || "").trim().replace(/^Presets\s*>\s*/i, "");
-  const matches = importedEffectPresetCatalog.presets.filter((preset) =>
-    preset.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase() &&
-    preset.category.toLocaleLowerCase() === requestedCategory.toLocaleLowerCase());
-  if (matches.length !== 1) throw new Error(`Expected one exact imported preset, found ${matches.length}.`);
-  // The compared filter follows whatever was captured, so intrinsic Motion and the Transform effect
-  // are both usable. Animated parameters are paired by index rather than assumed to sit at a fixed
-  // one, because Position is index 1 on Transform and index 0 on Motion.
-  const capturedMatchName = capturedTransformCurveReference.matchName;
-  const transform = matches[0].filters.find((filter) => filter.matchName === capturedMatchName);
-  if (!transform) throw new Error(`The imported preset contains no ${capturedMatchName} filter.`);
-  const pointPair = transform.parameters
-    .filter((parameter) => parameter.timeVarying && parameter.keyframes)
-    .map((parameter) => {
-      let keys = null;
-      try { keys = parsePrfpsetKeyframes(parameter); } catch (error) { return null; }
-      if (keys.length < 2 || keys.some((key) => key.value.type !== "point")) return null;
-      const capturedParameter = capturedTransformCurveReference.parameters
-        .find((entry) => entry.index === parameter.index && entry.mode === "animated");
-      return capturedParameter ? { source: parameter, captured: capturedParameter, keys } : null;
-    })
-    .find(Boolean);
-  const source = pointPair ? pointPair.source : null;
-  const captured = pointPair ? pointPair.captured : null;
-  if (!source || !captured) {
-    const scalarComparisons = transform.parameters.filter((parameter) => parameter.timeVarying && parameter.keyframes)
-      .map((scalarSource) => {
-        const scalarCaptured = capturedTransformCurveReference.parameters.find((parameter) => parameter.index === scalarSource.index && parameter.mode === "animated");
-        if (!scalarCaptured || scalarCaptured.samples.some((sample) => sample.value.type !== "number")) return null;
-        const sourceKeys = parsePrfpsetKeyframes(scalarSource);
-        if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "number")) return null;
-        const samples = scalarCaptured.samples.map((sample) => {
-          const derived = sampleImportedScalarCurve(sourceKeys, sample.offsetSeconds, capturedTransformCurveReference.fps);
-          const manual = sample.value.value;
-          const delta = derived.value - manual;
-          return { offsetSeconds: sample.offsetSeconds, manual, derived: derived.value, delta, absoluteError: Math.abs(delta), segmentIndex: derived.segmentIndex, segmentProgress: derived.segmentProgress };
-        });
-        const sumSquares = samples.reduce((sum, sample) => sum + (sample.delta * sample.delta), 0);
-        const worst = samples.reduce((current, sample) => !current || sample.absoluteError > current.absoluteError ? sample : current, null);
-        return {
-          index: scalarSource.index, name: scalarSource.name, importedKeyframeCount: sourceKeys.length,
-          importedDurationSeconds: (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000,
-          capturedDurationSeconds: scalarCaptured.durationSeconds,
-          segmentCurves: sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetScalarCurve([sourceKeys[index], sourceKeys[index + 1]], capturedTransformCurveReference.fps)),
-          sampleCount: samples.length, rootMeanSquareError: Math.sqrt(sumSquares / Math.max(1, samples.length)),
-          maximumAbsoluteError: worst ? worst.absoluteError : 0, worstSample: worst, samples
-        };
-      }).filter(Boolean);
-    if (scalarComparisons.length === 0) throw new Error("No comparable animated Position or scalar Transform parameters were found.");
-    return {
-      preset: { name: matches[0].name, category: matches[0].category },
-      scalarComparisonCount: scalarComparisons.length,
-      scalarComparisons,
-      mutation: "none",
-      comparisonModel: "manual-host-samples-vs-prfpset-speed-influence"
-    };
-  }
-  const sourceKeys = parsePrfpsetKeyframes(source);
-  if (sourceKeys.length < 2 || sourceKeys.some((key) => key.value.type !== "point")) throw new Error("Expected an imported Point curve with at least two keys.");
-  const importedDurationSeconds = (sourceKeys[sourceKeys.length - 1].ticks - sourceKeys[0].ticks) / 254016000000;
-  const segmentCurves = sourceKeys.slice(0, -1).map((_, index) => derivePrfpsetPointCurve([sourceKeys[index], sourceKeys[index + 1]], capturedTransformCurveReference.fps));
-  const samples = captured.samples.map((sample) => {
-    const progress = captured.durationSeconds > 0 ? Math.min(1, sample.offsetSeconds / captured.durationSeconds) : 0;
-    const sampled = sampleImportedPointCurve(sourceKeys, sample.offsetSeconds, capturedTransformCurveReference.fps);
-    const derived = sampled.value;
-    const manual = sample.value.value;
-    const delta = derived.map((value, index) => value - manual[index]);
-    const distance = Math.sqrt(delta.reduce((sum, value) => sum + (value * value), 0));
-    return { offsetSeconds: sample.offsetSeconds, progress, segmentIndex: sampled.segmentIndex, segmentProgress: sampled.segmentProgress, manual, derived, delta, distance };
-  });
-  const sumSquares = samples.reduce((sum, sample) => sum + (sample.distance * sample.distance), 0);
-  const worst = samples.reduce((current, sample) => !current || sample.distance > current.distance ? sample : current, null);
-  return {
-    preset: { name: matches[0].name, category: matches[0].category },
-    matchName: capturedMatchName,
-    parameter: { index: source.index, name: source.name },
-    importedDurationSeconds,
-    capturedDurationSeconds: captured.durationSeconds,
-    importedKeyframeCount: sourceKeys.length,
-    segmentCount: segmentCurves.length,
-    segmentCurves,
-    sampleCount: samples.length,
-    rootMeanSquareDistance: Math.sqrt(sumSquares / Math.max(1, samples.length)),
-    maximumDistance: worst ? worst.distance : 0,
-    worstSample: worst,
-    samples,
-    mutation: "none",
-    comparisonModel: "manual-host-samples-vs-prfpset-speed-influence"
-  };
-}
-
-async function captureTransformCurveReference(action) {
-  // Defaults to the Transform effect, but any match name works, including the intrinsic
-  // `AE.ADBE Motion` that every clip already carries.
-  const matchName = String((action && action.payload && action.payload.matchName) || "").trim() || "AE.ADBE Geometry2";
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before capturing a reference.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before capturing a reference.");
-  const clip = await getSingleSelectedVideoClip(sequence);
-  const chain = await clip.getComponentChain();
-  const resolved = await findLastComponentByMatchName(chain, matchName);
-  if (!resolved) throw new Error(`The selected clip has no ${matchName} component to capture.`);
-  const fps = await getSequenceFramesPerSecond(sequence);
-  const parameterCount = await resolved.component.getParamCount();
-  const parameters = [];
-  for (let parameterIndex = 0; parameterIndex < parameterCount; parameterIndex += 1) {
-    const parameter = await resolved.component.getParam(parameterIndex);
-    const timeVarying = await parameter.isTimeVarying();
-    const times = timeVarying ? Array.from(await parameter.getKeyframeListAsTickTimes()) : [];
-    if (timeVarying && times.length >= 2) {
-      const firstTime = times[0];
-      const lastTime = times[times.length - 1];
-      const durationSeconds = lastTime.seconds - firstTime.seconds;
-      const segmentCount = Math.max(1, Math.min(1200, Math.round(durationSeconds * fps)));
-      const samples = [];
-      for (let frame = 0; frame <= segmentCount; frame += 1) {
-        const offsetSeconds = frame === segmentCount ? durationSeconds : Math.min(durationSeconds, frame / fps);
-        const time = firstTime.add(premiere.TickTime.createWithSeconds(offsetSeconds));
-        const value = normalizeCapturedValue(await parameter.getValueAtTime(time));
-        if (value.type === "unsupported") throw new Error(`Unsupported animated value at Transform parameter ${parameterIndex}.`);
-        samples.push({ offsetSeconds, value });
-      }
-      parameters.push({ index: parameterIndex, displayName: parameter.displayName || null, mode: "animated", durationSeconds, samples });
-    } else {
-      const value = normalizeCapturedValue(await parameter.getStartValue());
-      parameters.push({ index: parameterIndex, displayName: parameter.displayName || null, mode: "static", value });
-    }
-  }
-  capturedTransformCurveReference = {
-    schemaVersion: 2, matchName, fps, parameters
-  };
-  const animated = parameters.filter((item) => item.mode === "animated");
-  const unsupported = parameters.filter((item) => item.mode === "static" && item.value.type === "unsupported");
-  return {
-    captured: true,
-    sourceClipName: await clip.getName(),
-    componentIndex: resolved.index,
-    matchName,
-    parameterCount,
-    staticParameterCount: parameters.length - animated.length,
-    animatedParameterCount: animated.length,
-    unsupportedStaticParameters: unsupported.map((item) => ({ index: item.index, displayName: item.displayName, value: item.value.value })),
-    fps,
-    parameters: parameters.map((item) => item.mode === "animated"
-      ? { index: item.index, displayName: item.displayName, mode: item.mode, durationSeconds: item.durationSeconds, sampleCount: item.samples.length, valueType: item.samples[0].value.type }
-      : { index: item.index, displayName: item.displayName, mode: item.mode, valueType: item.value.type, value: item.value.value }),
-    mutation: "none",
-    captureScope: "in-memory-until-plugin-reload"
-  };
-}
-
-async function applyTransformCurveReference() {
-  if (!capturedTransformCurveReference) throw new Error("Capture the manually applied reference curve first.");
-  const reference = capturedTransformCurveReference;
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before applying the reference.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before applying the reference.");
-  const target = await getSingleSelectedVideoClip(sequence);
-  const targetDuration = await target.getDuration();
-  const longestDuration = Math.max(0, ...reference.parameters.filter((item) => item.mode === "animated").map((item) => item.durationSeconds));
-  if (targetDuration.seconds < longestDuration) throw new Error("The target clip is shorter than the longest captured Transform curve.");
-  const targetInPoint = await target.getInPoint();
-  const chain = await target.getComponentChain();
-  const componentIndex = await chain.getComponentCount();
-  const created = await premiere.VideoFilterFactory.createComponent(reference.matchName);
-  let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    insertionTransactionSucceeded = project.executeTransaction((compound) => {
-      compound.addAction(chain.createAppendComponentAction(created));
-    }, "FX.palette: Insert captured Transform reference");
-  });
-  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the Transform insertion.");
-  const component = await chain.getComponentAtIndex(componentIndex);
-  const preparedParameters = [];
-  const skippedParameters = [];
-  for (const capturedParameter of reference.parameters) {
-    if (capturedParameter.mode === "static" && capturedParameter.value.type === "unsupported") {
-      skippedParameters.push({ index: capturedParameter.index, reason: "unsupported-static-value-type" });
-      continue;
-    }
-    const parameter = await component.getParam(capturedParameter.index);
-    if (capturedParameter.mode === "static") {
-      const keyframe = await parameter.createKeyframe(createHostValue(capturedParameter.value));
-      preparedParameters.push({ capturedParameter, parameter, staticKeyframe: keyframe, animatedKeyframes: [] });
-    } else {
-      const animatedKeyframes = [];
-      for (const sample of capturedParameter.samples) {
-        const keyframe = await parameter.createKeyframe(createHostValue(sample.value));
-        keyframe.position = targetInPoint.add(premiere.TickTime.createWithSeconds(sample.offsetSeconds));
-        await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
-        animatedKeyframes.push(keyframe);
-      }
-      preparedParameters.push({ capturedParameter, parameter, staticKeyframe: null, animatedKeyframes });
-    }
-  }
-  let curveTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    curveTransactionSucceeded = project.executeTransaction((compound) => {
-      preparedParameters.forEach((entry) => {
-        if (entry.capturedParameter.mode === "static") {
-          compound.addAction(entry.parameter.createSetValueAction(entry.staticKeyframe, false));
-        } else {
-          compound.addAction(entry.parameter.createSetTimeVaryingAction(true));
-          entry.animatedKeyframes.forEach((keyframe) => compound.addAction(entry.parameter.createAddKeyframeAction(keyframe)));
-        }
-      });
-    }, "FX.palette: Apply captured Transform curve");
-  });
-  if (!curveTransactionSucceeded) throw new Error("Premiere rejected the captured curve transaction.");
-  const verification = [];
-  for (const entry of preparedParameters) {
-    verification.push({
-      index: entry.capturedParameter.index,
-      displayName: entry.capturedParameter.displayName,
-      mode: entry.capturedParameter.mode,
-      requestedKeyframeCount: entry.animatedKeyframes.length,
-      resultingKeyframeCount: entry.capturedParameter.mode === "animated"
-        ? Array.from(await entry.parameter.getKeyframeListAsTickTimes()).length
-        : 0,
-      resultingStartValue: serializePresetProbeValue(await entry.parameter.getStartValue())
-    });
-  }
-  return {
-    targetClipName: await target.getName(), matchName: reference.matchName,
-    componentIndex, sourceFramesPerSecond: reference.fps, longestSourceCurveSeconds: longestDuration,
-    capturedParameterCount: reference.parameters.length,
-    appliedParameterCount: preparedParameters.length,
-    skippedParameters,
-    verification,
-    insertionTransactionSucceeded, curveTransactionSucceeded,
-    reproductionModel: "frame-sampled-reference-values",
-    undoModelExpected: ["Undo sampled Transform curve", "Undo inserted Transform effect"]
-  };
-}
-
-async function probeVideoEffectParameters(action) {
-  const requestedMatchName = typeof action.payload.matchName === "string"
-    ? action.payload.matchName.trim()
-    : "";
-  if (!requestedMatchName) throw new Error("A video-effect match name is required.");
-
-  const availableMatchNames = await premiere.VideoFilterFactory.getMatchNames();
-  if (!availableMatchNames.includes(requestedMatchName)) {
-    throw new Error("Video-effect match name was not found in the official runtime catalog.");
-  }
-
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before probing effect parameters.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before probing effect parameters.");
-
-  const selection = await sequence.getSelection();
-  const selectedItems = selection ? await selection.getTrackItems() : [];
-  const videoMediaTypes = new Set();
-  const videoTrackCount = await sequence.getVideoTrackCount();
-  for (let index = 0; index < videoTrackCount; index += 1) {
-    const track = await sequence.getVideoTrack(index);
-    videoMediaTypes.add(guidToString(await track.getMediaType()));
-  }
-  const selectedVideoClips = [];
-  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
-    if (videoMediaTypes.has(guidToString(await item.getMediaType()))) selectedVideoClips.push(item);
-  }
-  if (selectedVideoClips.length !== 1) {
-    throw new Error("Select exactly one video clip for the parameter probe.");
-  }
-
-  const clip = selectedVideoClips[0];
-  const chain = await clip.getComponentChain();
-  const componentCountBefore = await chain.getComponentCount();
-  const createdComponent = await premiere.VideoFilterFactory.createComponent(requestedMatchName);
-  let transactionSucceeded = false;
-  project.lockedAccess(() => {
-    const appendAction = chain.createAppendComponentAction(createdComponent);
-    transactionSucceeded = project.executeTransaction((compoundAction) => {
-      compoundAction.addAction(appendAction);
-    }, `FX.palette: Probe parameters for ${requestedMatchName}`);
-  });
-  if (!transactionSucceeded) throw new Error("Premiere rejected the parameter-probe insertion transaction.");
-
-  const componentCountAfter = await chain.getComponentCount();
-  if (componentCountAfter !== componentCountBefore + 1) {
-    throw new Error("Effect insertion could not be verified before parameter inspection.");
-  }
-  const component = await chain.getComponentAtIndex(componentCountBefore);
-  const parameterCount = await component.getParamCount();
-  const parameters = [];
-  for (let index = 0; index < parameterCount; index += 1) {
-    const parameter = await component.getParam(index);
-    const entry = {
-      index,
-      displayName: parameter.displayName || null,
-      keyframesSupported: null,
-      timeVarying: null,
-      startValue: null,
-      startValueReadSucceeded: false
-    };
-    try { entry.keyframesSupported = await parameter.areKeyframesSupported(); } catch (error) {
-      entry.keyframeSupportError = error && error.message ? error.message : String(error);
-    }
-    try { entry.timeVarying = await parameter.isTimeVarying(); } catch (error) {
-      entry.timeVaryingError = error && error.message ? error.message : String(error);
-    }
-    try {
-      entry.startValue = serializePresetProbeValue(await parameter.getStartValue());
-      entry.startValueReadSucceeded = true;
-    } catch (error) {
-      entry.startValueError = error && error.message ? error.message : String(error);
-    }
-    parameters.push(entry);
-  }
-
-  return {
-    clipName: typeof clip.getName === "function" ? await clip.getName() : null,
-    requestedMatchName,
-    verifiedMatchName: await component.getMatchName(),
-    displayName: await component.getDisplayName(),
-    componentIndex: componentCountBefore,
-    componentCountBefore,
-    componentCountAfter,
-    parameterCount,
-    parameters,
-    mutation: "effect-appended-for-inspection",
-    undoModelExpected: ["Undo parameter-probe effect insertion"]
-  };
-}
-
-async function probeStaticVideoEffectParameter(action) {
-  const matchName = typeof action.payload.matchName === "string" ? action.payload.matchName.trim() : "";
-  const parameterIndex = Number(action.payload.parameterIndex);
-  const requestedValue = Number(action.payload.value);
-  if (!matchName) throw new Error("A video-effect match name is required.");
-  if (!Number.isInteger(parameterIndex) || parameterIndex < 0) {
-    throw new Error("Parameter index must be a non-negative integer.");
-  }
-  if (!Number.isFinite(requestedValue)) throw new Error("This probe requires a finite numeric value.");
-  const availableMatchNames = await premiere.VideoFilterFactory.getMatchNames();
-  if (!availableMatchNames.includes(matchName)) {
-    throw new Error("Video-effect match name was not found in the official runtime catalog.");
-  }
-
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before probing a static parameter.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before probing a static parameter.");
-  const selection = await sequence.getSelection();
-  const selectedItems = selection ? await selection.getTrackItems() : [];
-  const videoMediaTypes = new Set();
-  const videoTrackCount = await sequence.getVideoTrackCount();
-  for (let index = 0; index < videoTrackCount; index += 1) {
-    const track = await sequence.getVideoTrack(index);
-    videoMediaTypes.add(guidToString(await track.getMediaType()));
-  }
-  const selectedVideoClips = [];
-  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
-    if (videoMediaTypes.has(guidToString(await item.getMediaType()))) selectedVideoClips.push(item);
-  }
-  if (selectedVideoClips.length !== 1) {
-    throw new Error("Select exactly one video clip for the static-value probe.");
-  }
-
-  const clip = selectedVideoClips[0];
-  const chain = await clip.getComponentChain();
-  const componentCountBefore = await chain.getComponentCount();
-  const createdComponent = await premiere.VideoFilterFactory.createComponent(matchName);
-  const preInsertionParameterSurfaceAvailable = Boolean(
-    createdComponent && typeof createdComponent.getParam === "function"
-  );
-  let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    const appendAction = chain.createAppendComponentAction(createdComponent);
-    insertionTransactionSucceeded = project.executeTransaction((compoundAction) => {
-      compoundAction.addAction(appendAction);
-    }, `FX.palette: Insert effect for static parameter probe`);
-  });
-  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the effect insertion transaction.");
-
-  const component = await chain.getComponentAtIndex(componentCountBefore);
-  const parameterCount = await component.getParamCount();
-  if (parameterIndex >= parameterCount) {
-    throw new Error(`Parameter index ${parameterIndex} is outside the component's ${parameterCount} parameters.`);
-  }
-  const parameter = await component.getParam(parameterIndex);
-  const valueBefore = serializePresetProbeValue(await parameter.getStartValue());
-  const keyframe = await parameter.createKeyframe(requestedValue);
-  let valueTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    const setValueAction = parameter.createSetValueAction(keyframe, false);
-    valueTransactionSucceeded = project.executeTransaction((compoundAction) => {
-      compoundAction.addAction(setValueAction);
-    }, `FX.palette: Set static preset parameter`);
-  });
-  if (!valueTransactionSucceeded) throw new Error("Premiere rejected the static parameter transaction.");
-  const valueAfter = serializePresetProbeValue(await parameter.getStartValue());
-
-  return {
-    clipName: typeof clip.getName === "function" ? await clip.getName() : null,
-    matchName,
-    displayName: await component.getDisplayName(),
-    componentIndex: componentCountBefore,
-    parameterIndex,
-    parameterDisplayName: parameter.displayName || null,
-    requestedValue,
-    valueBefore,
-    valueAfter,
-    timeVaryingAfter: await parameter.isTimeVarying(),
-    preInsertionParameterSurfaceAvailable,
-    singleTransactionPreparationStatus: preInsertionParameterSurfaceAvailable
-      ? "runtime-extension-detected-not-used"
-      : "unavailable-on-documented-VideoFilterComponent-surface",
-    insertionTransactionSucceeded,
-    valueTransactionSucceeded,
-    verificationRequiresHostValueReview: true,
-    undoModelExpected: [
-      "Undo static parameter value",
-      "Undo diagnostic effect insertion"
-    ]
-  };
-}
-
-async function probeAnimatedVideoEffectParameter(action) {
-  const matchName = typeof action.payload.matchName === "string" ? action.payload.matchName.trim() : "";
-  const parameterIndex = Number(action.payload.parameterIndex);
-  const firstValue = Number(action.payload.firstValue);
-  const secondValue = Number(action.payload.secondValue);
-  const interpolationName = typeof action.payload.interpolationName === "string"
-    ? action.payload.interpolationName.trim().toUpperCase()
-    : "DEFAULT";
-  const interpolationNames = ["DEFAULT", "LINEAR", "HOLD", "BEZIER", "TIME", "TIME_TRANSITION_START", "TIME_TRANSITION_END"];
-  const approximateBezier = action.payload.approximateBezier === true || action.payload.approximateBezier === "true";
-  const sampleEveryFrame = action.payload.sampleEveryFrame === true || action.payload.sampleEveryFrame === "true";
-  let approximationSamples = Math.max(3, Math.min(120, Number(action.payload.approximationSamples) || 30));
-  const bezierControls = ["x1", "y1", "x2", "y2"].map((key) => Number(action.payload[key]));
-  if (!matchName) throw new Error("A video-effect match name is required.");
-  if (!Number.isInteger(parameterIndex) || parameterIndex < 0) throw new Error("Parameter index must be a non-negative integer.");
-  if (!Number.isFinite(firstValue) || !Number.isFinite(secondValue)) throw new Error("Both keyframe values must be finite numbers.");
-  if (!interpolationNames.includes(interpolationName)) throw new Error("Interpolation mode is not allowlisted.");
-  if (approximateBezier && (interpolationName !== "BEZIER" || bezierControls.some((value) => !Number.isFinite(value)))) {
-    throw new Error("Bezier approximation requires BEZIER mode and four finite control values.");
-  }
-  if (!(await premiere.VideoFilterFactory.getMatchNames()).includes(matchName)) throw new Error("Video-effect match name was not found in the official runtime catalog.");
-
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before probing animated parameters.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before probing animated parameters.");
-  let sequenceFramesPerSecond = null;
-  if (approximateBezier && sampleEveryFrame) {
-    try {
-      sequenceFramesPerSecond = await getSequenceFramesPerSecond(sequence);
-      approximationSamples = Math.max(3, Math.min(120, Math.round(sequenceFramesPerSecond)));
-    } catch (_) { /* Explicit segment count remains the safe fallback. */ }
-  }
-  const selection = await sequence.getSelection();
-  const selectedItems = selection ? await selection.getTrackItems() : [];
-  const videoMediaTypes = new Set();
-  for (let index = 0; index < await sequence.getVideoTrackCount(); index += 1) {
-    videoMediaTypes.add(guidToString(await (await sequence.getVideoTrack(index)).getMediaType()));
-  }
-  const clips = [];
-  for (const item of Array.isArray(selectedItems) ? selectedItems : []) {
-    if (videoMediaTypes.has(guidToString(await item.getMediaType()))) clips.push(item);
-  }
-  if (clips.length !== 1) throw new Error("Select exactly one video clip for the animated-value probe.");
-
-  const clip = clips[0];
-  const duration = await clip.getDuration();
-  if (duration.seconds <= 1) throw new Error("Select a video clip longer than one second.");
-  const chain = await clip.getComponentChain();
-  const componentIndex = await chain.getComponentCount();
-  const createdComponent = await premiere.VideoFilterFactory.createComponent(matchName);
-  let insertionTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    const actionToAdd = chain.createAppendComponentAction(createdComponent);
-    insertionTransactionSucceeded = project.executeTransaction((compoundAction) => compoundAction.addAction(actionToAdd), "FX.palette: Insert effect for keyframe probe");
-  });
-  if (!insertionTransactionSucceeded) throw new Error("Premiere rejected the effect insertion transaction.");
-
-  const component = await chain.getComponentAtIndex(componentIndex);
-  const parameterCount = await component.getParamCount();
-  if (parameterIndex >= parameterCount) throw new Error(`Parameter index ${parameterIndex} is outside the component's ${parameterCount} parameters.`);
-  const parameter = await component.getParam(parameterIndex);
-  if (!(await parameter.areKeyframesSupported())) throw new Error("The selected parameter does not support keyframes.");
-
-  const clipInPoint = await clip.getInPoint();
-  const firstTime = premiere.TickTime.createWithTicks(clipInPoint.ticks);
-  const secondTime = clipInPoint.add(premiere.TickTime.createWithSeconds(1));
-  const firstKeyframe = await parameter.createKeyframe(firstValue);
-  const secondKeyframe = await parameter.createKeyframe(secondValue);
-  firstKeyframe.position = firstTime;
-  secondKeyframe.position = secondTime;
-  let interpolationPreparation = null;
-  if (interpolationName !== "DEFAULT") {
-    const interpolationMode = approximateBezier
-      ? premiere.Constants.InterpolationMode.LINEAR
-      : premiere.Constants.InterpolationMode[interpolationName];
-    interpolationPreparation = {
-      method: "Keyframe.setTemporalInterpolationMode",
-      firstSucceeded: await firstKeyframe.setTemporalInterpolationMode(interpolationMode),
-      secondSucceeded: await secondKeyframe.setTemporalInterpolationMode(interpolationMode)
-    };
-  }
-  const helperKeyframes = [];
-  if (approximateBezier) {
-    const [x1, y1, x2, y2] = bezierControls;
-    for (let sample = 1; sample < approximationSamples; sample += 1) {
-      const linearProgress = sample / approximationSamples;
-      const easedProgress = cubicBezierProgress(linearProgress, x1, y1, x2, y2);
-      const helper = await parameter.createKeyframe(firstValue + ((secondValue - firstValue) * easedProgress));
-      helper.position = firstTime.add(premiere.TickTime.createWithSeconds(linearProgress));
-      const interpolationSucceeded = await helper.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR);
-      helperKeyframes.push({ helper, interpolationSucceeded });
-    }
-  }
-  let keyframeTransactionSucceeded = false;
-  project.lockedAccess(() => {
-    const timeVaryingAction = parameter.createSetTimeVaryingAction(true);
-    const firstAction = parameter.createAddKeyframeAction(firstKeyframe);
-    const secondAction = parameter.createAddKeyframeAction(secondKeyframe);
-    const helperActions = helperKeyframes.map((entry) => parameter.createAddKeyframeAction(entry.helper));
-    keyframeTransactionSucceeded = project.executeTransaction((compoundAction) => {
-      compoundAction.addAction(timeVaryingAction);
-      compoundAction.addAction(firstAction);
-      helperActions.forEach((helperAction) => compoundAction.addAction(helperAction));
-      compoundAction.addAction(secondAction);
-    }, "FX.palette: Add preset keyframes");
-  });
-  if (!keyframeTransactionSucceeded) throw new Error("Premiere rejected the keyframe transaction.");
-
-  const keyframeTimes = await parameter.getKeyframeListAsTickTimes();
-  const keyframes = [];
-  for (const time of keyframeTimes) {
-    const keyframe = await parameter.getKeyframePtr(time);
-    keyframes.push({
-      seconds: time.seconds,
-      ticks: time.ticks,
-      value: serializePresetProbeValue(await parameter.getValueAtTime(time)),
-      interpolationMode: typeof keyframe.getTemporalInterpolationMode === "function"
-        ? await keyframe.getTemporalInterpolationMode()
-        : null
-    });
-  }
-  return {
-    clipName: await clip.getName(),
-    matchName,
-    displayName: await component.getDisplayName(),
-    componentIndex,
-    parameterIndex,
-    parameterDisplayName: parameter.displayName || null,
-    clipInPoint: { seconds: clipInPoint.seconds, ticks: clipInPoint.ticks },
-    requestedKeyframes: [
-      { seconds: firstTime.seconds, ticks: firstTime.ticks, value: firstValue },
-      { seconds: secondTime.seconds, ticks: secondTime.ticks, value: secondValue }
-    ],
-    requestedInterpolationName: interpolationName,
-    requestedInterpolationValue: interpolationName === "DEFAULT"
-      ? null
-      : premiere.Constants.InterpolationMode[interpolationName],
-    interpolationPreparation,
-    bezierApproximation: approximateBezier ? {
-      strategy: "linear-helper-keyframes",
-      controls: { x1: bezierControls[0], y1: bezierControls[1], x2: bezierControls[2], y2: bezierControls[3] },
-      segmentSeconds: 1,
-      requestedSamples: approximationSamples,
-      sampleEveryFrame,
-      detectedSequenceFramesPerSecond: sequenceFramesPerSecond,
-      expectedHelperKeyframes: approximationSamples - 1,
-      helperInterpolationPreparationSucceeded: helperKeyframes.every((entry) => entry.interpolationSucceeded === true),
-      fidelity: "sampled-approximation-not-native-bezier-handles"
-    } : null,
-    runtimeInterpolationConstants: {
-      LINEAR: premiere.Constants.InterpolationMode.LINEAR,
-      HOLD: premiere.Constants.InterpolationMode.HOLD,
-      BEZIER: premiere.Constants.InterpolationMode.BEZIER,
-      TIME: premiere.Constants.InterpolationMode.TIME,
-      TIME_TRANSITION_START: premiere.Constants.InterpolationMode.TIME_TRANSITION_START,
-      TIME_TRANSITION_END: premiere.Constants.InterpolationMode.TIME_TRANSITION_END
-    },
-    timeVaryingAfter: await parameter.isTimeVarying(),
-    keyframeCountAfter: keyframes.length,
-    keyframes,
-    insertionTransactionSucceeded,
-    keyframeTransactionSucceeded,
-    timingModelUnderTest: "clip-source-time-anchored-at-track-item-in-point",
-    undoModelExpected: ["Undo time-varying state and both keyframes", "Undo diagnostic effect insertion"]
   };
 }
 
@@ -2048,6 +1235,25 @@ async function createNestFromSelection(action) {
   const sourceSequence = await project.getActiveSequence();
   if (!sourceSequence) throw new Error("Open a sequence before creating a Nest.");
 
+  // motrackerPerformNest also returns two live (non-JSON-serializable) object references for the
+  // Motion Tracker's own caller - strip them here, they can't cross the transport boundary.
+  const { createdSequenceObject, insertedInstanceObjects, ...serializable } =
+    await motrackerPerformNest(project, sourceSequence, requestedName, binName);
+  return serializable;
+}
+
+// Extracted from createNestFromSelection's own body (it's now a thin wrapper above, unchanged
+// behavior) so the Motion Tracker's Nest-and-normalize step (see TECHNICAL_PLAN.md's Motion
+// Tracker slice) can reuse the exact same, already host-tested nest-creation mechanics rather than
+// re-deriving them - deliberately NOT re-implemented from the API docs a second time, after this
+// project's own history of a different Selection-related API (TrackItemSelection.
+// createEmptySelection/addItem) hanging the plugin the one other time this codebase tried to
+// build something new on top of a plausible-looking but never-actually-exercised primitive.
+// Returns the same serializable diagnostic shape createNestFromSelection always returned, PLUS two
+// live (non-serializable) object references the caller needs for further work - `createdSequenceObject`
+// and `insertedInstanceObjects` - which createNestFromSelection's own wrapper strips back out
+// before handing the result to the transport (a live Premiere object can't cross that boundary).
+async function motrackerPerformNest(project, sourceSequence, requestedName, binName) {
   const selection = await sourceSequence.getSelection();
   const selectedItems = selection ? await selection.getTrackItems() : [];
   if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
@@ -2195,6 +1401,11 @@ async function createNestFromSelection(action) {
     })(),
     originalSelectionExpectedRemoved: true,
     nestedItemExpectedInserted: true,
+    // Live object references for callers that need to keep working with the result (the Motion
+    // Tracker's own Nest-and-normalize step) - see this function's own docstring. Not serializable,
+    // stripped by createNestFromSelection's wrapper before anything crosses the transport.
+    createdSequenceObject: createdSequence,
+    insertedInstanceObjects: insertedInstances,
     undoModelExpected: [
       "Undo move into bin",
       "Undo Timeline instance rename transaction",
@@ -2267,16 +1478,28 @@ async function findProjectItemByTreePath(project, treePath) {
 // CEP's host.jsx builds all five generic items from documented ExtendScript/QE-DOM factory calls
 // (app.project.newBarsAndTone, qe.project.newColorMatte, etc.), none of which UXP has an equivalent
 // for. The template-import trick (_importAdjustmentLayerFromTemplate, host.jsx) ports cleanly since
-// Project.importSequences is documented UXP too - tools/template_generator (a throwaway CEP dev
-// panel, since QE DOM is unreachable from UXP's own JS scope) builds the same kind of
-// wrapper-sequence template for bars_and_tone/black_video/transparent_video into
-// generic_item_templates.json. Color Matte is deliberately excluded: neither CEP nor UXP has any
-// way to set its color after creation, so a template built once could never be recolored per use.
+// Project.importSequences is documented UXP too: the bundled template .prproj carries a
+// wrapper-sequence per resolution for bars_and_tone/black_video/transparent_video, mapped by
+// generic_item_templates.json (those sequences were batch-built once by a throwaway CEP dev panel,
+// removed after; see the sixth slice in TECHNICAL_PLAN.md). Color Matte is deliberately excluded:
+// neither CEP nor UXP has any way to set its color after creation, so a template built once could
+// never be recolored per use.
 const GENERIC_ITEM_TEMPLATES = {
   adjustment_layer: { configKey: "adjustmentLayer", displayLabel: "Adjustment Layer" },
   bars_and_tone: { configKey: "barsAndTone", displayLabel: "Bars and Tone" },
   black_video: { configKey: "blackVideo", displayLabel: "Black Video" },
   transparent_video: { configKey: "transparentVideo", displayLabel: "Transparent Video" }
+};
+
+// Which Timeline track type(s) each generic item actually places a clip on - known statically
+// (they're fixed templates, not arbitrary media), unlike a favorite or Project-panel item, which
+// could be anything. checkTrackAvailability uses this to avoid asking the companion to create a
+// track type an item was never going to use in the first place.
+const GENERIC_ITEM_MEDIA_KINDS = {
+  adjustment_layer: { video: true, audio: false },
+  bars_and_tone: { video: true, audio: true },
+  black_video: { video: true, audio: false },
+  transparent_video: { video: true, audio: false }
 };
 
 async function readBundledTemplateJson(relativePath) {
@@ -2803,6 +2026,41 @@ async function selectionVideoSpan(sequence) {
   return { startTicks: minStart, endTicks: maxEnd, count };
 }
 
+// Read-only pre-flight for the companion's own "no free track -> drive Add Tracks... first" flow
+// (UXP has no API to create a Timeline track itself, so that has to happen via a native keystroke
+// before insertion, not after - trying to undo an already-committed insertion instead was tried
+// first and caused a real host hang, see TECHNICAL_PLAN.md). Deliberately checks at the current
+// playhead rather than reproducing insertSelectedProjectItem's selection-span logic: this only ever
+// decides whether to bother creating a track before the real insertion, which still runs its own
+// exact (and unchanged) availability check regardless, so an imprecise pre-check here can only ever
+// cost a redundant "add track" round trip, never a wrong final placement.
+async function checkTrackAvailability(action) {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("Open a project before checking Timeline tracks.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Open a sequence before checking Timeline tracks.");
+
+  const genericKey = typeof action.payload.genericKey === "string" ? action.payload.genericKey.trim() : "";
+  // Only a known generic item's fixed template tells us for sure which media kind(s) it needs -
+  // a favorite or Project-panel item is arbitrary media, so both kinds are assumed needed for
+  // those rather than guessing from e.g. a file extension.
+  const mediaKinds = GENERIC_ITEM_MEDIA_KINDS[genericKey] || { video: true, audio: true };
+
+  const resolvedTracks = await resolveInsertionTracks(sequence);
+  const insertionTicks = BigInt((await sequence.getPlayerPosition()).ticks);
+  const videoTrackResult = await findAvailableVideoTrackAtTicks(sequence, resolvedTracks.videoTrackIndex, insertionTicks);
+  const audioTrackResult = await findAvailableAudioTrackAtTicks(sequence, resolvedTracks.audioTrackIndex, insertionTicks);
+
+  return {
+    needsVideo: mediaKinds.video,
+    needsAudio: mediaKinds.audio,
+    videoAvailable: videoTrackResult.hadAvailableTrack,
+    audioAvailable: audioTrackResult.hadAvailableTrack,
+    videoTrackIndex: resolvedTracks.videoTrackIndex,
+    audioTrackIndex: resolvedTracks.audioTrackIndex
+  };
+}
+
 async function insertSelectedProjectItem(action) {
   const editMode = action.payload.editMode === "OVERWRITE" ? "OVERWRITE" : "INSERT";
   const treePath = typeof action.payload.treePath === "string" ? action.payload.treePath.trim() : "";
@@ -2881,10 +2139,6 @@ async function insertSelectedProjectItem(action) {
   const audioTrackResult = await findAvailableAudioTrackAtTicks(sequence, audioTrackIndex, insertionTicks);
   videoTrackIndex = videoTrackResult.index;
   audioTrackIndex = audioTrackResult.index;
-  const trackFallback = {
-    video: !videoTrackResult.hadAvailableTrack,
-    audio: !audioTrackResult.hadAvailableTrack
-  };
 
   const instancesBefore = await findProjectItemInstancesAtTime(sequence, projectItemId, insertionTime);
   const editor = premiere.SequenceEditor.getEditor(sequence);
@@ -2935,6 +2189,18 @@ async function insertSelectedProjectItem(action) {
     }
   }
 
+  const insertedInstances = instancesAfter.slice(instancesBefore.length);
+  // videoTrackResult/audioTrackResult are computed unconditionally for every insertion (Premiere's
+  // own createInsertProjectItemAction takes both track indices regardless of what the item actually
+  // contains), so an occupied video track would read as a "fallback" even for an audio-only item
+  // that never touched a video track at all. Cross-checking against what actually landed
+  // (insertedInstances' own mediaKind) is what keeps a fallback flag limited to a media kind this
+  // specific insertion really needed a track for.
+  const trackFallback = {
+    video: !videoTrackResult.hadAvailableTrack && insertedInstances.some((entry) => entry.mediaKind === "video"),
+    audio: !audioTrackResult.hadAvailableTrack && insertedInstances.some((entry) => entry.mediaKind === "audio")
+  };
+
   return {
     projectItem: {
       id: projectItemId,
@@ -2948,14 +2214,15 @@ async function insertSelectedProjectItem(action) {
     spanSelection: span ? { startTicks: span.startTicks.toString(), endTicks: span.endTicks.toString(), sourceItemCount: span.count } : null,
     spanTrimSucceeded,
     requestedTracks: { videoTrackIndex, audioTrackIndex },
-    // true when every existing track at the target time/range was occupied and UXP has no way to
-    // create a new one, so the item was placed on the last existing track anyway (see the comment
-    // above findAvailableVideoTrackAtTicks) - a confirmed platform limit, not a bug.
+    // true only when this insertion actually placed a clip of that media kind AND every existing
+    // track of that kind at the target time/range was occupied, so UXP had no way to create a new
+    // one and placed the item on the last existing track instead (see the comment above
+    // findAvailableVideoTrackAtTicks) - a confirmed platform limit, not a bug.
     trackFallback,
     matchingInstanceCountBefore: instancesBefore.length,
     matchingInstanceCountAfter: instancesAfter.length,
     insertedInstanceCount,
-    insertedInstances: instancesAfter.slice(instancesBefore.length),
+    insertedInstances,
     verificationSucceeded: insertedInstanceCount > 0,
     transactionSucceeded,
     undoable: true
@@ -3269,240 +2536,6 @@ async function readDiagnostics() {
   return result;
 }
 
-function render(result) {
-  const data = result.ok ? result.data : null;
-  text("host-name", data && data.host.name);
-  text("host-version", data && data.host.version);
-  text("uxp-version", data && data.host.uxpVersion);
-  text("project-name", data && data.project && data.project.name);
-  text("project-guid", data && data.project && data.project.guid);
-  text("sequence-name", data && data.sequence && data.sequence.name);
-  text("sequence-guid", data && data.sequence && data.sequence.guid);
-  text("selection-count", data && data.timelineSelection.count);
-  text("project-selection-count", data && data.projectSelection.count);
-  text("timeline-selection-count", data && data.timelineSelection.count);
-  text("project-selection-output", JSON.stringify(data ? data.projectSelection.items : [], null, 2));
-  text("timeline-selection-output", JSON.stringify(data ? data.timelineSelection.items : [], null, 2));
-  text("video-effect-count", data && data.catalogs.videoEffects.count);
-  text("audio-effect-count", data && data.catalogs.audioEffects.count);
-  text("video-transition-count", data && data.catalogs.videoTransitions.count);
-  text("serialized-output", JSON.stringify(result, null, 2));
-
-  const status = document.getElementById("status");
-  if (!status) return;
-  status.classList.toggle("error", !result.ok);
-  status.textContent = result.ok ? "Diagnostics refreshed." : result.error.message;
-}
-
-async function refresh() {
-  const button = document.getElementById("refresh");
-  if (button) button.disabled = true;
-  text("status", "Reading Premiere context…");
-
-  const result = await executionAdapter.execute(
-    { type: "diagnostics.read", requestId: String(Date.now()), payload: {} },
-    { "diagnostics.read": readDiagnostics }
-  );
-  render(result);
-  if (button) button.disabled = false;
-}
-
-async function runApplyVideoEffect() {
-  const button = document.getElementById("apply-video-effect");
-  const input = document.getElementById("video-effect-match-name");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.applyVideoEffect",
-      requestId: String(Date.now()),
-      payload: { matchName: input ? input.value : "" }
-    },
-    { "timeline.applyVideoEffect": applyVideoEffectToSelection }
-  );
-
-  text("effect-action-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runProbeVideoEffectParameters() {
-  const button = document.getElementById("probe-video-effect-parameters");
-  const input = document.getElementById("video-effect-match-name");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.probeVideoEffectParameters",
-      requestId: String(Date.now()),
-      payload: { matchName: input ? input.value : "" }
-    },
-    { "timeline.probeVideoEffectParameters": probeVideoEffectParameters }
-  );
-  text("effect-parameter-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runProbeStaticVideoEffectParameter() {
-  const button = document.getElementById("probe-static-video-effect-parameter");
-  const matchNameInput = document.getElementById("video-effect-match-name");
-  const parameterIndexInput = document.getElementById("static-parameter-index");
-  const valueInput = document.getElementById("static-parameter-value");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.probeStaticVideoEffectParameter",
-      requestId: String(Date.now()),
-      payload: {
-        matchName: matchNameInput ? matchNameInput.value : "",
-        parameterIndex: parameterIndexInput ? parameterIndexInput.value : "0",
-        value: valueInput ? valueInput.value : "20"
-      }
-    },
-    { "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter }
-  );
-  text("effect-parameter-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runProbeAnimatedVideoEffectParameter() {
-  const button = document.getElementById("probe-animated-video-effect-parameter");
-  const matchNameInput = document.getElementById("video-effect-match-name");
-  const parameterIndexInput = document.getElementById("static-parameter-index");
-  const firstValueInput = document.getElementById("animated-first-value");
-  const secondValueInput = document.getElementById("animated-second-value");
-  const interpolationInput = document.getElementById("animated-interpolation-mode");
-  const approximationInput = document.getElementById("approximate-bezier-easing");
-  const approximationSamplesInput = document.getElementById("bezier-approximation-samples");
-  const sampleEveryFrameInput = document.getElementById("bezier-sample-every-frame");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.probeAnimatedVideoEffectParameter",
-    requestId: String(Date.now()),
-    payload: {
-      matchName: matchNameInput ? matchNameInput.value : "",
-      parameterIndex: parameterIndexInput ? parameterIndexInput.value : "0",
-      firstValue: firstValueInput ? firstValueInput.value : "10",
-      secondValue: secondValueInput ? secondValueInput.value : "20",
-      interpolationName: interpolationInput ? interpolationInput.value : "DEFAULT",
-      approximateBezier: approximationInput ? approximationInput.checked : false,
-      approximationSamples: approximationSamplesInput ? approximationSamplesInput.value : "30",
-      sampleEveryFrame: sampleEveryFrameInput ? sampleEveryFrameInput.checked : true,
-      x1: "0.625",
-      y1: "0",
-      x2: "0.375",
-      y2: "1"
-    }
-  }, { "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter });
-  text("effect-parameter-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runCaptureTransformCurveReference() {
-  const button = document.getElementById("capture-transform-reference");
-  const matchNameInput = document.getElementById("capture-reference-match-name");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.captureTransformCurveReference", requestId: String(Date.now()),
-    payload: { matchName: matchNameInput ? matchNameInput.value : "" }
-  }, { "timeline.captureTransformCurveReference": captureTransformCurveReference });
-  text("transform-reference-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runApplyTransformCurveReference() {
-  const button = document.getElementById("apply-transform-reference");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.applyTransformCurveReference", requestId: String(Date.now()), payload: {}
-  }, { "timeline.applyTransformCurveReference": applyTransformCurveReference });
-  text("transform-reference-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runImportPrfpsetCatalog() {
-  const button = document.getElementById("import-prfpset-catalog");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "catalog.effectPresets.importPrfpset", requestId: String(Date.now()), payload: {}
-  }, { "catalog.effectPresets.importPrfpset": importPrfpsetCatalog });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runInspectImportedEffectPreset() {
-  const button = document.getElementById("inspect-imported-prfpset");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "catalog.effectPresets.inspectImported",
-    requestId: String(Date.now()),
-    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
-  }, { "catalog.effectPresets.inspectImported": inspectImportedEffectPreset });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runInspectPresetBridgeCandidate() {
-  const button = document.getElementById("inspect-preset-bridge-candidate");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "catalog.effectPresets.inspectBridgeCandidate",
-    requestId: String(Date.now()),
-    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
-  }, { "catalog.effectPresets.inspectBridgeCandidate": inspectImportedPresetBridgeCandidate });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runExportPresetBridge() {
-  const button = document.getElementById("export-preset-bridge");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "catalog.effectPresets.exportBridge",
-    requestId: String(Date.now()),
-    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
-  }, { "catalog.effectPresets.exportBridge": exportImportedPresetBridge });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function inspectSelectedVideoComponents() {
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("Open a project before inspecting components.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("Open a sequence before inspecting components.");
-  const clip = await getSingleSelectedVideoClip(sequence);
-  const chain = await clip.getComponentChain();
-  const componentCount = await chain.getComponentCount();
-  const components = [];
-  for (let componentIndex = 0; componentIndex < componentCount; componentIndex += 1) {
-    const component = await chain.getComponentAtIndex(componentIndex);
-    const parameterCount = await component.getParamCount();
-    const parameters = [];
-    for (let parameterIndex = 0; parameterIndex < parameterCount; parameterIndex += 1) {
-      const parameter = await component.getParam(parameterIndex);
-      parameters.push({
-        index: parameterIndex,
-        displayName: parameter.displayName || null,
-        timeVarying: await parameter.isTimeVarying(),
-        startValue: serializePresetProbeValue(await parameter.getStartValue())
-      });
-    }
-    components.push({
-      index: componentIndex,
-      matchName: typeof component.getMatchName === "function" ? await component.getMatchName() : null,
-      displayName: typeof component.getDisplayName === "function" ? await component.getDisplayName() : null,
-      parameterCount,
-      parameters
-    });
-  }
-  return { clipName: await clip.getName(), componentCount, components, mutation: "none" };
-}
-
 async function applyImportedEffectPreset(action) {
   if (!importedEffectPresetCatalog) throw new Error("Import a .prfpset catalog first.");
   const { preset } = resolveUniqueImportedEffectPreset(action.payload.name, action.payload.category);
@@ -3755,378 +2788,704 @@ async function applyImportedEffectPreset(action) {
   };
 }
 
-async function runApplyImportedEffectPreset() {
-  const button = document.getElementById("apply-imported-effect-preset");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  const reconstructEasingInput = document.getElementById("prfpset-reconstruct-easing");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.applyImportedEffectPreset", requestId: String(Date.now()),
-    payload: {
-      name: nameInput ? nameInput.value : "",
-      category: categoryInput ? categoryInput.value : "",
-      reconstructEasing: Boolean(reconstructEasingInput && reconstructEasingInput.checked)
-    }
-  }, { "timeline.applyImportedEffectPreset": applyImportedEffectPreset });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
+// --- Motion Tracker (ported from pFX-Tracker_UXP/uxp/premiere.js, read-only reference project -
+// see TECHNICAL_PLAN.md's Motion Tracker slice) -------------------------------------------------
+//
+// getClipInfo/applyTrack mirror the CEP product's own jsx/host.jsx mt_getClipInfo/mt_applyTrack,
+// ported onto the official premierepro module instead of ExtendScript + the undocumented QE DOM.
+// guidToString already exists above (line 19) and is reused as-is - everything else here is new.
+
+function motrackerNorm(s) {
+  return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-async function runCompareImportedTransformPreset() {
-  const button = document.getElementById("compare-imported-transform-preset");
-  const nameInput = document.getElementById("prfpset-preset-name");
-  const categoryInput = document.getElementById("prfpset-preset-category");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "catalog.effectPresets.compareImportedTransform",
-    requestId: String(Date.now()),
-    payload: { name: nameInput ? nameInput.value : "", category: categoryInput ? categoryInput.value : "" }
-  }, { "catalog.effectPresets.compareImportedTransform": compareImportedTransformWithCapture });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
+const MOTRACKER_TRANSFORM_MATCH_NAME = "AE.ADBE Geometry2";
 
-async function runInspectSelectedVideoComponents() {
-  const button = document.getElementById("inspect-selected-video-components");
-  if (button) button.disabled = true;
-  const result = await executionAdapter.execute({
-    type: "timeline.inspectSelectedVideoComponents", requestId: String(Date.now()), payload: {}
-  }, { "timeline.inspectSelectedVideoComponents": inspectSelectedVideoComponents });
-  text("prfpset-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runApplyAudioEffect() {
-  const button = document.getElementById("apply-audio-effect");
-  const input = document.getElementById("audio-effect-display-name");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.applyAudioEffect",
-      requestId: String(Date.now()),
-      payload: { displayName: input ? input.value : "" }
-    },
-    { "timeline.applyAudioEffect": applyAudioEffectToSelection }
-  );
-
-  text("audio-effect-action-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runApplyVideoTransition() {
-  const button = document.getElementById("apply-video-transition");
-  const matchNameInput = document.getElementById("video-transition-match-name");
-  const positionInput = document.getElementById("video-transition-position");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.applyVideoTransition",
-      requestId: String(Date.now()),
-      payload: {
-        matchName: matchNameInput ? matchNameInput.value : "",
-        position: positionInput ? positionInput.value : "START"
-      }
-    },
-    { "timeline.applyVideoTransition": applyVideoTransitionToSelection }
-  );
-
-  text("video-transition-action-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runCreateSubsequence() {
-  const button = document.getElementById("create-subsequence");
-  const input = document.getElementById("subsequence-name");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.createSubsequence",
-      requestId: String(Date.now()),
-      payload: { name: input ? input.value : "" }
-    },
-    { "timeline.createSubsequence": createSubsequenceFromSelection }
-  );
-
-  text("subsequence-action-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runCreateNest() {
-  const button = document.getElementById("create-nest");
-  const input = document.getElementById("subsequence-name");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.createNest",
-      requestId: String(Date.now()),
-      payload: { name: input ? input.value : "" }
-    },
-    { "timeline.createNest": createNestFromSelection }
-  );
-
-  text("subsequence-action-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runInsertProjectItem() {
-  const button = document.getElementById("insert-project-item");
-  const editModeInput = document.getElementById("project-item-edit-mode");
-  const videoTrackInput = document.getElementById("project-item-video-track");
-  const audioTrackInput = document.getElementById("project-item-audio-track");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.insertProjectItem",
-      requestId: String(Date.now()),
-      payload: {
-        editMode: editModeInput ? editModeInput.value : "INSERT",
-        videoTrackIndex: videoTrackInput ? videoTrackInput.value : "0",
-        audioTrackIndex: audioTrackInput ? audioTrackInput.value : "0"
-      }
-    },
-    { "timeline.insertProjectItem": insertSelectedProjectItem }
-  );
-
-  text("project-item-insertion-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runInsertGenericItem() {
-  const button = document.getElementById("insert-generic-item");
-  const videoTrackInput = document.getElementById("project-item-video-track");
-  const audioTrackInput = document.getElementById("project-item-audio-track");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "timeline.insertGenericItem",
-      requestId: String(Date.now()),
-      payload: {
-        videoTrackIndex: videoTrackInput ? videoTrackInput.value : "0",
-        audioTrackIndex: audioTrackInput ? audioTrackInput.value : "0"
-      }
-    },
-    { "timeline.insertGenericItem": insertGenericItemAcrossSelection }
-  );
-
-  text("project-item-insertion-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
-}
-
-async function runResolveVideoEffectCatalog() {
-  const button = document.getElementById("resolve-video-effect-catalog");
-  if (button) button.disabled = true;
-  text("catalog-resolution-status", "Probing official effect identity capabilities…");
-
-  const result = await executionAdapter.execute(
-    {
-      type: "catalog.videoEffects.resolve",
-      requestId: String(Date.now()),
-      payload: {}
-    },
-    { "catalog.videoEffects.resolve": resolveVideoEffectCatalog }
-  );
-
-  if (result.ok) {
-    text(
-      "catalog-resolution-status",
-      `Probe: ${result.data.status}. ${result.data.matchNameCount} match name(s), ${result.data.displayNameCount} display name(s), completed in ${result.data.durationMs} ms.`
-    );
-    text("catalog-resolution-output", JSON.stringify(result.data, null, 2));
-  } else {
-    text("catalog-resolution-status", result.error.message);
-    text("catalog-resolution-output", JSON.stringify(result, null, 2));
+async function motrackerGetVideoMediaTypes(sequence) {
+  const count = await sequence.getVideoTrackCount();
+  const types = new Set();
+  for (let i = 0; i < count; i += 1) {
+    const track = await sequence.getVideoTrack(i);
+    types.add(guidToString(await track.getMediaType()));
   }
-  if (button) button.disabled = false;
+  return types;
 }
 
-async function runReadVideoTransitionCatalog() {
-  const button = document.getElementById("read-video-transition-catalog");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "catalog.videoTransitions.read",
-      requestId: String(Date.now()),
-      payload: {}
-    },
-    { "catalog.videoTransitions.read": readVideoTransitionCatalog }
-  );
-
-  text("video-transition-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
+/** First selected TrackItem that sits on a video track, or null. */
+async function motrackerGetSelectedVideoClip(sequence) {
+  const selection = await sequence.getSelection();
+  const items = selection ? await selection.getTrackItems() : [];
+  const videoTypes = await motrackerGetVideoMediaTypes(sequence);
+  for (const item of items) {
+    if (videoTypes.has(guidToString(await item.getMediaType()))) return item;
+  }
+  return null;
 }
 
-async function runReadVideoEffectCatalog() {
-  const button = document.getElementById("read-video-effect-catalog");
-  if (button) button.disabled = true;
-
-  const result = await executionAdapter.execute(
-    {
-      type: "catalog.videoEffects.read",
-      requestId: String(Date.now()),
-      payload: {}
-    },
-    { "catalog.videoEffects.read": readVideoEffectCatalog }
-  );
-
-  text("video-effect-catalog-output", JSON.stringify(result, null, 2));
-  if (button) button.disabled = false;
+/** The clip on trackIdx whose start time (ticks) matches startTicks, or null. */
+async function motrackerFindClipByTrackAndStart(sequence, trackIdx, startTicks) {
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  if (trackIdx < 0 || trackIdx >= videoTrackCount) return null;
+  const track = await sequence.getVideoTrack(trackIdx);
+  const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+  const want = BigInt(startTicks);
+  for (const item of items) {
+    const start = BigInt((await item.getStartTime()).ticks);
+    if (start === want || (start > want ? start - want : want - start) < 200000n) return item;
+  }
+  return null;
 }
 
-function renderTransportStatus(status) {
-  text("transport-status", status.status);
-  text("transport-url", transport.TRANSPORT_URL);
-  text("transport-connected-since", status.connectedSince);
-  text("transport-last-error", status.lastError);
+/** Last component on the chain whose matchName equals matchName, or null. */
+async function motrackerFindComponentByMatchName(chain, matchName) {
+  const count = await chain.getComponentCount();
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const component = await chain.getComponentAtIndex(i);
+    if ((await component.getMatchName()) === matchName) return { component, index: i };
+  }
+  return null;
 }
 
-function wireTransportPanel() {
-  const reconnectButton = document.getElementById("transport-reconnect");
-  if (reconnectButton && !reconnectButton.dataset.wired) {
-    reconnectButton.addEventListener("click", () => {
-      transport.stop();
-      transport.start(ACTION_HANDLERS, executionAdapter);
+/** First param on a component whose displayName matches one of the given
+ * (already-lowercased) candidates, or whose displayName contains `contains`. */
+async function motrackerFindParamByName(component, exactCandidates, contains) {
+  const count = await component.getParamCount();
+  for (let i = 0; i < count; i += 1) {
+    const param = await component.getParam(i);
+    const dn = motrackerNorm(param.displayName);
+    if (exactCandidates && exactCandidates.indexOf(dn) !== -1) return param;
+    if (contains && dn.indexOf(contains) !== -1) return param;
+  }
+  return null;
+}
+
+async function getClipInfo() {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("No active project.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active sequence.");
+
+  const clip = await motrackerGetSelectedVideoClip(sequence);
+  if (!clip) {
+    throw new Error("Select the clip you want to track in the timeline, then click Load.");
+  }
+
+  const projectItem = await clip.getProjectItem();
+  let clipProjectItem = null;
+  try { clipProjectItem = premiere.ClipProjectItem.cast(projectItem); } catch (error) { clipProjectItem = null; }
+  const mediaPath = clipProjectItem ? await clipProjectItem.getMediaFilePath() : "";
+  if (!mediaPath) {
+    throw new Error("Cannot read the media file path. Synthetic clips (bars, black video) cannot be tracked.");
+  }
+
+  const settings = await sequence.getSettings();
+  let fps = 30;
+  try {
+    const frameRate = settings.getVideoFrameRate();
+    if (frameRate && Number(frameRate.value) > 0) fps = Number(frameRate.value);
+  } catch (error) { /* fall through to timebase */ }
+  if (fps === 30) {
+    try {
+      const timebase = Number(await sequence.getTimebase());
+      if (timebase > 0) fps = 254016000000 / timebase;
+    } catch (error) { /* keep default */ }
+  }
+
+  const frameSize = await sequence.getFrameSize();
+  const frameW = Number(frameSize.width) || 1920;
+  const frameH = Number(frameSize.height) || 1080;
+
+  const trackIdx = await clip.getTrackIndex();
+  const startTime = await clip.getStartTime();
+  const endTime = await clip.getEndTime();
+  const clipInPoint = await clip.getInPoint(); // relative to the source project item
+
+  const durationSec = endTime.seconds - startTime.seconds;
+  if (durationSec <= 0) {
+    throw new Error("The selected clip has zero duration on the timeline.");
+  }
+
+  return {
+    ok: true,
+    mediaPath,
+    srcRangeStart: clipInPoint.seconds,
+    durationSec,
+    fps,
+    frameW,
+    frameH,
+    seqName: sequence.name,
+    clipName: await clip.getName(),
+    trackIdx,
+    clipStartTicks: startTime.ticks,
+    seqInPoint: startTime.seconds,
+    seqOutPoint: endTime.seconds
+  };
+}
+
+// Registered as motracker.getFollowTargetMediaPath. Follow mode needs the FOLLOWED object's own
+// native pixel size to scale Position correctly (see applyTrack's followScaleX/Y) - rather than
+// guess which Premiere-side parameter reflects real pixels (Position and even the built-in
+// Motion effect's own Anchor Point both turned out to be normalised at the API level despite
+// showing pixel-like numbers in Effect Controls - see TECHNICAL_PLAN.md's Motion Tracker slice),
+// this hands the companion the target's media file path so it can read the real dimensions
+// directly (the companion already has OpenCV for the tracker engine) - no more guessing.
+async function getFollowTargetMediaPath() {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("No active project.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active sequence.");
+  const clip = await motrackerGetSelectedVideoClip(sequence);
+  if (!clip) throw new Error("Select the clip (object) you want to attach to the track first.");
+  const projectItem = await clip.getProjectItem();
+  let clipProjectItem = null;
+  try { clipProjectItem = premiere.ClipProjectItem.cast(projectItem); } catch (error) { clipProjectItem = null; }
+  const mediaPath = clipProjectItem ? await clipProjectItem.getMediaFilePath() : "";
+  if (!mediaPath) throw new Error("Cannot read the media file path for the selected clip.");
+  return { ok: true, mediaPath };
+}
+
+/** Clear every existing keyframe on a param, then set it to a plain static
+ * PointF base value (self-heals a stale time-varying state from a previous
+ * apply, matching host.jsx's re-run behavior). */
+async function motrackerResetParamToStatic(project, param, baseX, baseY) {
+  const times = await param.getKeyframeListAsTickTimes();
+  if (times && times.length > 0) {
+    let cleared = false;
+    project.lockedAccess(() => {
+      cleared = project.executeTransaction((compound) => {
+        compound.addAction(param.createRemoveKeyframeRangeAction(times[0], times[times.length - 1], true));
+      }, "FX.palette: Clear existing motion-tracker keyframes");
     });
-    reconnectButton.dataset.wired = "true";
+    if (!cleared) throw new Error("Could not clear existing keyframes before re-applying.");
   }
-  if (!wireTransportPanel.subscribed) {
-    transport.onStatusChange(renderTransportStatus);
-    wireTransportPanel.subscribed = true;
-  }
-  renderTransportStatus(transport.getStatus());
+  const baseKeyframe = await param.createKeyframe(new premiere.PointF(baseX, baseY));
+  let staticSet = false;
+  project.lockedAccess(() => {
+    staticSet = project.executeTransaction((compound) => {
+      compound.addAction(param.createSetValueAction(baseKeyframe, true));
+    }, "FX.palette: Reset motion-tracker base value");
+  });
+  if (!staticSet) throw new Error("Could not reset the base value before re-applying.");
 }
 
-function wirePanel() {
-  wireTransportPanel();
-  const button = document.getElementById("refresh");
-  if (button && !button.dataset.wired) {
-    button.addEventListener("click", refresh);
-    button.dataset.wired = "true";
+/* AE.ADBE Geometry2's "Use Composition's Shutter Angle" toggle is a boolean param with NO display
+ * name at all (confirmed against this project's own host-tested parameter map for Premiere
+ * 26.3.2: Anchor Point=0, Position=1, unnamed boolean=2, Scale Height=3, Scale Width=4, Skew=5,
+ * Skew Axis=6, Rotation=7, Opacity=8, unnamed boolean=9 (use-composition toggle), Shutter
+ * Angle=10, Sampling=11) - so it can never be found by display-name matching. Re-verify this
+ * index against the host Premiere build in use before trusting it blindly (see
+ * TECHNICAL_PLAN.md); Shutter Angle itself does have a real display name, so that one is still
+ * found by name as a safety net against a future Premiere build reordering these. */
+const MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX = 9;
+
+async function motrackerSetMotionBlur(component, on, angle, project) {
+  let useCompParam = null;
+  try {
+    const candidate = await component.getParam(MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX);
+    if (candidate && motrackerNorm(candidate.displayName) === "") useCompParam = candidate;
+  } catch (error) { /* fall through */ }
+  const shutterParam = await motrackerFindParamByName(component, ["shutter angle", "ângulo do obturador", "angulo do obturador"], null);
+
+  if (useCompParam) {
+    const keyframe = await useCompParam.createKeyframe(false);
+    project.lockedAccess(() => {
+      project.executeTransaction((compound) => {
+        compound.addAction(useCompParam.createSetValueAction(keyframe, true));
+      }, "FX.palette: Use own shutter angle");
+    });
   }
-  const effectButton = document.getElementById("apply-video-effect");
-  if (effectButton && !effectButton.dataset.wired) {
-    effectButton.addEventListener("click", runApplyVideoEffect);
-    effectButton.dataset.wired = "true";
+  if (shutterParam) {
+    const value = on ? (angle > 0 ? angle : 180) : 0;
+    const keyframe = await shutterParam.createKeyframe(value);
+    project.lockedAccess(() => {
+      project.executeTransaction((compound) => {
+        compound.addAction(shutterParam.createSetValueAction(keyframe, true));
+      }, "FX.palette: Set motion-tracker motion blur");
+    });
   }
-  const effectParameterButton = document.getElementById("probe-video-effect-parameters");
-  if (effectParameterButton && !effectParameterButton.dataset.wired) {
-    effectParameterButton.addEventListener("click", runProbeVideoEffectParameters);
-    effectParameterButton.dataset.wired = "true";
-  }
-  const staticParameterButton = document.getElementById("probe-static-video-effect-parameter");
-  if (staticParameterButton && !staticParameterButton.dataset.wired) {
-    staticParameterButton.addEventListener("click", runProbeStaticVideoEffectParameter);
-    staticParameterButton.dataset.wired = "true";
-  }
-  const animatedParameterButton = document.getElementById("probe-animated-video-effect-parameter");
-  if (animatedParameterButton && !animatedParameterButton.dataset.wired) {
-    animatedParameterButton.addEventListener("click", runProbeAnimatedVideoEffectParameter);
-    animatedParameterButton.dataset.wired = "true";
-  }
-  const captureTransformButton = document.getElementById("capture-transform-reference");
-  if (captureTransformButton && !captureTransformButton.dataset.wired) {
-    captureTransformButton.addEventListener("click", runCaptureTransformCurveReference);
-    captureTransformButton.dataset.wired = "true";
-  }
-  const applyTransformButton = document.getElementById("apply-transform-reference");
-  if (applyTransformButton && !applyTransformButton.dataset.wired) {
-    applyTransformButton.addEventListener("click", runApplyTransformCurveReference);
-    applyTransformButton.dataset.wired = "true";
-  }
-  const importPrfpsetButton = document.getElementById("import-prfpset-catalog");
-  if (importPrfpsetButton && !importPrfpsetButton.dataset.wired) {
-    importPrfpsetButton.addEventListener("click", runImportPrfpsetCatalog);
-    importPrfpsetButton.dataset.wired = "true";
-  }
-  const inspectPrfpsetButton = document.getElementById("inspect-imported-prfpset");
-  if (inspectPrfpsetButton && !inspectPrfpsetButton.dataset.wired) {
-    inspectPrfpsetButton.addEventListener("click", runInspectImportedEffectPreset);
-    inspectPrfpsetButton.dataset.wired = "true";
-  }
-  const inspectBridgeButton = document.getElementById("inspect-preset-bridge-candidate");
-  if (inspectBridgeButton && !inspectBridgeButton.dataset.wired) {
-    inspectBridgeButton.addEventListener("click", runInspectPresetBridgeCandidate);
-    inspectBridgeButton.dataset.wired = "true";
-  }
-  const exportBridgeButton = document.getElementById("export-preset-bridge");
-  if (exportBridgeButton && !exportBridgeButton.dataset.wired) {
-    exportBridgeButton.addEventListener("click", runExportPresetBridge);
-    exportBridgeButton.dataset.wired = "true";
-  }
-  const compareImportedPresetButton = document.getElementById("compare-imported-transform-preset");
-  if (compareImportedPresetButton && !compareImportedPresetButton.dataset.wired) {
-    compareImportedPresetButton.addEventListener("click", runCompareImportedTransformPreset);
-    compareImportedPresetButton.dataset.wired = "true";
-  }
-  const inspectComponentsButton = document.getElementById("inspect-selected-video-components");
-  if (inspectComponentsButton && !inspectComponentsButton.dataset.wired) {
-    inspectComponentsButton.addEventListener("click", runInspectSelectedVideoComponents);
-    inspectComponentsButton.dataset.wired = "true";
-  }
-  const applyImportedEffectPresetButton = document.getElementById("apply-imported-effect-preset");
-  if (applyImportedEffectPresetButton && !applyImportedEffectPresetButton.dataset.wired) {
-    applyImportedEffectPresetButton.addEventListener("click", runApplyImportedEffectPreset);
-    applyImportedEffectPresetButton.dataset.wired = "true";
-  }
-  const audioEffectButton = document.getElementById("apply-audio-effect");
-  if (audioEffectButton && !audioEffectButton.dataset.wired) {
-    audioEffectButton.addEventListener("click", runApplyAudioEffect);
-    audioEffectButton.dataset.wired = "true";
-  }
-  const videoTransitionButton = document.getElementById("apply-video-transition");
-  if (videoTransitionButton && !videoTransitionButton.dataset.wired) {
-    videoTransitionButton.addEventListener("click", runApplyVideoTransition);
-    videoTransitionButton.dataset.wired = "true";
-  }
-  const subsequenceButton = document.getElementById("create-subsequence");
-  if (subsequenceButton && !subsequenceButton.dataset.wired) {
-    subsequenceButton.addEventListener("click", runCreateSubsequence);
-    subsequenceButton.dataset.wired = "true";
-  }
-  const nestButton = document.getElementById("create-nest");
-  if (nestButton && !nestButton.dataset.wired) {
-    nestButton.addEventListener("click", runCreateNest);
-    nestButton.dataset.wired = "true";
-  }
-  const insertProjectItemButton = document.getElementById("insert-project-item");
-  if (insertProjectItemButton && !insertProjectItemButton.dataset.wired) {
-    insertProjectItemButton.addEventListener("click", runInsertProjectItem);
-    insertProjectItemButton.dataset.wired = "true";
-  }
-  const insertGenericItemButton = document.getElementById("insert-generic-item");
-  if (insertGenericItemButton && !insertGenericItemButton.dataset.wired) {
-    insertGenericItemButton.addEventListener("click", runInsertGenericItem);
-    insertGenericItemButton.dataset.wired = "true";
-  }
-  const catalogButton = document.getElementById("resolve-video-effect-catalog");
-  if (catalogButton && !catalogButton.dataset.wired) {
-    catalogButton.addEventListener("click", runResolveVideoEffectCatalog);
-    catalogButton.dataset.wired = "true";
-  }
-  const transitionCatalogButton = document.getElementById("read-video-transition-catalog");
-  if (transitionCatalogButton && !transitionCatalogButton.dataset.wired) {
-    transitionCatalogButton.addEventListener("click", runReadVideoTransitionCatalog);
-    transitionCatalogButton.dataset.wired = "true";
-  }
-  const videoEffectCatalogButton = document.getElementById("read-video-effect-catalog");
-  if (videoEffectCatalogButton && !videoEffectCatalogButton.dataset.wired) {
-    videoEffectCatalogButton.addEventListener("click", runReadVideoEffectCatalog);
-    videoEffectCatalogButton.dataset.wired = "true";
-  }
-  document.querySelectorAll(".copy-json").forEach((copyButton) => {
-    if (!copyButton.dataset.wired) {
-      copyButton.addEventListener("click", () => copyOutput(copyButton));
-      copyButton.dataset.wired = "true";
-    }
+}
+
+// getStartValue()/getValueAtTime() report a param's current value as {value: <raw>} - and <raw>
+// is itself either a plain number (a scalar param like Scale/Rotation) or a 2-element array (a
+// point param like Position/Anchor) - confirmed against a real host read of the built-in Motion
+// effect (motionProbe diagnostic, TECHNICAL_PLAN.md's Motion Tracker slice): Scale read back as
+// {value: {value: 42.1875}}, Position as {value: {value: [0.5, 0.5]}}. One level of unwrap
+// (`.value`) here, one more at the call site, matches every other read in this file.
+async function motrackerReadParamRaw(param) {
+  if (!param) return null;
+  const start = await param.getStartValue();
+  const raw = start && start.value && start.value.value;
+  if (Array.isArray(raw)) return [Number(raw[0]), Number(raw[1])];
+  if (typeof raw === "number") return raw;
+  return null;
+}
+
+/** Writes a plain static value (number or [x,y]) to a param, same createKeyframe +
+ * createSetValueAction pattern as motrackerResetParamToStatic/motrackerSetMotionBlur - just
+ * generalized to accept either shape, since Motion's own Scale/Rotation (scalar) and Position/
+ * Anchor (point) both need writing here, not just points. */
+async function motrackerWriteStaticParam(project, param, value, label) {
+  if (!param || value == null) return;
+  const keyframeValue = Array.isArray(value) ? new premiere.PointF(value[0], value[1]) : value;
+  const keyframe = await param.createKeyframe(keyframeValue);
+  let ok = false;
+  project.lockedAccess(() => {
+    ok = project.executeTransaction((compound) => {
+      compound.addAction(param.createSetValueAction(keyframe, true));
+    }, `FX.palette: ${label}`);
   });
-  refresh();
+  if (!ok) throw new Error(`Premiere rejected setting ${label}.`);
+}
+
+async function motrackerReadMotionParams(chain) {
+  const found = await motrackerFindComponentByMatchName(chain, "AE.ADBE Motion");
+  if (!found) return null;
+  const component = found.component;
+  const scaleParam = await motrackerFindParamByName(component, null, "scale");
+  const positionParam = await motrackerFindParamByName(component, ["position"], null);
+  const anchorParam = await motrackerFindParamByName(component, null, "anchor");
+  const rotationParam = await motrackerFindParamByName(component, null, "rotation");
+  return {
+    component,
+    params: { scaleParam, positionParam, anchorParam, rotationParam },
+    values: {
+      scale: await motrackerReadParamRaw(scaleParam),
+      position: await motrackerReadParamRaw(positionParam),
+      anchor: await motrackerReadParamRaw(anchorParam),
+      rotation: await motrackerReadParamRaw(rotationParam)
+    }
+  };
+}
+
+// The prefix alone (not a full deterministic name) is enough for the idempotency check below -
+// re-applying Stabilize/Follow on an already-nested clip must reuse the SAME nest, not create a
+// nest-of-a-nest on every click (this runs on every Apply now, not just the first one - see
+// TECHNICAL_PLAN.md's Motion Tracker slice for why the user chose always-automatic over opt-in).
+const MOTRACKER_NEST_NAME_PREFIX = "FXN-Motrack ";
+
+/** Nest-and-normalize (TECHNICAL_PLAN.md's Motion Tracker slice): moves targetClip into a fresh
+ * Nest sized to its own native pixel resolution, resets the INNER clip's built-in Motion effect to
+ * plain defaults (a clean 1:1 fit - no scale/position ambiguity left for our own Transform's
+ * Anchor-Point math to reason about), and re-applies the clip's ORIGINAL Motion values to the
+ * OUTER nest clip instead, so the final composited look is unchanged. Returns the INNER clip -
+ * everything applyTrack does after this call operates on that, completely unaware nesting even
+ * happened, since the coordinate math itself never changes, only which clip it targets. Idempotent:
+ * re-applying on an already-nested target resolves straight to the existing inner clip instead of
+ * nesting again.
+ */
+async function motrackerNestAndNormalizeTarget(project, sequence, targetClip, nativeW, nativeH) {
+  const targetProjectItem = await targetClip.getProjectItem();
+  const targetProjectItemName = targetProjectItem ? String(targetProjectItem.name || "") : "";
+
+  // Idempotency: already one of our own nests (matched by the naming convention every nest we
+  // create gets, see MOTRACKER_NEST_NAME_PREFIX) - resolve straight to its existing inner clip.
+  if (targetProjectItemName.startsWith(MOTRACKER_NEST_NAME_PREFIX)) {
+    const targetProjectItemId = await targetProjectItem.getId();
+    const allSequences = await project.getSequences();
+    for (const candidate of allSequences) {
+      const candidateItem = await candidate.getProjectItem();
+      if (!candidateItem || (await candidateItem.getId()) !== targetProjectItemId) continue;
+      const innerTrackCount = await candidate.getVideoTrackCount();
+      if (innerTrackCount === 0) break;
+      const innerItems = await (await candidate.getVideoTrack(0)).getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+      if (innerItems.length > 0) return innerItems[0];
+      break;
+    }
+    throw new Error("Found an existing Motion Tracker Nest but could not locate its inner clip.");
+  }
+
+  // Not nested yet - must be the user's own current Timeline selection (same requirement
+  // motrackerPerformNest itself has; checked here first so a mismatch fails with a clear, specific
+  // message instead of nesting whatever happens to be selected).
+  const selection = await sequence.getSelection();
+  const selectedItems = selection ? await selection.getTrackItems() : [];
+  const targetTrackIndex = await targetClip.getTrackIndex();
+  const targetStartTicks = String((await targetClip.getStartTime()).ticks);
+  const isTargetSelected = await (async () => {
+    for (const item of selectedItems) {
+      if (await item.getTrackIndex() !== targetTrackIndex) continue;
+      if (String((await item.getStartTime()).ticks) !== targetStartTicks) continue;
+      return true;
+    }
+    return false;
+  })();
+  if (!isTargetSelected) {
+    throw new Error("Keep the clip/object selected in the Timeline while applying Stabilize/Apply Track.");
+  }
+
+  const chain = await targetClip.getComponentChain();
+  const motion = await motrackerReadMotionParams(chain);
+  const origName = await targetClip.getName();
+
+  const nestResult = await motrackerPerformNest(
+    project, sequence, `${MOTRACKER_NEST_NAME_PREFIX}${origName}`, "Motion Tracker Nests"
+  );
+  const createdSequence = nestResult.createdSequenceObject;
+  if (!createdSequence) throw new Error("Nest creation did not return a usable sequence.");
+
+  const innerTrackCount = await createdSequence.getVideoTrackCount();
+  if (innerTrackCount === 0) throw new Error("The new Nest has no video track.");
+  const innerItems = await (await createdSequence.getVideoTrack(0)).getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+  if (innerItems.length === 0) throw new Error("The new Nest has no clip on its video track.");
+  const innerClip = innerItems[0];
+
+  // Resize the new nested sequence to the clip's own native pixel size - the whole point: our
+  // Transform's Anchor Point math (unchanged, below) then operates on a coordinate space that's
+  // unambiguously "this clip's own native pixels at a 1:1 default Motion", eliminating the
+  // Motion+Transform composition ambiguity this whole investigation could never fully resolve.
+  const settings = await createdSequence.getSettings();
+  settings.setVideoFrameRect(new premiere.RectF(0, 0, nativeW, nativeH));
+  let resizeOk = false;
+  project.lockedAccess(() => {
+    resizeOk = project.executeTransaction((compound) => {
+      compound.addAction(createdSequence.createSetSettingsAction(settings));
+    }, "FX.palette: Resize motion-tracker Nest to native resolution");
+  });
+  if (!resizeOk) throw new Error("Premiere rejected resizing the Nest to the clip's native resolution.");
+
+  // Reset the INNER clip's Motion to plain defaults. Position/Anchor read as a NORMALIZED
+  // fraction (confirmed via the same real host read cited in motrackerReadParamRaw's docstring),
+  // so "centered" is always [0.5, 0.5] regardless of the nest's own pixel size - no pixel math
+  // needed here at all.
+  const innerChain = await innerClip.getComponentChain();
+  const innerMotion = await motrackerReadMotionParams(innerChain);
+  if (innerMotion) {
+    await motrackerWriteStaticParam(project, innerMotion.params.scaleParam, 100, "Reset Nest inner clip Scale");
+    await motrackerWriteStaticParam(project, innerMotion.params.positionParam, [0.5, 0.5], "Reset Nest inner clip Position");
+    await motrackerWriteStaticParam(project, innerMotion.params.anchorParam, [0.5, 0.5], "Reset Nest inner clip Anchor");
+    await motrackerWriteStaticParam(project, innerMotion.params.rotationParam, 0, "Reset Nest inner clip Rotation");
+  }
+
+  // Re-apply the clip's ORIGINAL (pre-nest) Motion values onto the OUTER nest clip, so the final
+  // composited look is unchanged by nesting itself - only WHERE the Position/Anchor math for
+  // Stabilize/Follow lives has moved, not how the timeline actually looks right now.
+  const outerInstance = (nestResult.insertedInstanceObjects || []).find((entry) => entry.mediaKind === "video");
+  if (outerInstance && motion) {
+    const outerChain = await outerInstance.trackItem.getComponentChain();
+    const outerMotion = await motrackerReadMotionParams(outerChain);
+    if (outerMotion) {
+      await motrackerWriteStaticParam(project, outerMotion.params.scaleParam, motion.values.scale, "Carry original Motion Scale to Nest");
+      await motrackerWriteStaticParam(project, outerMotion.params.positionParam, motion.values.position, "Carry original Motion Position to Nest");
+      await motrackerWriteStaticParam(project, outerMotion.params.anchorParam, motion.values.anchor, "Carry original Motion Anchor to Nest");
+      await motrackerWriteStaticParam(project, outerMotion.params.rotationParam, motion.values.rotation, "Carry original Motion Rotation to Nest");
+    }
+  }
+
+  return innerClip;
+}
+
+// Standalone, isolated test entry point for motrackerNestAndNormalizeTarget - lets the nest
+// mechanics (several never-before-exercised API calls in this codebase: reading Motion's own
+// Scale, RectF/setVideoFrameRect/createSetSettingsAction for resizing a sequence) get host-tested
+// on their own, before wiring into the real Stabilize/Follow apply flow risks a half-working nest
+// step corrupting a real Apply. Operates on whatever video clip is currently selected in the
+// active sequence - remove once the Nest-and-normalize step has been confirmed working end to end
+// (TECHNICAL_PLAN.md's Motion Tracker slice).
+async function motrackerTestNest(action) {
+  const request = action.payload || {};
+  const nativeW = Number(request.nativeW) || 0;
+  const nativeH = Number(request.nativeH) || 0;
+  if (nativeW <= 0 || nativeH <= 0) throw new Error("nativeW/nativeH are required for this test.");
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("No active project.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active sequence.");
+  const targetClip = await motrackerGetSelectedVideoClip(sequence);
+  if (!targetClip) throw new Error("Select a video clip in the Timeline first.");
+
+  const beforeName = await targetClip.getName();
+  const innerClip = await motrackerNestAndNormalizeTarget(project, sequence, targetClip, nativeW, nativeH);
+  const innerName = await innerClip.getName();
+  return { ok: true, beforeName, innerClipName: innerName };
+}
+
+async function applyTrack(action) {
+  const request = action.payload || {};
+  const mode = request.mode;
+  const trackData = request.trackData || [];
+  const fps = Number(request.fps) || 30;
+  const seqW = Number(request.seqW) || 1920;
+  const seqH = Number(request.seqH) || 1080;
+  const extractedW = Number(request.extractedW) || 0;
+  const extractedH = Number(request.extractedH) || 0;
+  const mblurOn = !!request.mblurOn;
+  const mblurAngle = Number(request.mblurAngle) || 180;
+  // Real per-frame timestamps from the companion's own ffmpeg extraction (see extraction.py's
+  // build_ffmpeg_args/FrameExtractor docstrings) - a real host report + Premiere's own "Variable
+  // Frame Rate Detected" on the source confirmed "frame index / a single constant fps" silently
+  // drifts on genuinely VFR footage (a real per-frame duration variance of ~1.5-33% was measured
+  // against the actual clip, not assumed). Array is indexed by frame number, 0-based relative to
+  // the first extracted frame - null/absent falls back to the old constant-fps math below.
+  const frameTimestamps = Array.isArray(request.frameTimestamps) ? request.frameTimestamps : null;
+
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("No active project.");
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active sequence.");
+
+  // Resolve target clip: stabilize -> the loaded clip (by track+start), falling back to the
+  // current selection; follow -> the current selection, falling back to the loaded clip.
+  // Mirrors host.jsx/premiere.js's dual-resolution logic exactly.
+  const fromLoaded = (request.trackIdx != null && request.trackIdx >= 0 && request.clipStartTicks)
+    ? await motrackerFindClipByTrackAndStart(sequence, request.trackIdx, request.clipStartTicks)
+    : null;
+  const fromSel = await motrackerGetSelectedVideoClip(sequence);
+  let targetClip = mode === "stabilize" ? (fromLoaded || fromSel) : (fromSel || fromLoaded);
+
+  if (!targetClip) {
+    throw new Error(mode === "stabilize"
+      ? "Could not find the tracked clip. Select it in the timeline, then click Stabilize."
+      : "Select the clip (object) you want to attach to the track, then click Apply Track.");
+  }
+
+  // Nest-and-normalize (TECHNICAL_PLAN.md's Motion Tracker slice) - moves targetClip into a fresh
+  // Nest sized to its own native pixel resolution, with its built-in Motion reset to plain
+  // defaults inside the nest and its ORIGINAL Motion values carried onto the outer nest clip
+  // instead, so the visual composition is unchanged. Everything below this point keeps operating
+  // on targetClip exactly as before - it's just pointing at the nest's inner clip now, on a clean
+  // coordinate space our own Anchor Point math was already proven correct against.
+  {
+    const nativeW = Number(request.targetNativeW) || 0;
+    const nativeH = Number(request.targetNativeH) || 0;
+    if (nativeW > 0 && nativeH > 0) {
+      targetClip = await motrackerNestAndNormalizeTarget(project, sequence, targetClip, nativeW, nativeH);
+    }
+  }
+
+  const origName = await targetClip.getName();
+  const chain = await targetClip.getComponentChain();
+
+  // Stage 1 of the Nest-and-normalize plan (TECHNICAL_PLAN.md's Motion Tracker slice) -
+  // diagnostic-only read of the clip's own built-in Motion effect (never read by this codebase
+  // before, unlike Position/Anchor on our own Transform). Confirms the real value shapes (Scale
+  // especially - a plain scalar, never exercised here) before anything gets built assuming them.
+  // Wrapped so a read failure here can never break the actual apply - this block writes nothing.
+  let motrackerMotionProbe = null;
+  try {
+    const motionFound = await motrackerFindComponentByMatchName(chain, "AE.ADBE Motion");
+    if (motionFound) {
+      const motionComponent = motionFound.component;
+      const scaleParam = await motrackerFindParamByName(motionComponent, null, "scale");
+      const positionParam = await motrackerFindParamByName(motionComponent, ["position"], null);
+      const anchorParam = await motrackerFindParamByName(motionComponent, null, "anchor");
+      const rotationParam = await motrackerFindParamByName(motionComponent, null, "rotation");
+      const readRaw = async (param) => {
+        if (!param) return { found: false };
+        const start = await param.getStartValue();
+        return { found: true, raw: start && start.value, rawJson: JSON.stringify(start && start.value) };
+      };
+      motrackerMotionProbe = {
+        motionComponentFound: true,
+        scale: await readRaw(scaleParam),
+        position: await readRaw(positionParam),
+        anchor: await readRaw(anchorParam),
+        rotation: await readRaw(rotationParam)
+      };
+    } else {
+      motrackerMotionProbe = { motionComponentFound: false };
+    }
+  } catch (error) {
+    motrackerMotionProbe = { error: error && error.message ? error.message : String(error) };
+  }
+
+  let transformComponent = null;
+  const existing = await motrackerFindComponentByMatchName(chain, MOTRACKER_TRANSFORM_MATCH_NAME);
+  if (existing) {
+    transformComponent = existing.component;
+  } else {
+    const created = await premiere.VideoFilterFactory.createComponent(MOTRACKER_TRANSFORM_MATCH_NAME);
+    let inserted = false;
+    project.lockedAccess(() => {
+      inserted = project.executeTransaction((compound) => {
+        compound.addAction(chain.createAppendComponentAction(created));
+      }, "FX.palette: Add motion-tracker Transform");
+    });
+    if (!inserted) throw new Error("Premiere rejected adding the Transform effect.");
+    const newIndex = (await chain.getComponentCount()) - 1;
+    transformComponent = await chain.getComponentAtIndex(newIndex);
+  }
+
+  const posParam = await motrackerFindParamByName(transformComponent, ["position"], null);
+  if (!posParam) throw new Error("Position parameter not found on the Transform effect.");
+  const anchorParam = await motrackerFindParamByName(transformComponent, null, "anchor");
+
+  // Real, host-tested finding, refined twice now (see TECHNICAL_PLAN.md's Motion Tracker slice
+  // for the full trail): Transform's Position, like Anchor Point, is normalised over the TARGET
+  // CLIP's OWN native frame, not the sequence - confirmed empirically (Effect Controls' displayed
+  // pixel-equivalent for Position exactly equalled the raw fraction times the followed object's
+  // own native width, not the sequence width) after an earlier assumption that it was
+  // sequence-normalised caused Follow to displace far too little to be visible (a real, if small,
+  // fraction of the WRONG - much larger - reference frame). posRawX/Y (below) capture Position's
+  // own current raw value regardless of normalisation, since Follow needs it as a base to add the
+  // tracked delta onto, not overwrite absolutely.
+  let posIsNorm = false;
+  let cx = seqW / 2;
+  let cy = seqH / 2;
+  let posRawX = 0.5;
+  let posRawY = 0.5;
+  try {
+    const startKeyframe = await posParam.getStartValue();
+    // getValueAtTime()/getStartValue() report a 2D point as { value: [x, y] } (confirmed by
+    // reading back a real write - NOT a PointF-shaped {x, y} object, despite what the value
+    // carried INTO createKeyframe() looks like).
+    const raw = startKeyframe && startKeyframe.value && startKeyframe.value.value;
+    const vx = Array.isArray(raw) ? Number(raw[0]) : (raw && typeof raw.x === "number" ? raw.x : null);
+    const vy = Array.isArray(raw) ? Number(raw[1]) : (raw && typeof raw.y === "number" ? raw.y : null);
+    if (typeof vx === "number" && typeof vy === "number" && !Number.isNaN(vx) && !Number.isNaN(vy)) {
+      posRawX = vx;
+      posRawY = vy;
+      if (Math.abs(vx) <= 2 && Math.abs(vy) <= 2) posIsNorm = true;
+      else { cx = vx; cy = vy; }
+    }
+  } catch (error) { /* keep defaults */ }
+
+  // Anchor-point math (below) is only valid when the ANCHOR's own normalisation base (the
+  // TARGET clip's own native frame) matches the tracked data's frame - true for Stabilize
+  // (target === the tracked footage itself) but NOT for Follow, where the target is a different,
+  // arbitrarily-sized object (e.g. a small icon) with no relation to the tracked footage's own
+  // pixel dimensions. Follow uses Position instead (delta-based, see followScaleX/Y below), scaled
+  // by the FOLLOWED object's own native size rather than the tracked footage's.
+  const useAnchor = mode === "stabilize" && posIsNorm && !!anchorParam;
+  const kfParam = useAnchor ? anchorParam : posParam;
+
+  const goodFrames = trackData.filter((t) => t.conf > 0);
+  if (goodFrames.length === 0) throw new Error("No valid track data (all frames lost or deleted).");
+  // The reference frame for every delta below MUST be the frame the user actually clicked the
+  // point on (the tracking seed), not just "chronologically first in trackData" - for anything
+  // other than pure forward tracking (bidirectional, or backward), trackData is sorted by frame
+  // number ascending, so goodFrames[0] silently picks whichever frame BACKWARD tracking reached
+  // (often frame 0 of the whole clip) instead of the actual seed. That mismatched baseline was a
+  // real, confirmed bug (found by reading this code, not guessed) behind a real host report of
+  // Stabilize/Follow being "the right kind of motion, but systematically misaligned" - every
+  // frame's delta was measured against the wrong starting point. Falls back to goodFrames[0] only
+  // if the seed frame itself somehow isn't in the data (defensive, shouldn't normally happen).
+  const seedFrame = request.seedFrame != null && Number.isFinite(Number(request.seedFrame))
+    ? goodFrames.find((t) => t.frame === Number(request.seedFrame))
+    : null;
+  const firstFrame = seedFrame || goodFrames[0];
+
+  const frameW = posIsNorm ? 1 : (Math.abs(cx) > 0.0001 ? cx * 2 : seqW);
+  const frameH = posIsNorm ? 1 : (Math.abs(cy) > 0.0001 ? cy * 2 : seqH);
+  const exW = extractedW > 0 ? extractedW : (seqW > 1280 ? 1280 : seqW);
+  const exH = extractedH > 0 ? extractedH : (seqH > 1280 ? 1280 : seqH);
+  const coordScaleX = frameW / exW;
+  const coordScaleY = frameH / exH;
+
+  // Follow-only: the FOLLOWED object's own native size (not the tracked footage's) is the right
+  // denominator, since Position - like Anchor - is normalised over the TARGET clip's own frame.
+  // The built-in "Motion" effect's own Anchor Point was tried as a way to read this via the
+  // scripting API and disproven by a real host test (it came back normalised too, not real
+  // pixels, despite Effect Controls displaying pixel-looking numbers) - see TECHNICAL_PLAN.md's
+  // Motion Tracker slice. Real pixel dimensions now come from the companion, which reads the
+  // followed object's own media file directly via OpenCV (unambiguous, no Premiere-side guessing).
+  // Falls back to the sequence size (matching the old, wrong-but-at-least-non-overflowing
+  // behaviour) only if the companion couldn't supply it.
+  let followNativeW = seqW;
+  let followNativeH = seqH;
+  if (mode !== "stabilize") {
+    const suppliedW = Number(request.targetNativeW) || 0;
+    const suppliedH = Number(request.targetNativeH) || 0;
+    if (suppliedW > 0 && suppliedH > 0) {
+      followNativeW = suppliedW;
+      followNativeH = suppliedH;
+    }
+  }
+  // Tracked-footage-pixel delta -> sequence-pixel delta (seqW/exW) -> fraction of the followed
+  // object's own native size.
+  const followScaleX = (seqW / exW) / followNativeW;
+  const followScaleY = (seqH / exH) / followNativeH;
+
+  // Reset the target param (and Position too, if we're about to self-heal an older run that
+  // mistakenly keyframed Position instead of Anchor). Follow's base is Position's OWN current raw
+  // value (posRawX/Y) - the tracked motion is added onto it as a delta, never overwritten
+  // absolutely, so the object's existing placement is preserved.
+  const baseX = useAnchor ? 0.5 : (mode === "stabilize" ? cx : posRawX);
+  const baseY = useAnchor ? 0.5 : (mode === "stabilize" ? cy : posRawY);
+  await motrackerResetParamToStatic(project, kfParam, baseX, baseY);
+  if (useAnchor) await motrackerResetParamToStatic(project, posParam, 0.5, 0.5);
+
+  // Effect param time is clip-local, anchored at the clip's own in point.
+  const clipInPoint = await targetClip.getInPoint();
+
+  const preparedKeyframes = [];
+  for (const t of goodFrames) {
+    const realTimestamp = frameTimestamps && t.frame >= 0 && t.frame < frameTimestamps.length
+      ? Number(frameTimestamps[t.frame])
+      : null;
+    const offsetSeconds = Number.isFinite(realTimestamp) ? realTimestamp : t.frame / fps;
+    const time = clipInPoint.add(premiere.TickTime.createWithSeconds(offsetSeconds));
+
+    let vx;
+    let vy;
+    if (useAnchor) {
+      // Stabilize only (useAnchor now implies mode === "stabilize") - pin the anchor opposite
+      // the tracked jitter while Position stays put.
+      const dxN = (t.x - firstFrame.x) * coordScaleX;
+      const dyN = (t.y - firstFrame.y) * coordScaleY;
+      vx = 0.5 + dxN;
+      vy = 0.5 + dyN;
+    } else if (mode === "stabilize") {
+      vx = cx + (firstFrame.x - t.x) * coordScaleX;
+      vy = cy + (firstFrame.y - t.y) * coordScaleY;
+    } else {
+      // Follow: add the tracked delta (converted through sequence pixels into a fraction of the
+      // FOLLOWED object's own native size - see followScaleX/Y above) onto Position's own current
+      // value, exactly like Stabilize's anchor math adds its delta onto a base - never an
+      // absolute overwrite, which is what the two earlier (wrong) attempts both did.
+      const dxF = (t.x - firstFrame.x) * followScaleX;
+      const dyF = (t.y - firstFrame.y) * followScaleY;
+      vx = posRawX + dxF;
+      vy = posRawY + dyF;
+    }
+
+    const keyframe = await kfParam.createKeyframe(new premiere.PointF(vx, vy));
+    keyframe.position = time;
+    try { await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR); } catch (error) { /* keep default */ }
+    preparedKeyframes.push(keyframe);
+  }
+
+  let keyframesWritten = false;
+  project.lockedAccess(() => {
+    keyframesWritten = project.executeTransaction((compound) => {
+      compound.addAction(kfParam.createSetTimeVaryingAction(true));
+      preparedKeyframes.forEach((keyframe) => compound.addAction(kfParam.createAddKeyframeAction(keyframe)));
+    }, "FX.palette: Write motion-tracker keyframes");
+  });
+  if (!keyframesWritten) throw new Error("Premiere rejected the tracked-keyframe transaction.");
+
+  await motrackerSetMotionBlur(transformComponent, mblurOn, mblurAngle, project);
+
+  return {
+    ok: true,
+    keyframes: preparedKeyframes.length,
+    clipName: origName,
+    mblur: mblurOn,
+    // Temporary diagnostics for the vertical-clip-in-horizontal-sequence report (TECHNICAL_PLAN.md
+    // Motion Tracker slice) - our coordScaleX/Y math matches the real, working CEP host.jsx
+    // verbatim, so the bug (if it's here at all) isn't visible from reading the code alone this
+    // time; need real numbers from an actual repro before touching anything. Remove once resolved.
+    motrackerDebug: {
+      mode, posIsNorm, useAnchor, cx, cy, seqW, seqH, extractedW, extractedH,
+      frameW, frameH, exW, exH, coordScaleX, coordScaleY, posRawX, posRawY,
+      // requestedSeedFrame: what the companion actually sent. resolvedFirstFrame: which frame the
+      // code actually used as the delta reference (should match requestedSeedFrame if the fix is
+      // live - if this whole block still doesn't show up in a fresh test, the UXP plugin was not
+      // reloaded and is still running the pre-fix index.js).
+      requestedSeedFrame: request.seedFrame,
+      resolvedFirstFrame: firstFrame.frame,
+      goodFramesFirst: goodFrames[0].frame,
+      goodFramesLast: goodFrames[goodFrames.length - 1].frame,
+      // fps actually used to convert each tracked frame index into real elapsed time
+      // (offsetSeconds = t.frame / fps below) - confirms whether the companion's native-source-fps
+      // fix (extraction.py) actually reached this request, or if it's still sending the old
+      // sequence fps.
+      fpsUsed: fps,
+      usedRealFrameTimestamps: !!frameTimestamps,
+      frameTimestampsCount: frameTimestamps ? frameTimestamps.length : 0,
+      motionProbe: motrackerMotionProbe
+    }
+  };
 }
 
 // The transport (stage 5, TECHNICAL_PLAN.md) dispatches through this exact map, so a command
@@ -4134,31 +3493,26 @@ function wirePanel() {
 // already do - it is the same allowlisted, schema-validated action set, just a different caller.
 const ACTION_HANDLERS = {
   "diagnostics.read": readDiagnostics,
-  "catalog.videoEffects.resolve": resolveVideoEffectCatalog,
   "catalog.videoEffects.read": readVideoEffectCatalog,
   "catalog.videoTransitions.read": readVideoTransitionCatalog,
   "catalog.favorites.read": readFavoritesCatalog,
   "catalog.projectItems.read": readProjectItemCatalog,
   "timeline.applyVideoEffect": applyVideoEffectToSelection,
-  "timeline.probeVideoEffectParameters": probeVideoEffectParameters,
-  "timeline.probeStaticVideoEffectParameter": probeStaticVideoEffectParameter,
-  "timeline.probeAnimatedVideoEffectParameter": probeAnimatedVideoEffectParameter,
-  "timeline.captureTransformCurveReference": captureTransformCurveReference,
-  "timeline.applyTransformCurveReference": applyTransformCurveReference,
   "catalog.effectPresets.read": readEffectPresetCatalog,
+  "catalog.effectPresets.readFromPath": readPrfpsetFileAtPath,
   "catalog.effectPresets.importPrfpset": importPrfpsetCatalog,
-  "catalog.effectPresets.inspectImported": inspectImportedEffectPreset,
-  "catalog.effectPresets.inspectBridgeCandidate": inspectImportedPresetBridgeCandidate,
-  "catalog.effectPresets.exportBridge": exportImportedPresetBridge,
-  "catalog.effectPresets.compareImportedTransform": compareImportedTransformWithCapture,
-  "timeline.inspectSelectedVideoComponents": inspectSelectedVideoComponents,
   "timeline.applyImportedEffectPreset": applyImportedEffectPreset,
   "timeline.applyAudioEffect": applyAudioEffectToSelection,
   "timeline.applyVideoTransition": applyVideoTransitionToSelection,
   "timeline.createSubsequence": createSubsequenceFromSelection,
   "timeline.createNest": createNestFromSelection,
   "timeline.insertProjectItem": insertSelectedProjectItem,
-  "timeline.insertGenericItem": insertGenericItemAcrossSelection
+  "timeline.insertGenericItem": insertGenericItemAcrossSelection,
+  "timeline.checkTrackAvailability": checkTrackAvailability,
+  "motracker.getClipInfo": getClipInfo,
+  "motracker.getFollowTargetMediaPath": getFollowTargetMediaPath,
+  "motracker.testNest": motrackerTestNest,
+  "motracker.applyTrack": applyTrack
 };
 
 // projectItems.setColorLabel is not a product feature (the user confirmed they don't use Project-
@@ -4194,11 +3548,9 @@ entrypoints.setup({
   },
   commands: {
     headlessSetVioletLabel: runHeadlessSetVioletLabelCommand
-  },
-  panels: {
-    effectPaletteDiagnostics: {
-      create() { wirePanel(); },
-      show() { wirePanel(); }
-    }
   }
+  // No "panels" entry: the shipped plugin shows no UI inside Premiere at all - everything
+  // user-facing is the companion's own hotkey-triggered search palette. The former diagnostics
+  // panel (index.html body, styles.css, wirePanel and the run* wrappers) was removed once it was
+  // confirmed unused; its git history holds it if a probe UI is ever needed again.
 });

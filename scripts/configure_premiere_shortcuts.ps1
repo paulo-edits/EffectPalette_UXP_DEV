@@ -33,6 +33,19 @@ function Get-ShortcutKey($Candidate) {
     return "{0}:{1}:{2}:{3}" -f $Candidate.Vk, $Candidate.Ctrl, $Candidate.Alt, $Candidate.Shift
 }
 
+function Get-ShortcutDisplay($Candidate) {
+    $keyName = $null
+    if ($Candidate.Vk -ge 0x41 -and $Candidate.Vk -le 0x5A) { $keyName = [char]$Candidate.Vk }
+    elseif ($Candidate.Vk -ge 0x30 -and $Candidate.Vk -le 0x39) { $keyName = [char]$Candidate.Vk }
+    elseif ($Candidate.Vk -ge 0x7C -and $Candidate.Vk -le 0x87) { $keyName = "F" + (13 + ($Candidate.Vk - 0x7C)) }
+    else { $keyName = "VK0x{0:X2}" -f $Candidate.Vk }
+    $modifiers = @()
+    if ($Candidate.Ctrl) { $modifiers += "Ctrl" }
+    if ($Candidate.Alt) { $modifiers += "Alt" }
+    if ($Candidate.Shift) { $modifiers += "Shift" }
+    return (($modifiers + $keyName) -join "+")
+}
+
 try {
     Write-InstallLog "Starting Premiere profile configuration."
     if (-not $PremiereRoot) {
@@ -62,11 +75,13 @@ try {
             $highestItem = [Math]::Max($highestItem, [int]$Matches[1])
         }
         $command = [string]$node.commandname
-        if ($command) {
-            $existingCommands[$command] = $true
-        }
+        # Premiere's default .kys lists every assignable command as a bare <commandname> placeholder
+        # even when it has no shortcut bound - so only virtualkey presence means it's really bound.
         [int64]$rawVk = 0
         if ([int64]::TryParse([string]$node.virtualkey, [ref]$rawVk)) {
+            if ($command) {
+                $existingCommands[$command] = $true
+            }
             $candidate = New-ShortcutCandidate -Vk ([int]($rawVk -band 0xFFFF)) `
                 -Ctrl ([string]$node.'modifier.ctrl' -eq "true") `
                 -Alt ([string]$node.'modifier.alt' -eq "true") `
@@ -78,6 +93,13 @@ try {
     $commands = @("cmd.clip.nestify")
     0..15 | ForEach-Object { $commands += "cmd.edit.label.$_" }
     $commands += "cmd.edit.labelgroup"
+    # Native-keystroke fallback for when every existing Timeline track is occupied. The direct,
+    # no-dialog cmd.sequence.addtrack was tried and rejected (host-confirmed: it always inserts
+    # right above track 1, shifting every other track's index - exactly what an automated fallback
+    # must not do). cmd.sequence.addtracks opens the "Add Tracks..." dialog instead, whose own
+    # default Placement already targets "after the highest track" without disturbing anything below
+    # it - confirmed real (present in the user's own .kys file), not yet bound to any shortcut.
+    $commands += "cmd.sequence.addtracks"
 
     $candidatePool = New-Object System.Collections.Generic.List[object]
     # Keep generated bindings obscure enough not to collide with normal editing.
@@ -122,7 +144,7 @@ try {
         $usedShortcuts[(Get-ShortcutKey $candidate)] = $command
         $existingCommands[$command] = $true
         $added++
-        Write-InstallLog "Added internal Premiere binding: $command"
+        Write-InstallLog "Added internal Premiere binding: $command -> $(Get-ShortcutDisplay $candidate)"
     }
 
     if ($added -gt 0) {

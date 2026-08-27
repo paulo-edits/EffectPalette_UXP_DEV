@@ -1,6 +1,14 @@
-# FX.palette UXP proof of concept
+# FX.palette UXP
 
-Minimal, read-only UXP plugin for Adobe Premiere 25.6 or newer. This repository is isolated from the stable Python + CEP application and contains no CEP fallback or Python communication.
+UXP plugin for Adobe Premiere 25.6 or newer, migrated from the stable CEP extension, plus the
+Python companion it talks to (`companion/`).
+
+**For the current state, read [`STATUS.md`](STATUS.md).** This file below is the capability-probe
+history (versions 0.11.0 onward): the early sections describe the plugin while it was still a
+read-only, no-network proof of concept, before later slices added mutation actions, the
+token-authenticated `ws://localhost:58756` transport (`transport.js`), and user-approved
+`localFileSystem` access. `TECHNICAL_PLAN.md` has the full decision trail; `manifest.json` is the
+source of truth for requested permissions.
 
 ## Requirements
 
@@ -15,7 +23,7 @@ Minimal, read-only UXP plugin for Adobe Premiere 25.6 or newer. This repository 
 npm run validate
 ```
 
-This checks the required manifest fields, minimum host version, entrypoint/main-file consistency, absence of requested permissions, and JavaScript syntax. It does not replace a real host load.
+This checks the required manifest fields, minimum host version, entrypoint/main-file consistency, the exact allowlisted permission set, the effect-identity matrix, and JavaScript syntax. It does not replace a real host load.
 
 ## Load in Premiere
 
@@ -45,7 +53,7 @@ Version 0.11.0 reports:
 - counts and samples from the official video-effect, audio-effect and video-transition factories;
 - effect presets as an official reconstruction research track: there is no native catalog/apply API, but documented component/parameter/keyframe actions and user-approved filesystem access provide a testable path (`PRESET_UXP_RESEARCH.md`).
 
-Every JSON output has an adjacent copy button. It uses Premiere UXP's official `navigator.clipboard.setContent()` API and briefly changes its label to `Copied!` or `Copy failed`. The manifest requests only the required `clipboard: readAndWrite` permission; the plugin still requests no network or filesystem access.
+Every JSON output has an adjacent copy button. It uses Premiere UXP's official `navigator.clipboard.setContent()` API and briefly changes its label to `Copied!` or `Copy failed`. At version 0.11.0 the manifest requested only `clipboard: readAndWrite`; see `manifest.json` for the permissions the current version requests.
 
 The first mutation probe was `projectItems.setColorLabel` (set the currently selected Project-panel items to Adobe's `VIOLET` label slot, inside one undoable `Project.executeTransaction()`). It proved the allowlisted-action pattern every later mutation still follows, but was removed from `SUPPORTED_ACTIONS`/`ACTION_HANDLERS` once the real product migration work (`TECHNICAL_PLAN.md`) confirmed it isn't a workflow the user actually needs. The underlying helper function stays as a private implementation detail, reachable only by the 0.16.0 headless-command proof described below, not by the transport or this panel.
 

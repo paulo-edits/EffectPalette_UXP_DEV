@@ -1,4 +1,9 @@
-# FX.palette â€” UXP Project Handoff
+# FX.palette — UXP Project Handoff
+
+> **Historical.** This is the original pre-project brief (2026-08). The proof of concept it
+> describes has since become the real migration: the Python companion now lives in this repo under
+> `companion/` and talks to the plugin over the stage-5 transport. For the current state see
+> `STATUS.md`; for the full decision trail see `TECHNICAL_PLAN.md`. Kept for context.
 
 Read this file before starting the separate UXP proof-of-concept project.
 
@@ -22,7 +27,7 @@ Working capabilities include:
 - automatic Nest routing between Premiere-native and API implementations;
 - custom Nest names and organization under `Nested Sequences`;
 - Premiere Label actions and Label-group selection;
-- global shortcuts and Stream Deck-friendly F13â€“F24 bindings;
+- global shortcuts and Stream Deck-friendly F13–F24 bindings;
 - aliases, recent successful actions and actionable diagnostics;
 - automatic duration matching for Adjustment Layers and similar infinite-duration items with one or more selected clips.
 

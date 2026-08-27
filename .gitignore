@@ -10,3 +10,15 @@ companion/data/uxp_presets.json
 
 # Written by scripts/configure_premiere_shortcuts.ps1 - machine-specific run log.
 companion/data/premiere_shortcut_configuration.log
+
+# Vendored ffmpeg binary for the motion tracker - large (~200 MB), platform-specific,
+# fetched locally, never committed.
+companion/motracker/bin/
+
+# Premiere writes this preview-cache folder next to the bundled template .prproj.
+assets/template_project/Adobe Premiere Pro Audio Previews/
+
+# Build outputs - the packaged plugin (built once via UDT's own Package menu, not by any script
+# here) and everything build_release.ps1 produces from it.
+packaging/dist/*.ccx
+release/

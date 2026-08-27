@@ -1,13 +1,27 @@
 {
+  "_comment": "Shape of assets/template_project/generic_item_templates.json. One block per generic-item kind; each template maps a resolution to a sequence GUID inside the bundled template .prproj.",
   "adjustmentLayer": {
     "projectPath": "template_project/template_project.prproj",
     "templates": [
-      {
-        "name": "AL_TEMPLATE_1920x1080",
-        "width": 1920,
-        "height": 1080,
-        "sequenceID": "SEQUENCE_ID_AQUI"
-      }
+      { "name": "AL_TEMPLATE_1920x1080", "width": 1920, "height": 1080, "sequenceID": "00000000-0000-0000-0000-000000000000" }
+    ]
+  },
+  "barsAndTone": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      { "name": "BT_TEMPLATE_1920x1080", "width": 1920, "height": 1080, "sequenceID": "00000000-0000-0000-0000-000000000000" }
+    ]
+  },
+  "blackVideo": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      { "name": "BV_TEMPLATE_1920x1080", "width": 1920, "height": 1080, "sequenceID": "00000000-0000-0000-0000-000000000000" }
+    ]
+  },
+  "transparentVideo": {
+    "projectPath": "template_project/template_project.prproj",
+    "templates": [
+      { "name": "TV_TEMPLATE_1920x1080", "width": 1920, "height": 1080, "sequenceID": "00000000-0000-0000-0000-000000000000" }
     ]
   }
 }

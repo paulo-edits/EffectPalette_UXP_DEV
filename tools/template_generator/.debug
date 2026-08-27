@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<ExtensionList>
-  <Extension Id="com.fxpalette.templategenerator.panel">
-    <HostList>
-      <Host Name="PPRO" Port="8899"/>
-    </HostList>
-  </Extension>
-</ExtensionList>
