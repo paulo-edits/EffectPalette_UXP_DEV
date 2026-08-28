@@ -2822,20 +2822,6 @@ async function motrackerGetSelectedVideoClip(sequence) {
   return null;
 }
 
-/** The clip on trackIdx whose start time (ticks) matches startTicks, or null. */
-async function motrackerFindClipByTrackAndStart(sequence, trackIdx, startTicks) {
-  const videoTrackCount = await sequence.getVideoTrackCount();
-  if (trackIdx < 0 || trackIdx >= videoTrackCount) return null;
-  const track = await sequence.getVideoTrack(trackIdx);
-  const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
-  const want = BigInt(startTicks);
-  for (const item of items) {
-    const start = BigInt((await item.getStartTime()).ticks);
-    if (start === want || (start > want ? start - want : want - start) < 200000n) return item;
-  }
-  return null;
-}
-
 /** Last component on the chain whose matchName equals matchName, or null. */
 async function motrackerFindComponentByMatchName(chain, matchName) {
   const count = await chain.getComponentCount();
@@ -3005,201 +2991,6 @@ async function motrackerSetMotionBlur(component, on, angle, project) {
   }
 }
 
-// getStartValue()/getValueAtTime() report a param's current value as {value: <raw>} - and <raw>
-// is itself either a plain number (a scalar param like Scale/Rotation) or a 2-element array (a
-// point param like Position/Anchor) - confirmed against a real host read of the built-in Motion
-// effect (motionProbe diagnostic, TECHNICAL_PLAN.md's Motion Tracker slice): Scale read back as
-// {value: {value: 42.1875}}, Position as {value: {value: [0.5, 0.5]}}. One level of unwrap
-// (`.value`) here, one more at the call site, matches every other read in this file.
-async function motrackerReadParamRaw(param) {
-  if (!param) return null;
-  const start = await param.getStartValue();
-  const raw = start && start.value && start.value.value;
-  if (Array.isArray(raw)) return [Number(raw[0]), Number(raw[1])];
-  if (typeof raw === "number") return raw;
-  return null;
-}
-
-/** Writes a plain static value (number or [x,y]) to a param, same createKeyframe +
- * createSetValueAction pattern as motrackerResetParamToStatic/motrackerSetMotionBlur - just
- * generalized to accept either shape, since Motion's own Scale/Rotation (scalar) and Position/
- * Anchor (point) both need writing here, not just points. */
-async function motrackerWriteStaticParam(project, param, value, label) {
-  if (!param || value == null) return;
-  const keyframeValue = Array.isArray(value) ? new premiere.PointF(value[0], value[1]) : value;
-  const keyframe = await param.createKeyframe(keyframeValue);
-  let ok = false;
-  project.lockedAccess(() => {
-    ok = project.executeTransaction((compound) => {
-      compound.addAction(param.createSetValueAction(keyframe, true));
-    }, `FX.palette: ${label}`);
-  });
-  if (!ok) throw new Error(`Premiere rejected setting ${label}.`);
-}
-
-async function motrackerReadMotionParams(chain) {
-  const found = await motrackerFindComponentByMatchName(chain, "AE.ADBE Motion");
-  if (!found) return null;
-  const component = found.component;
-  const scaleParam = await motrackerFindParamByName(component, null, "scale");
-  const positionParam = await motrackerFindParamByName(component, ["position"], null);
-  const anchorParam = await motrackerFindParamByName(component, null, "anchor");
-  const rotationParam = await motrackerFindParamByName(component, null, "rotation");
-  return {
-    component,
-    params: { scaleParam, positionParam, anchorParam, rotationParam },
-    values: {
-      scale: await motrackerReadParamRaw(scaleParam),
-      position: await motrackerReadParamRaw(positionParam),
-      anchor: await motrackerReadParamRaw(anchorParam),
-      rotation: await motrackerReadParamRaw(rotationParam)
-    }
-  };
-}
-
-// The prefix alone (not a full deterministic name) is enough for the idempotency check below -
-// re-applying Stabilize/Follow on an already-nested clip must reuse the SAME nest, not create a
-// nest-of-a-nest on every click (this runs on every Apply now, not just the first one - see
-// TECHNICAL_PLAN.md's Motion Tracker slice for why the user chose always-automatic over opt-in).
-const MOTRACKER_NEST_NAME_PREFIX = "FXN-Motrack ";
-
-/** Nest-and-normalize (TECHNICAL_PLAN.md's Motion Tracker slice): moves targetClip into a fresh
- * Nest sized to its own native pixel resolution, resets the INNER clip's built-in Motion effect to
- * plain defaults (a clean 1:1 fit - no scale/position ambiguity left for our own Transform's
- * Anchor-Point math to reason about), and re-applies the clip's ORIGINAL Motion values to the
- * OUTER nest clip instead, so the final composited look is unchanged. Returns the INNER clip -
- * everything applyTrack does after this call operates on that, completely unaware nesting even
- * happened, since the coordinate math itself never changes, only which clip it targets. Idempotent:
- * re-applying on an already-nested target resolves straight to the existing inner clip instead of
- * nesting again.
- */
-async function motrackerNestAndNormalizeTarget(project, sequence, targetClip, nativeW, nativeH) {
-  const targetProjectItem = await targetClip.getProjectItem();
-  const targetProjectItemName = targetProjectItem ? String(targetProjectItem.name || "") : "";
-
-  // Idempotency: already one of our own nests (matched by the naming convention every nest we
-  // create gets, see MOTRACKER_NEST_NAME_PREFIX) - resolve straight to its existing inner clip.
-  if (targetProjectItemName.startsWith(MOTRACKER_NEST_NAME_PREFIX)) {
-    const targetProjectItemId = await targetProjectItem.getId();
-    const allSequences = await project.getSequences();
-    for (const candidate of allSequences) {
-      const candidateItem = await candidate.getProjectItem();
-      if (!candidateItem || (await candidateItem.getId()) !== targetProjectItemId) continue;
-      const innerTrackCount = await candidate.getVideoTrackCount();
-      if (innerTrackCount === 0) break;
-      const innerItems = await (await candidate.getVideoTrack(0)).getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
-      if (innerItems.length > 0) return innerItems[0];
-      break;
-    }
-    throw new Error("Found an existing Motion Tracker Nest but could not locate its inner clip.");
-  }
-
-  // Not nested yet - must be the user's own current Timeline selection (same requirement
-  // motrackerPerformNest itself has; checked here first so a mismatch fails with a clear, specific
-  // message instead of nesting whatever happens to be selected).
-  const selection = await sequence.getSelection();
-  const selectedItems = selection ? await selection.getTrackItems() : [];
-  const targetTrackIndex = await targetClip.getTrackIndex();
-  const targetStartTicks = String((await targetClip.getStartTime()).ticks);
-  const isTargetSelected = await (async () => {
-    for (const item of selectedItems) {
-      if (await item.getTrackIndex() !== targetTrackIndex) continue;
-      if (String((await item.getStartTime()).ticks) !== targetStartTicks) continue;
-      return true;
-    }
-    return false;
-  })();
-  if (!isTargetSelected) {
-    throw new Error("Keep the clip/object selected in the Timeline while applying Stabilize/Apply Track.");
-  }
-
-  const chain = await targetClip.getComponentChain();
-  const motion = await motrackerReadMotionParams(chain);
-  const origName = await targetClip.getName();
-
-  const nestResult = await motrackerPerformNest(
-    project, sequence, `${MOTRACKER_NEST_NAME_PREFIX}${origName}`, "Motion Tracker Nests"
-  );
-  const createdSequence = nestResult.createdSequenceObject;
-  if (!createdSequence) throw new Error("Nest creation did not return a usable sequence.");
-
-  const innerTrackCount = await createdSequence.getVideoTrackCount();
-  if (innerTrackCount === 0) throw new Error("The new Nest has no video track.");
-  const innerItems = await (await createdSequence.getVideoTrack(0)).getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
-  if (innerItems.length === 0) throw new Error("The new Nest has no clip on its video track.");
-  const innerClip = innerItems[0];
-
-  // Resize the new nested sequence to the clip's own native pixel size - the whole point: our
-  // Transform's Anchor Point math (unchanged, below) then operates on a coordinate space that's
-  // unambiguously "this clip's own native pixels at a 1:1 default Motion", eliminating the
-  // Motion+Transform composition ambiguity this whole investigation could never fully resolve.
-  const settings = await createdSequence.getSettings();
-  settings.setVideoFrameRect(new premiere.RectF(0, 0, nativeW, nativeH));
-  let resizeOk = false;
-  project.lockedAccess(() => {
-    resizeOk = project.executeTransaction((compound) => {
-      compound.addAction(createdSequence.createSetSettingsAction(settings));
-    }, "FX.palette: Resize motion-tracker Nest to native resolution");
-  });
-  if (!resizeOk) throw new Error("Premiere rejected resizing the Nest to the clip's native resolution.");
-
-  // Reset the INNER clip's Motion to plain defaults. Position/Anchor read as a NORMALIZED
-  // fraction (confirmed via the same real host read cited in motrackerReadParamRaw's docstring),
-  // so "centered" is always [0.5, 0.5] regardless of the nest's own pixel size - no pixel math
-  // needed here at all.
-  const innerChain = await innerClip.getComponentChain();
-  const innerMotion = await motrackerReadMotionParams(innerChain);
-  if (innerMotion) {
-    await motrackerWriteStaticParam(project, innerMotion.params.scaleParam, 100, "Reset Nest inner clip Scale");
-    await motrackerWriteStaticParam(project, innerMotion.params.positionParam, [0.5, 0.5], "Reset Nest inner clip Position");
-    await motrackerWriteStaticParam(project, innerMotion.params.anchorParam, [0.5, 0.5], "Reset Nest inner clip Anchor");
-    await motrackerWriteStaticParam(project, innerMotion.params.rotationParam, 0, "Reset Nest inner clip Rotation");
-  }
-
-  // Re-apply the clip's ORIGINAL (pre-nest) Motion values onto the OUTER nest clip, so the final
-  // composited look is unchanged by nesting itself - only WHERE the Position/Anchor math for
-  // Stabilize/Follow lives has moved, not how the timeline actually looks right now.
-  const outerInstance = (nestResult.insertedInstanceObjects || []).find((entry) => entry.mediaKind === "video");
-  if (outerInstance && motion) {
-    const outerChain = await outerInstance.trackItem.getComponentChain();
-    const outerMotion = await motrackerReadMotionParams(outerChain);
-    if (outerMotion) {
-      await motrackerWriteStaticParam(project, outerMotion.params.scaleParam, motion.values.scale, "Carry original Motion Scale to Nest");
-      await motrackerWriteStaticParam(project, outerMotion.params.positionParam, motion.values.position, "Carry original Motion Position to Nest");
-      await motrackerWriteStaticParam(project, outerMotion.params.anchorParam, motion.values.anchor, "Carry original Motion Anchor to Nest");
-      await motrackerWriteStaticParam(project, outerMotion.params.rotationParam, motion.values.rotation, "Carry original Motion Rotation to Nest");
-    }
-  }
-
-  return innerClip;
-}
-
-// Standalone, isolated test entry point for motrackerNestAndNormalizeTarget - lets the nest
-// mechanics (several never-before-exercised API calls in this codebase: reading Motion's own
-// Scale, RectF/setVideoFrameRect/createSetSettingsAction for resizing a sequence) get host-tested
-// on their own, before wiring into the real Stabilize/Follow apply flow risks a half-working nest
-// step corrupting a real Apply. Operates on whatever video clip is currently selected in the
-// active sequence - remove once the Nest-and-normalize step has been confirmed working end to end
-// (TECHNICAL_PLAN.md's Motion Tracker slice).
-async function motrackerTestNest(action) {
-  const request = action.payload || {};
-  const nativeW = Number(request.nativeW) || 0;
-  const nativeH = Number(request.nativeH) || 0;
-  if (nativeW <= 0 || nativeH <= 0) throw new Error("nativeW/nativeH are required for this test.");
-
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("No active project.");
-  const sequence = await project.getActiveSequence();
-  if (!sequence) throw new Error("No active sequence.");
-  const targetClip = await motrackerGetSelectedVideoClip(sequence);
-  if (!targetClip) throw new Error("Select a video clip in the Timeline first.");
-
-  const beforeName = await targetClip.getName();
-  const innerClip = await motrackerNestAndNormalizeTarget(project, sequence, targetClip, nativeW, nativeH);
-  const innerName = await innerClip.getName();
-  return { ok: true, beforeName, innerClipName: innerName };
-}
-
 async function applyTrack(action) {
   const request = action.payload || {};
   const mode = request.mode;
@@ -3224,33 +3015,14 @@ async function applyTrack(action) {
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active sequence.");
 
-  // Resolve target clip: stabilize -> the loaded clip (by track+start), falling back to the
-  // current selection; follow -> the current selection, falling back to the loaded clip.
-  // Mirrors host.jsx/premiere.js's dual-resolution logic exactly.
-  const fromLoaded = (request.trackIdx != null && request.trackIdx >= 0 && request.clipStartTicks)
-    ? await motrackerFindClipByTrackAndStart(sequence, request.trackIdx, request.clipStartTicks)
-    : null;
-  const fromSel = await motrackerGetSelectedVideoClip(sequence);
-  let targetClip = mode === "stabilize" ? (fromLoaded || fromSel) : (fromSel || fromLoaded);
-
+  // Target is ALWAYS the current Timeline selection now, both modes (the user's own call - see
+  // TECHNICAL_PLAN.md's Motion Tracker slice): Stabilize -> select the tracked clip itself;
+  // Seguir Rastro -> select the object that should follow the tracked point.
+  let targetClip = await motrackerGetSelectedVideoClip(sequence);
   if (!targetClip) {
     throw new Error(mode === "stabilize"
-      ? "Could not find the tracked clip. Select it in the timeline, then click Stabilize."
-      : "Select the clip (object) you want to attach to the track, then click Apply Track.");
-  }
-
-  // Nest-and-normalize (TECHNICAL_PLAN.md's Motion Tracker slice) - moves targetClip into a fresh
-  // Nest sized to its own native pixel resolution, with its built-in Motion reset to plain
-  // defaults inside the nest and its ORIGINAL Motion values carried onto the outer nest clip
-  // instead, so the visual composition is unchanged. Everything below this point keeps operating
-  // on targetClip exactly as before - it's just pointing at the nest's inner clip now, on a clean
-  // coordinate space our own Anchor Point math was already proven correct against.
-  {
-    const nativeW = Number(request.targetNativeW) || 0;
-    const nativeH = Number(request.targetNativeH) || 0;
-    if (nativeW > 0 && nativeH > 0) {
-      targetClip = await motrackerNestAndNormalizeTarget(project, sequence, targetClip, nativeW, nativeH);
-    }
+      ? "Select the tracked clip in the Timeline, then click Stabilize."
+      : "Select the clip/object that should follow the track, then click Seguir Rastro.");
   }
 
   const origName = await targetClip.getName();
@@ -3349,6 +3121,20 @@ async function applyTrack(action) {
   const useAnchor = mode === "stabilize" && posIsNorm && !!anchorParam;
   const kfParam = useAnchor ? anchorParam : posParam;
 
+  // Never actually verified until now: the Anchor Point's own resting value. Position's is read
+  // above (posRawX/Y) and used as Follow's base, but Stabilize just WRITES 0.5/0.5 to the Anchor on
+  // the assumption that is its default. If it is not, every keyframe is displaced by a constant
+  // while the motion between them stays correct - which is exactly the reported symptom. Read-only.
+  let anchorStartRaw = null;
+  try {
+    if (anchorParam) {
+      const anchorStart = await anchorParam.getStartValue();
+      const raw = anchorStart && anchorStart.value && anchorStart.value.value;
+      if (Array.isArray(raw)) anchorStartRaw = [Number(raw[0]), Number(raw[1])];
+      else if (raw && typeof raw.x === "number") anchorStartRaw = [raw.x, raw.y];
+    }
+  } catch (error) { /* diagnostic only */ }
+
   const goodFrames = trackData.filter((t) => t.conf > 0);
   if (goodFrames.length === 0) throw new Error("No valid track data (all frames lost or deleted).");
   // The reference frame for every delta below MUST be the frame the user actually clicked the
@@ -3408,6 +3194,15 @@ async function applyTrack(action) {
   // Effect param time is clip-local, anchored at the clip's own in point.
   const clipInPoint = await targetClip.getInPoint();
 
+  // Records the values actually written, so a host report of "still off" can be checked against
+  // Effect Controls numerically instead of by eye - the parameter's own px readout at the extreme
+  // frames tells us directly whether the normalisation base is right, independently of any
+  // reasoning about it.
+  const appliedXs = [];
+  const appliedYs = [];
+  const appliedTimes = [];
+  let lastOffsetSeconds = 0;
+
   const preparedKeyframes = [];
   for (const t of goodFrames) {
     const realTimestamp = frameTimestamps && t.frame >= 0 && t.frame < frameTimestamps.length
@@ -3439,6 +3234,11 @@ async function applyTrack(action) {
       vy = posRawY + dyF;
     }
 
+    appliedXs.push(vx);
+    appliedYs.push(vy);
+    if (appliedTimes.length < 2) appliedTimes.push(offsetSeconds);
+    lastOffsetSeconds = offsetSeconds;
+
     const keyframe = await kfParam.createKeyframe(new premiere.PointF(vx, vy));
     keyframe.position = time;
     try { await keyframe.setTemporalInterpolationMode(premiere.Constants.InterpolationMode.LINEAR); } catch (error) { /* keep default */ }
@@ -3468,6 +3268,42 @@ async function applyTrack(action) {
     motrackerDebug: {
       mode, posIsNorm, useAnchor, cx, cy, seqW, seqH, extractedW, extractedH,
       frameW, frameH, exW, exH, coordScaleX, coordScaleY, posRawX, posRawY,
+      followScaleX, followScaleY,
+      // What was actually written, and what those normalised values mean in pixels under the
+      // assumption the code is built on (x over the frame width, y over the frame height). If
+      // Effect Controls disagrees with expectedPxRangeX/Y for this same parameter, the
+      // normalisation base is wrong and the ratio between the two is the missing factor.
+      appliedParam: useAnchor ? "anchor" : "position",
+      // The resting value of the parameter being keyframed, before this run touched it. For
+      // Stabilize this is the Anchor: anything other than [0.5, 0.5] means the 0.5 base baked into
+      // the math is wrong and is the source of a constant displacement.
+      anchorStartRaw,
+      appliedFirst: [appliedXs[0], appliedYs[0]],
+      appliedLast: [appliedXs[appliedXs.length - 1], appliedYs[appliedYs.length - 1]],
+      appliedMinX: Math.min(...appliedXs),
+      appliedMaxX: Math.max(...appliedXs),
+      appliedMinY: Math.min(...appliedYs),
+      appliedMaxY: Math.max(...appliedYs),
+      // The same extremes expressed in the units Effect Controls shows for this parameter, so the
+      // written values can be compared against the host directly rather than inferred.
+      uiMinX: Math.min(...appliedXs) * exW,
+      uiMaxX: Math.max(...appliedXs) * exW,
+      uiMinY: Math.min(...appliedYs) * exH,
+      uiMaxY: Math.max(...appliedYs) * exH,
+      // The tracked input itself, in extracted pixels - if the written range does not equal this,
+      // the conversion is at fault; if it does, the values are right and the fault is elsewhere.
+      trackedRangeX: Math.max(...goodFrames.map((t) => t.x)) - Math.min(...goodFrames.map((t) => t.x)),
+      trackedRangeY: Math.max(...goodFrames.map((t) => t.y)) - Math.min(...goodFrames.map((t) => t.y)),
+      appliedRangeX: Math.max(...appliedXs) - Math.min(...appliedXs),
+      appliedRangeY: Math.max(...appliedYs) - Math.min(...appliedYs),
+      expectedPxRangeX: (Math.max(...appliedXs) - Math.min(...appliedXs)) * exW,
+      expectedPxRangeY: (Math.max(...appliedYs) - Math.min(...appliedYs)) * exH,
+      // Keyframe placement: the nest instance's own in point plus the first/last offsets. A
+      // non-zero in point that does not line up with the tracked range would put every keyframe at
+      // the wrong time, which looks like a broken track rather than a mis-scaled one.
+      clipInPointSeconds: clipInPoint.seconds,
+      firstOffsetSeconds: appliedTimes[0],
+      lastOffsetSeconds,
       // requestedSeedFrame: what the companion actually sent. resolvedFirstFrame: which frame the
       // code actually used as the delta reference (should match requestedSeedFrame if the fix is
       // live - if this whole block still doesn't show up in a fresh test, the UXP plugin was not
@@ -3511,7 +3347,6 @@ const ACTION_HANDLERS = {
   "timeline.checkTrackAvailability": checkTrackAvailability,
   "motracker.getClipInfo": getClipInfo,
   "motracker.getFollowTargetMediaPath": getFollowTargetMediaPath,
-  "motracker.testNest": motrackerTestNest,
   "motracker.applyTrack": applyTrack
 };
 

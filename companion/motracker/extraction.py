@@ -99,6 +99,47 @@ def build_ffmpeg_args(media_path: str, src_start: float, duration: float, out_pa
     ]
 
 
+def analyse_frame_timing(pts_times: list[float]) -> dict:
+    """Flag source footage whose decoded frames are not evenly spaced in time.
+
+    This is the failure mode that cost a whole debugging session (TECHNICAL_PLAN.md's Motion Tracker
+    slice): Premiere conforms variable-frame-rate footage to a constant rate on import, duplicating
+    or dropping frames to fill the irregular gaps, while this extractor decodes the source's own
+    frames as they are. Wherever Premiere inserts or drops one, the plugin's frame *i* stops being
+    the frame Premiere shows at that moment, and every keyframe after it is placed against the wrong
+    picture. Nothing errors - the track simply never quite locks, which is indistinguishable by eye
+    from a coordinate bug and was chased as one for hours.
+
+    The signal is a single inter-frame interval that departs from the clip's own median, not the
+    accumulated drift: the failing clip measured 16.667 ms throughout with ONE interval of 22.2 ms
+    (+33%), which is exactly one place for Premiere to conform differently. Accumulated deviation
+    stayed under half a frame overall and would not have caught it.
+
+    Compares each interval against the median rather than a nominal rate, so it needs no assumption
+    about what the file claims to be - the container's own advertised rate was 59.97 on a file whose
+    real frames sit at 60.000.
+    """
+    if len(pts_times) < 10:
+        return {"irregular": False, "reason": "too few frames to judge"}
+    intervals = [pts_times[i + 1] - pts_times[i] for i in range(len(pts_times) - 1)]
+    ordered = sorted(intervals)
+    median = ordered[len(ordered) // 2]
+    if median <= 0:
+        return {"irregular": False, "reason": "no usable median interval"}
+    # 20%: comfortably above the sub-1% jitter of genuinely constant-rate files (a transcoded CFR
+    # control measured 16.666-16.667 ms), well below the +33% the real VFR case produced.
+    offenders = [v for v in intervals if abs(v - median) / median > 0.20]
+    worst = max(intervals, key=lambda v: abs(v - median)) if intervals else median
+    return {
+        "irregular": bool(offenders),
+        "medianMs": round(median * 1000, 3),
+        "worstMs": round(worst * 1000, 3),
+        "worstDeviationPct": round(abs(worst - median) / median * 100, 1),
+        "irregularCount": len(offenders),
+        "totalIntervals": len(intervals),
+    }
+
+
 class FrameExtractor(QtCore.QObject):
     """Runs ffmpeg via QProcess for one extraction job. Emits `progress` zero or more times, then
     `finished` exactly once with either {"ok": True, "jobId", "framesDir", "frameCount", "frameW",
@@ -224,8 +265,12 @@ class FrameExtractor(QtCore.QObject):
             base = self._pts_times[0]
             frame_timestamps = [round(t - base, 6) for t in self._pts_times]
 
+        # Irregular source timing is reported, never corrected here - see analyse_frame_timing.
+        timing = analyse_frame_timing(self._pts_times)
+
         self.finished.emit({
             "ok": True,
+            "timing": timing,
             "jobId": self._job_id,
             "framesDir": str(self._job_dir),
             "frameCount": len(frames),

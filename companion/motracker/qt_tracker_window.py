@@ -954,6 +954,30 @@ class MotionTrackerWindow(QtWidgets.QDialog):
         apply_group_layout.addLayout(preview_row)
         self._preview_mode: str | None = None
 
+        # Keyframe timing (TECHNICAL_PLAN.md's Motion Tracker slice). Default is UNIFORM spacing at
+        # frameCount/durationSec - a rate derived from Premiere's own reported clip duration and the
+        # frames actually extracted, so it cannot disagree with the grid the sequence renders on.
+        #
+        # The alternative, timing each keyframe by its real ffmpeg pts, was the default until a host
+        # test measured what it costs: on a 60 fps sequence the container's own rate put keyframes
+        # 16.695 ms apart against the sequence's 16.667 ms, drifting 0.35 of a frame across the clip.
+        # That is under one frame in total, but when the drift crosses half a frame the rounding
+        # flips once - one sequence frame gets two keyframes and the next gets none - producing a
+        # single visible deviation. Uniform timing removes it because every keyframe lands exactly
+        # on a frame boundary. Kept as an option because real timestamps are still the honest
+        # reading of a genuinely variable-rate file; that case is handled properly by conforming the
+        # source, not by timing keyframes off-grid.
+        timing_row = QtWidgets.QHBoxLayout()
+        self.real_timestamps_check = QtWidgets.QCheckBox("Usar timestamps reais do arquivo (diagnóstico)")
+        self.real_timestamps_check.setChecked(False)
+        self.real_timestamps_check.setToolTip(
+            "Desmarcado (padrão): keyframes espaçados uniformemente, exatamente sobre os frames da sequência. "
+            "Marcado: cada keyframe vai no tempo real do frame no arquivo, o que pode sair da grade da sequência."
+        )
+        timing_row.addWidget(self.real_timestamps_check)
+        timing_row.addStretch(1)
+        apply_group_layout.addLayout(timing_row)
+
         apply_row = QtWidgets.QHBoxLayout()
         self.mblur_check = QtWidgets.QCheckBox("Motion Blur")
         self.mblur_check.toggled.connect(self._on_mblur_toggled)
@@ -987,13 +1011,6 @@ class MotionTrackerWindow(QtWidgets.QDialog):
         apply_row.addWidget(self.apply_track_btn)
         apply_group_layout.addLayout(apply_row)
         root.addWidget(apply_group)
-
-        # TEMPORARY - isolated host test for the Nest-and-normalize step (TECHNICAL_PLAN.md's
-        # Motion Tracker slice), before wiring it into the real Stabilize/Follow flow above. Remove
-        # once confirmed working, alongside motracker.testNest/test_nest.
-        test_nest_btn = QtWidgets.QPushButton("[TESTE] Nest + normalizar clipe selecionado")
-        test_nest_btn.clicked.connect(self._on_test_nest_clicked)
-        root.addWidget(test_nest_btn)
 
     def _reset_params_to_defaults(self):
         self.search_diam.setValue(self._DEFAULT_PARAMS["search"])
@@ -1437,6 +1454,15 @@ class MotionTrackerWindow(QtWidgets.QDialog):
         max_dy = max(abs(d[1]) for d in deltas)
         avg_dx = sum(abs(d[0]) for d in deltas) / len(deltas)
         avg_dy = sum(abs(d[1]) for d in deltas) / len(deltas)
+        # Absolute positions too, not just frame-to-frame deltas: the deltas alone cannot be
+        # replayed against the extracted frames to check whether the track actually follows the
+        # feature, which is the one thing that matters once the coordinate math is ruled out.
+        print(
+            f"[motracker] raw track absolute: seed={self._track_seed_frame} "
+            f"first=({tracks[0]['x']},{tracks[0]['y']}) last=({tracks[-1]['x']},{tracks[-1]['y']}) "
+            f"samples={[(t['frame'], t['x'], t['y'], t['conf']) for t in tracks[::10]]}",
+            flush=True,
+        )
         print(
             f"[motracker] raw track jitter (extracted-frame pixels): "
             f"frames={len(tracks)} maxAbsDx={max_dx} maxAbsDy={max_dy} "
@@ -1540,6 +1566,18 @@ class MotionTrackerWindow(QtWidgets.QDialog):
         # showinfo's frame count didn't line up with what was actually extracted - applyTrack then
         # falls back to a constant fps, same as before this existed.
         self._clip_info["frameTimestamps"] = frame_timestamps
+        # Self-consistent uniform rate: Premiere's own reported clip duration divided by the frames
+        # actually extracted from it. Unlike ffmpeg's sniffed nominal fps, this cannot disagree with
+        # how long Premiere believes the clip is, which is what the keyframe times are relative to.
+        duration_sec = float(self._clip_info.get("durationSec") or 0)
+        frame_count = int(result.get("frameCount") or 0)
+        self._clip_info["uniformFps"] = (frame_count / duration_sec) if duration_sec > 0 and frame_count > 0 else 0.0
+        print(
+            f"[motracker] timing rates: sniffedSrcFps={result.get('srcFps')} "
+            f"uniformFps={self._clip_info['uniformFps']:.6f} "
+            f"(frameCount={frame_count} / durationSec={duration_sec:.6f})",
+            flush=True,
+        )
         self._tracks = []
         self._tracks_by_frame = {}
         self._tracks_raw = []
@@ -1563,28 +1601,43 @@ class MotionTrackerWindow(QtWidgets.QDialog):
         # the extraction itself completed fine).
         self.progress_bar.setValue(100)
         QtCore.QTimer.singleShot(400, lambda: self.progress_bar.setVisible(False))
+
+        # Irregular source timing does not fail anything - it silently produces a track that never
+        # quite locks, because Premiere conforms such footage to a constant rate while this
+        # extractor decodes the source's own frames (see extraction.py's analyse_frame_timing).
+        # Surfacing it turns the worst kind of defect, a plausible-looking wrong result, into
+        # something the user can act on.
+        timing = result.get("timing") or {}
+        if timing.get("irregular"):
+            print(
+                f"[motracker] IRREGULAR SOURCE TIMING: {timing.get('irregularCount')} of "
+                f"{timing.get('totalIntervals')} intervals off the median "
+                f"({timing.get('medianMs')} ms); worst {timing.get('worstMs')} ms "
+                f"(+{timing.get('worstDeviationPct')}%). Premiere conforms this footage to a "
+                f"constant rate, so tracked frames can drift out of step with what it displays.",
+                flush=True,
+            )
+            self.status_label.setStyleSheet("color: #FFC332; font-weight: 600;")
+            self.status_label.setText(
+                f"⚠ Taxa de quadros variável detectada ({timing.get('irregularCount')} de "
+                f"{timing.get('totalIntervals')} intervalos irregulares). O tracking pode não travar "
+                f"direito - converta o clipe para taxa constante antes de rastrear."
+            )
+            self.status_label.setToolTip(
+                "O Premiere conforma material de taxa variável para taxa constante ao importar, "
+                "duplicando ou descartando quadros. A extração do tracker lê os quadros do arquivo "
+                "como eles são, então a partir de cada irregularidade os dois deixam de falar do "
+                "mesmo quadro e os keyframes saem de sincronia. "
+                f"Intervalo mediano: {timing.get('medianMs')} ms | pior: {timing.get('worstMs')} ms "
+                f"(+{timing.get('worstDeviationPct')}%)"
+            )
+            return
+
+        self.status_label.setStyleSheet("")
+        self.status_label.setToolTip("")
         self.status_label.setText(
             f"{result['frameCount']} frames extraídos - clique um ponto no clipe pra rastrear."
         )
-
-    def _on_test_nest_clicked(self):
-        # TEMPORARY - see the button's own comment in _build.
-        if self._adapter is None:
-            self.status_label.setText("Sem conexão com o companion.")
-            return
-        native_w = int((self._clip_info or {}).get("extractedW", 0))
-        native_h = int((self._clip_info or {}).get("extractedH", 0))
-        if native_w <= 0 or native_h <= 0:
-            self.status_label.setText("[TESTE] Carregue um clipe primeiro (usa o tamanho nativo já extraído).")
-            return
-        self.status_label.setText(f"[TESTE] Testando Nest ({native_w}x{native_h}) no clipe selecionado no Premiere...")
-        result = self._adapter.test_nest(native_w, native_h)
-        if result is None:
-            self.status_label.setText("[TESTE] Sem resposta do companion (não conectado?).")
-        elif not result.get("ok"):
-            self.status_label.setText(f"[TESTE] Falhou: {result.get('error')}")
-        else:
-            self.status_label.setText(f"[TESTE] OK - antes: {result.get('beforeName')} / clipe interno: {result.get('innerClipName')}")
 
     def _on_apply_clicked(self, mode: str):
         if self._adapter is None or self._clip_info is None:
@@ -1608,23 +1661,26 @@ class MotionTrackerWindow(QtWidgets.QDialog):
             "trackIdx": info.get("trackIdx"),
             "clipStartTicks": info.get("clipStartTicks"),
             "seedFrame": self._track_seed_frame,
-            "frameTimestamps": info.get("frameTimestamps"),
         }
 
-        # The target's own native pixel size - used both for Nest-and-normalize (both modes now,
-        # see TECHNICAL_PLAN.md's Motion Tracker slice) and for Follow's own coordinate scale
-        # (mode != "stabilize" only, same as before). For Stabilize the target IS the tracked clip
-        # itself, whose native size the extraction step already established (extractedW/H, now
-        # always the clip's true native resolution - no separate lookup needed). For Follow the
-        # target is a DIFFERENT clip, so its real size still comes from the companion's own
-        # OpenCV read of its media file (get_follow_target_native_size's docstring explains why
-        # that can't just be read from Premiere itself). Missing/unreadable falls back to the
-        # sequence size inside applyTrack - not fatal, just the old less-accurate behaviour (and,
-        # for Nest-and-normalize, simply skips nesting for that Apply).
-        if mode == "stabilize":
-            request["targetNativeW"] = info.get("extractedW", 0)
-            request["targetNativeH"] = info.get("extractedH", 0)
+        # See the checkbox's own comment in _build. applyTrack already falls back to frame/fps when
+        # frameTimestamps is absent, so uniform timing is expressed by withholding them and sending
+        # the derived rate instead of ffmpeg's sniffed one.
+        if self.real_timestamps_check.isChecked():
+            request["frameTimestamps"] = info.get("frameTimestamps")
         else:
+            uniform_fps = float(info.get("uniformFps") or 0)
+            if uniform_fps > 0:
+                request["fps"] = uniform_fps
+
+        # Follow only: the FOLLOWED object is a different, arbitrarily-sized clip, and Position is
+        # normalised over the target clip's own frame - so its real pixel size is needed to scale
+        # the tracked delta. Read from the object's own media file via OpenCV, because no Premiere
+        # parameter reports real pixels (both Position and Motion's Anchor Point were tried and
+        # disproven - see TECHNICAL_PLAN.md's Motion Tracker slice). Stabilize needs nothing here:
+        # the Anchor Point it writes is already normalised over the tracked clip's own frame, which
+        # is exactly the space the tracker measures in.
+        if mode != "stabilize":
             native_size = self._adapter.get_follow_target_native_size()
             if native_size:
                 request["targetNativeW"] = native_size["width"]

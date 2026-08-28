@@ -21,7 +21,6 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.checkTrackAvailability",
   "motracker.getClipInfo",
   "motracker.getFollowTargetMediaPath",
-  "motracker.testNest",
   "motracker.applyTrack"
 ]);
 

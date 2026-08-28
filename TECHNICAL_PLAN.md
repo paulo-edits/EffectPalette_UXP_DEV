@@ -832,6 +832,202 @@ from the source project's own comment, not re-derived here. Packaging (`cv2` + b
 inside a frozen PyInstaller build, and the resulting installer size) has not yet been re-validated
 since this feature was added.
 
+### Sixteenth slice: nesting the apply target, tried and reverted (2026-08-27)
+
+The user asked for a structural change: whatever is selected in the Timeline goes into a Nest, and
+the tracking data is applied to that Nest, identically for Stabilize and Seguir Rastro. Asked where
+the keyframes should land, they chose the outer nest clip. Asked whether to keep the fifteenth
+slice's nest-and-normalize step (resize the Nest to the clip's native pixel resolution, reset the
+inner clip's intrinsic Motion, carry the original Motion onto the outer clip), **this session
+recommended dropping it as a simplification, and that recommendation was wrong** - it is the load-
+bearing part of the whole design. Everything below followed from that mistake.
+
+**Why the native-resolution resize is load-bearing.** The stable CEP `pFX-Tracker`'s `mt_applyTrack`
+(read as a behaviour reference) documents the property the whole feature rests on: `AE.ADBE
+Geometry2` exposes two *different* normalised spaces - Position normalised over the **sequence**
+frame, Anchor Point normalised over the **clip's own** frame. The tracker measures motion in the
+clip's own extracted pixels, so Anchor is the only property whose space matches the data. Write
+there, never touch Position, and mixed aspect ratios need no sequence math at all:
+`coordScale = 1/extractedW, 1/extractedH` is simply "fraction of the clip's own frame". CEP's step 2
+is explicitly titled "Add Transform DIRECTLY to the clip - NO nesting", and lists avoiding nest
+audio/duration/offset bugs and natural mixed-aspect handling as the reasons.
+
+A sequence-sized Nest replaces "the clip's own frame" (1440x2560 here) with the sequence frame
+(1920x1080), breaking that match. The fifteenth slice's native-resolution resize existed precisely
+to restore it. Removing the resize while keeping the Nest left the coordinate space silently wrong.
+
+**The wrong-hypothesis chain that followed**, recorded so it is not repeated:
+
+1. First retest came back skewed in both modes. Diagnosed as the separate X/Y factors
+   (`1/exW`, `1/exH`) encoding "the clip fills the frame" per-axis, and replaced with a single
+   uniform `displayScale` derived from the tracked clip's Motion Scale. The Scale-to-percentage
+   mapping was genuinely confirmed against the host (user read `42,2` in Effect Controls where an
+   earlier API probe read `42.1875`; `42.1875 = 1080/2560`, a 2560-tall source fitted to a 1080-tall
+   frame). But the premise was wrong: those factors were never "fill the frame", they were
+   "fraction of the clip's own frame", which is correct for Anchor - under the Nest they had merely
+   stopped describing the target.
+2. Next retest: motion correct, framing off. Diagnostics ruled out a spurious offset in what gets
+   written - `anchorStartRaw` and `appliedFirst` both `[0.5, 0.5]`, `expectedPxRangeX/Y` 337.7/296.0
+   px matching an offline prediction, `clipInPointSeconds: 0`, and the user independently read
+   `960, 540` in Effect Controls at the seed frame.
+3. Then misread the user's "the adjustment is manual" as a complaint about full-lock semantics, and
+   replaced Stabilize's applied series with a de-shake residual `P_raw - P_smooth`. Reverted: the
+   user had said the motion was correct, so this answered a question they had not asked; and it was
+   inert anyway, because `one_euro_zero_phase` is velocity-adaptive
+   (`cutoff = mincutoff + beta*|v|`) and this fixture's ~1200 px/s drives the cutoff to ~24 Hz, so
+   the residual collapses to nearly zero ("o negócio mal se mexe"). One-Euro is the wrong tool for a
+   stabilisation reference path; a fixed-cutoff window average would be needed if de-shake is ever
+   wanted as a real mode.
+
+**Resolution.** The user chose to drop nesting entirely - "era a minha ideia original, só pensei na
+Nest pois talvez pudesse dar menos trabalho". `applyTrack` no longer nests; `motrackerNestTarget`
+and the whole nest-and-normalize path are gone (`motrackerPerformNest` stays, it still backs
+`timeline.createNest`). The coordinate math and keyframe-value math are restored to the proven form.
+`displayScale`/`trackedScale` and `getClipInfo`'s `motionScale` read are removed with them. Follow
+is restored to its last host-confirmed configuration (Position, scaled by the followed object's own
+native size via `motracker.getFollowTargetMediaPath` + OpenCV) rather than redesigned, since the
+user deferred that decision until Stabilize is confirmed.
+
+Kept from this pass: the `motracker.testNest` / `test_nest` / `[TESTE]` scaffolding is removed for
+good, the apply target is always the current Timeline selection in both modes (the user's call,
+replacing CEP's dual loaded-clip/selection resolution), and the `motrackerDebug` block now also
+reports `anchorStartRaw`, `appliedFirst`, `appliedRangeX/Y`, `expectedPxRangeX/Y` and
+`clipInPointSeconds`, which is what made step 2 above conclusive.
+
+**Isolated by the user's own controlled experiment (2026-08-27): VFR source footage is the culprit.**
+This supersedes the session's earlier zoom explanation, which was wrong - the user reproduced the
+same track in After Effects with a single point and it locked for the whole clip, so a one-point
+tracker's translation-only limit cannot be what breaks it here.
+
+The user then tested a clip with **30 fps in a 60 fps sequence** and **3828x2160 in a 1080x1920
+sequence**, with **no VFR**: tracking was perfect. By elimination:
+
+- **Resolution / aspect ratio is not a factor.** A 4K landscape source in a vertical HD sequence
+  tracked perfectly, which independently confirms the Anchor Point math (`1/extractedW`,
+  `1/extractedH`, the clip's own frame) and closes that line of investigation for good.
+- **Frame-rate mismatch alone is not a factor.** 30 fps in a 60 fps sequence survived a 2x
+  mismatch. The failing clip's 59.97-in-60 is a 0.05% difference - 1.25 ms over 2.5 s.
+- **VFR is the remaining variable, and the one that breaks it.**
+
+**Mechanism**, and it is one of this project's own features working against itself: `extraction.py`
+collects each frame's real `pts_time` via ffmpeg `showinfo`, and `applyTrack` places keyframes at
+those times. Premiere, however, **conforms VFR footage to a constant rate on import** - clip frame
+*i* is displayed at `i / conformed_rate` regardless of its real pts. So the plugin times keyframes
+by real file time while Premiere lays the frames on a uniform grid. On CFR footage the two agree and
+everything works; on VFR they diverge progressively, and a divergence that grows across the clip is
+exactly "follows the motion but never locks, and one constant reframe only fixes one frame".
+
+Two aggravating details in the failing clip: `parse_source_meta` reported `vfrSuspect=False` (its
+fps/tbr heuristic missed it - the same blind spot recorded earlier in this slice), and
+`frameTimestamps` are used whenever their count matches the extracted frames, without consulting
+`vfrSuspect` at all.
+
+**CONFIRMED IN THE HOST (2026-08-27): VFR was the culprit, and the user was right.** They asserted
+it three times against this session's pushback, which was wrong twice over - first dismissed on a
+flawed argument (only the *final* keyframe offset was compared, 3.405778 s vs 3.400 s, and called
+negligible; accumulated deviation is not the same as evenly distributed error), then replaced with a
+camera-zoom explanation that the user's own After Effects result disproved.
+
+Measured on the failing source with ffmpeg `showinfo`: inter-frame intervals are 16.667 ms (60 fps
+exactly) throughout, except **one interval of 22.223 ms** - 33% long - between frames 140 and 160.
+The cumulative deviation from a uniform grid sits at 0.21 ms up to frame 140, then steps to 5.78 ms
+and stays there. So the file is effectively CFR with a single hiccup, not continuously variable,
+which is why the earlier `vfrSuspect` heuristic missed it and why the end-to-end offset looked tiny.
+
+Transcoding the same clip to true CFR 60 (`-vf fps=60`, verified: worst deviation from the uniform
+grid 0.000 ms) and re-running the identical workflow **locked perfectly**. Same track data, same
+code path, only the source timing changed.
+
+**Remaining artifact, also diagnosed and already fixable:** on the CFR clip the user noticed the
+keyframes stop being evenly spaced at one point, with a visible deviation there. No keyframes are
+missing - 205 written for frames 0..204. It is phase slip: `lastOffsetSeconds` 3.405778 over 204
+intervals is 16.695 ms per keyframe against the sequence's 16.667 ms, so keyframes drift 0.028 ms
+per frame, 5.78 ms (0.35 frame) across the clip. That is under one frame in total, but when the
+drift crosses half a frame the rounding flips once: one sequence frame receives two keyframes and
+the next receives none. Exactly one such crossing, hence exactly one gap.
+
+The fix is the timing toggle added this session: unchecking "Usar timestamps reais do arquivo" uses
+`frameCount / durationSec` (60.000000 here) instead of the container's sniffed 59.97, placing every
+keyframe at `i/60`, exactly on the sequence's own frame boundaries. Whether this should become the
+default - and whether extraction should resample to a constant rate so VFR sources are conformed the
+same way Premiere conforms them - is the next decision, and needs one more host run to confirm the
+gap disappears.
+
+**Host-confirmed (2026-08-27): unchecking the toggle removed the gap.** Uniform timing at
+`frameCount / durationSec` is therefore now the **default**, and the checkbox is relabelled as a
+diagnostic. On the CFR clip this produces a clean lock with evenly spaced keyframes throughout.
+
+**What is settled and what is not.** Settled: the coordinate math (Anchor Point in the clip's own
+frame), the tracker's accuracy (sub-2 px against the frame-0 patch over 205 frames), the write path
+(Effect Controls matches the computed values to within the de-shake residual), and keyframe timing.
+Not settled: **a VFR source still has to be transcoded to CFR by hand** before it tracks correctly -
+the user did that manually to get the working result. Making that automatic means conforming the
+source during extraction (`-vf fps=R`) so the plugin's frame *i* is the same frame Premiere shows at
+*i/R*, instead of relying on the file's own irregular timing. The open question there is which R:
+`extraction.py` already records that a `,fps={fps}` resample to the **sequence** rate was removed for
+causing a real bug, so the rate would have to be the clip's own conformed rate, and how to obtain
+that before extraction has not been established.
+
+**Shipped instead of the auto-conform (2026-08-27, user's call): detect and warn.** Weighing it
+honestly, automating the choice between the two timing models was worth little - on effectively-CFR
+footage both agree, and on genuinely irregular footage neither works. Automating the *conform*
+(probe the timestamps, then extract with `-vf fps=R` when the source is irregular) is the real fix,
+but it changes `extraction.py`, which already has a recorded bug caused by an fps filter, it depends
+on ffmpeg conforming identically to Premiere - unverified - and validating it costs host cycles that
+this session showed to be expensive. The user chose the warning: "acho melhor por um aviso do que
+inventar moda."
+
+`extraction.py` gained `analyse_frame_timing`, which flags any inter-frame interval departing more
+than 20% from the clip's own median. The signal is a single irregular interval, not accumulated
+drift: the failing clip was 16.667 ms throughout with one interval of 22.2 ms, while its total
+deviation stayed under half a frame and would not have caught it. Comparing against the clip's own
+median rather than a nominal rate avoids trusting the container, which advertised 59.97 on a file
+whose real frames sit at 60.000. Validated offline against both of this session's real files: the
+original flags (1 of 240 intervals, worst +33.3%), the transcoded control does not (0 of 240).
+
+Host-confirmed: the warning appears on the original VFR clip and stays absent on the transcoded
+CFR control. The tracker window shows it as an amber status line naming the count and telling the user to convert
+the clip, with the mechanism in the tooltip, and logs the same detail. This does not fix VFR - it
+converts the worst failure mode, a plausible-looking wrong result with no error anywhere, into
+something actionable. The auto-conform stays available as a later decision, now with its cost
+understood rather than estimated.
+
+**Superseded proposal, kept for the reasoning:** have ffmpeg emit exactly the frames Premiere
+shows - resample to a constant rate during extraction and go back to frame-index timing, so frame
+*i* is at `i/rate` on both sides by construction rather than by compensation. Two things must be
+settled first: (1) which rate - it has to be the conformed rate Premiere assigned the clip, not the
+sequence rate nor the file's average, and whether the UXP API exposes a clip/projectItem frame rate
+needs checking in the host; (2) this slice already records that a `,fps={fps}` resample was removed
+for causing a real bug, and that real timestamps were adopted specifically to fix VFR drift, so that
+earlier decision must be re-read before being reversed.
+
+**Superseded (2026-08-27): the single-point zoom explanation.** Two Program Monitor screenshots (first and last frame, Stabilize
+applied, clip at Motion Scale 100 so no scale conversion is involved at all) settled it:
+
+- Distances between fixed features on the subject grew by a consistent factor across both axes
+  (X->B 177->205 px, Y->A 187->218 px, both ~1.16). The camera moved ~16% closer during the clip.
+- The tracked feature itself moved ~13 screenshot px between the two frames, against ~45 px for one
+  nearby button and ~73 px for another. It is 3-6x more stable than everything around it, i.e. the
+  correction is being applied and is roughly 98% effective (the raw track spans ~800 px).
+
+A one-point tracker yields translation only. It can pin exactly one point; everything else scales
+around it, and no constant reframe can compensate a scale that changes over time. That is exactly
+the reported "só no frame que eu faço o ajuste fica correto", and it explains why the symptom
+survived every geometry change tried this session (nested/not nested, Motion Scale 100 or 42.1875)
+and why the CEP tool behaves identically - it shares the algorithm, not the porting.
+
+Residual on the tracked point itself is partly self-inflicted: Stabilize pins the *smoothed* track,
+so `P_raw - P_smooth` remains. Suavização 0 pins the raw track exactly and removes that component.
+
+Real compensation for zoom/rotation needs two or more tracked points (their separation gives scale,
+their angle gives rotation), writing Scale and Rotation keyframes alongside position. That is a new
+feature, not a fix, and is not attempted here.
+
+**Still to verify in the host:** that Stabilize is correct again without the Nest, and then the
+Follow decision (CEP writes the Anchor for both modes with the sign flipped, which needs no object
+size lookup at all but scales by the object's own frame; this port uses Position plus the real
+object size, which the user previously confirmed working).
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and

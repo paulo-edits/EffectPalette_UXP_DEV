@@ -47,11 +47,26 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
 ## In progress / not yet verified
 
 - **Motion Tracker** (`companion/motracker/`, `motracker.*` actions) — active development.
-  Stabilize and Follow are host-tested working; still open: `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX`
-  (= 9) not re-verified against this Premiere build; the `motracker.testNest` / `test_nest` /
-  `[TESTE]` button scaffolding is temporary; a "vertical clip in a horizontal sequence" report is
-  still being investigated (`motrackerDebug` block in `index.js`); PyInstaller packaging with
-  `cv2` + bundled `ffmpeg.exe` (~200 MB) not re-validated.
+  2026-08-27: a restructure that nested the apply target was tried and **reverted**. `applyTrack`
+  applies the Transform directly to the selected clip again, matching the stable CEP tool: Anchor
+  Point is normalised over the clip's own frame, which is exactly the space the tracker measures in,
+  so mixed aspect ratios need no sequence math and nesting actively breaks it. Removed for good:
+  the `motracker.testNest` / `[TESTE]` scaffolding. Changed and kept: the apply target is always the
+  current Timeline selection in both modes. **Root cause found and host-confirmed 2026-08-27: VFR
+  source footage.** The failing clip is CFR 60 throughout except one 22.2 ms interval; transcoded to
+  true CFR it locks perfectly with the same track and the same code. A second, smaller artifact was
+  keyframe phase slip - timing keyframes by the container's own pts put them 16.695 ms apart on a
+  16.667 ms sequence grid, drifting 0.35 frame across the clip and flipping the rounding once, which
+  produced a single visible deviation. Uniform timing at `frameCount / durationSec` is now the
+  default and removed it. Verified along the way: the Anchor Point coordinate math, the tracker's
+  accuracy (sub-2 px over 205 frames), and that Effect Controls stores exactly the computed values.
+  Irregular source timing is now **detected and warned about** (`analyse_frame_timing`, flagging any
+  inter-frame interval more than 20% off the clip's own median), so the user is told to convert the
+  clip instead of getting a silently wrong track. **Still open:** the conversion itself is manual;
+  automating it means conforming the source during extraction, deliberately deferred.
+  Follow is restored to its last confirmed configuration pending a separate decision. Also still
+  open: `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX` (= 9) not re-verified against this Premiere
+  build; PyInstaller packaging with `cv2` + bundled `ffmpeg.exe` (~200 MB) not re-validated.
 - **Favorite item that is a whole sequence** — built, imports as a nested clip, not host-tested.
 
 ## Recent cleanup (2026-08, this pass)

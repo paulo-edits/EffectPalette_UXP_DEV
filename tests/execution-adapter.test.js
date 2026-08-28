@@ -30,7 +30,6 @@ async function run() {
     "timeline.checkTrackAvailability",
     "motracker.getClipInfo",
     "motracker.getFollowTargetMediaPath",
-    "motracker.testNest",
     "motracker.applyTrack"
   ]) {
     assert.strictEqual(adapter.normalizeAction({ type }).ok, true, `expected ${type} to be supported`);
@@ -48,7 +47,8 @@ async function run() {
     "catalog.effectPresets.inspectBridgeCandidate",
     "catalog.effectPresets.exportBridge",
     "catalog.effectPresets.compareImportedTransform",
-    "timeline.inspectSelectedVideoComponents"
+    "timeline.inspectSelectedVideoComponents",
+    "motracker.testNest"
   ]) {
     assert.strictEqual(adapter.normalizeAction({ type }).error.code, "UNSUPPORTED_ACTION", `expected ${type} to be removed`);
   }

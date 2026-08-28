@@ -859,6 +859,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             return None
         return {"width": width, "height": height}
 
+
     def begin_apply_track(self, request: dict) -> float:
         """Motion Tracker's Apply Track/Stabilize: same request_id/_pending/timestamp bookkeeping
         as execute(), polled via poll_status/is_terminal/is_success exactly like any other
@@ -879,51 +880,6 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "payload": request,
         })
         return timestamp
-
-    def test_nest(self, native_w: int, native_h: int, timeout_ms: int = 20000) -> dict | None:
-        """TEMPORARY - isolated host test for motrackerTestNest/motrackerNestAndNormalizeTarget
-        (TECHNICAL_PLAN.md's Motion Tracker slice), before wiring the Nest-and-normalize step into
-        the real Stabilize/Follow apply flow. Remove alongside the JS-side test action once
-        confirmed working. Blocking (a one-off manual test click, not part of the main apply loop),
-        with a generous timeout since Nest creation does real Premiere-side work."""
-        if self._client is None or not self._authenticated:
-            return None
-        request_id = f"test-nest-{time.time():.6f}"
-        outcome: dict = {}
-        loop = QtCore.QEventLoop()
-
-        def on_message(raw: str):
-            try:
-                message = json.loads(raw)
-            except (ValueError, TypeError):
-                return
-            if isinstance(message, dict) and message.get("requestId") == request_id:
-                outcome["message"] = message
-                loop.quit()
-
-        self._client.textMessageReceived.connect(on_message)
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(loop.quit)
-        timer.start(timeout_ms)
-        self._send({
-            "schemaVersion": 1,
-            "type": "motracker.testNest",
-            "requestId": request_id,
-            "payload": {"nativeW": native_w, "nativeH": native_h},
-        })
-        loop.exec()
-        timer.stop()
-        try:
-            self._client.textMessageReceived.disconnect(on_message)
-        except (RuntimeError, TypeError):
-            pass
-        message = outcome.get("message")
-        if not message:
-            return {"ok": False, "error": "timeout"}
-        if not message.get("ok"):
-            return {"ok": False, "error": message.get("error")}
-        return message.get("data") or {}
 
     def _blocking_request(self, action_type: str, request_id: str, timeout_ms: int) -> dict | None:
         """Send one action and block the caller (via a nested Qt event loop) for its response.
