@@ -101,3 +101,39 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
   confirmed not to need them (or once that path is reworked to not use `BRIDGE_FILE`).
 - `timeline.createSubsequence` / `timeline.insertGenericItem` are still in the allowlist but the
   companion routes through `createNest` / `insertProjectItem` instead — verify and likely drop.
+
+## Planned: cleanup, optimisation and UI pass (user's call, 2026-08-27)
+
+A deliberate pass over the codebase — dead code out, optimise what measurement shows needs it, and
+rebuild the UI. Motion Tracker first, since it is the most recently churned area, then the rest of
+the product. Concrete candidates already observed, so this does not start from a blank page:
+
+**Dead / redundant code**
+
+- `companion/app.py` carries **two parallel UI implementations, Qt and tkinter**, kept in feature
+  parity by hand (`EffectPalette`/`QtEffectPalette`, `DebugWindow`/`QtDebugWindow` and helpers).
+  Qt is the real UI; tkinter is legacy and doubles the cost of every UI-facing fix. Dropping it is
+  the single largest simplification available in this repository.
+- `PremiereExecutionAdapter` + the `send_command` / `read_bridge_status` CEP bridge helpers, kept
+  alive only because the native-Nest watch path still shares `BRIDGE_FILE` (see above).
+- `motrackerDebug` in `applyTrack`, plus the `appliedXs` / `appliedYs` instrumentation feeding it.
+  It earned its keep — it is what finally localised the VFR and Seguir Rastro defects — but the
+  tracker has no open unknowns now, so it should be trimmed to whatever a future investigation would
+  actually re-add.
+- The two allowlist entries named directly above.
+
+**Optimisation — measure before touching**
+
+- Bidirectional Track runs its forward and backward passes sequentially, justified in a comment by
+  the GIL. That justification is wrong (OpenCV releases the GIL during its C++ calls); the
+  conclusion may still hold, because OpenCV already spreads each call across all 16 cores and two
+  concurrent passes would contend. Untested either way, and the bidirectional case is the slowest,
+  so it is the first thing worth measuring if Track ever feels slow.
+- Extraction now runs at the source's full native resolution, which is what removed a real
+  sub-pixel error. It is also the slowest part of loading a clip. Any speed work here must not
+  reintroduce that error.
+
+**UI rebuild**
+
+`companion/motracker/qt_tracker_window.py` grew feature by feature across several rounds of host
+feedback and shows it. Worth redesigning as a whole rather than continuing to append controls.
