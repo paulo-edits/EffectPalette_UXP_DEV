@@ -18,10 +18,7 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.createNest",
   "timeline.insertProjectItem",
   "timeline.insertGenericItem",
-  "timeline.checkTrackAvailability",
-  "motracker.getClipInfo",
-  "motracker.getFollowTargetMediaPath",
-  "motracker.applyTrack"
+  "timeline.checkTrackAvailability"
 ]);
 
 function failure(code, message, actionType) {

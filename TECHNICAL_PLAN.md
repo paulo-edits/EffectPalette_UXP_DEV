@@ -1073,6 +1073,37 @@ Also in this slice: the keyframe-timing checkbox added during the VFR investigat
 uniform timing was confirmed as the default - it had served its purpose as an A/B and would only
 invite regressions. Uniform timing at `frameCount / durationSec` is now unconditional.
 
+### Eighteenth slice: the Motion Tracker leaves this repository (2026-08-27)
+
+The user rebuilt the Motion Tracker as its own Premiere UXP panel plugin, reaching satisfactory
+performance and more features than the version here had, and removed it from FX.palette. Notably it
+reverses this project's own fifteenth-slice conclusion that a UXP-hosted interactive tracker was
+unusably slow - that finding was real when measured, and is now superseded by the user's own working
+panel rather than by argument.
+
+Removed from the companion: `companion/motracker/` (engine, ffmpeg extraction, Qt window), the
+`TOOL_WINDOWS` palette entry with its `tool_window` dispatch and `show_motion_tracker`, and the
+adapter's `get_clip_info` / `get_follow_target_native_size` / `begin_apply_track`. Removed from the
+plugin: the three `motracker.*` actions, their handlers and every tracker-only helper. Dropped from
+`requirements.txt`: `opencv-contrib-python` and `numpy`, verified used nowhere else in the companion;
+the vendored ~200 MB `ffmpeg.exe` and its `.gitignore` entry went too.
+
+`performNest` (formerly `motrackerPerformNest`) stays and was renamed, because it backs
+`timeline.createNest` and only ever carried that prefix from having been extracted during the
+tracker's work. Its wrapper/helper split is kept as-is rather than re-merged: with one caller it is
+now redundant, but merging it changes working code for no benefit, and the comment explaining why
+nest creation is not re-derived from the API docs is worth keeping attached to it.
+
+Verified after removal: `npm run validate` passes, every companion module compiles, no reference to
+the tracker survives in code, and the companion starts cleanly with all catalogs loading and the
+hotkey registering.
+
+Everything above this section stays as written. Slices fifteen through seventeen record how the
+tracker was built, what it cost, and the three wrong hypotheses chased along the way; that history
+is the point of an append-only log, and the VFR and coordinate-space findings in particular apply to
+anything that writes keyframes against extracted frames - including the plugin this feature moved
+into.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and

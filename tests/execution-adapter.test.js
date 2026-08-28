@@ -27,10 +27,7 @@ async function run() {
     "timeline.createNest",
     "timeline.insertProjectItem",
     "timeline.insertGenericItem",
-    "timeline.checkTrackAvailability",
-    "motracker.getClipInfo",
-    "motracker.getFollowTargetMediaPath",
-    "motracker.applyTrack"
+    "timeline.checkTrackAvailability"
   ]) {
     assert.strictEqual(adapter.normalizeAction({ type }).ok, true, `expected ${type} to be supported`);
   }
@@ -48,7 +45,10 @@ async function run() {
     "catalog.effectPresets.exportBridge",
     "catalog.effectPresets.compareImportedTransform",
     "timeline.inspectSelectedVideoComponents",
-    "motracker.testNest"
+    "motracker.testNest",
+    "motracker.getClipInfo",
+    "motracker.getFollowTargetMediaPath",
+    "motracker.applyTrack"
   ]) {
     assert.strictEqual(adapter.normalizeAction({ type }).error.code, "UNSUPPORTED_ACTION", `expected ${type} to be removed`);
   }

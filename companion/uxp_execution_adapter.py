@@ -23,8 +23,6 @@ import re
 import time
 from pathlib import Path
 
-import cv2
-
 from PySide6 import QtCore
 from PySide6.QtNetwork import QHostAddress
 from PySide6.QtWebSockets import QWebSocketServer
@@ -815,71 +813,6 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         if result is not None:
             self._request_effect_preset_catalog()
         return result
-
-    def get_clip_info(self, timeout_ms: int = 5000) -> dict | None:
-        """Motion Tracker's "Load clip" button: read the selected Timeline clip's media path, fps,
-        frame size and in/out points. A direct, short-lived, user-initiated request that wants an
-        immediate answer to decide what to show next - same _blocking_request pattern as
-        import_prfpset_catalog/has_multi_track_audio_selection, not the poll-loop pattern
-        begin_apply_track uses below (that one does real Premiere-side writes and must not risk
-        freezing the app if it runs long)."""
-        return self._blocking_request("motracker.getClipInfo", "motracker-get-clip-info", timeout_ms)
-
-    def get_follow_target_native_size(self, timeout_ms: int = 5000) -> dict | None:
-        """Motion Tracker's Apply Track (follow mode): the object being followed needs its own
-        real native pixel size to scale Position correctly (Position, like the built-in Motion
-        effect's own Anchor Point, reads as a clip-normalised fraction over the scripting API even
-        though Effect Controls displays pixel-looking numbers - both were tried and disproven as a
-        way to read real pixels straight from Premiere, see TECHNICAL_PLAN.md's Motion Tracker
-        slice). Reads the currently-selected clip's own media file path from the plugin, then opens
-        it directly with OpenCV (already a hard dependency for tracking) to get the unambiguous
-        real width/height. Returns None if the plugin has no valid selection or the file can't be
-        opened/decoded - the caller falls back to the sequence size (the old, wrong-but-safe
-        behaviour), same as if this had never been called.
-        """
-        result = self._blocking_request(
-            "motracker.getFollowTargetMediaPath", "motracker-get-follow-target-path", timeout_ms
-        )
-        media_path = result.get("mediaPath") if isinstance(result, dict) else None
-        if not media_path:
-            return None
-        image = cv2.imread(media_path)
-        if image is not None:
-            height, width = image.shape[:2]
-            return {"width": int(width), "height": int(height)}
-        capture = cv2.VideoCapture(media_path)
-        try:
-            if not capture.isOpened():
-                return None
-            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        finally:
-            capture.release()
-        if width <= 0 or height <= 0:
-            return None
-        return {"width": width, "height": height}
-
-
-    def begin_apply_track(self, request: dict) -> float:
-        """Motion Tracker's Apply Track/Stabilize: same request_id/_pending/timestamp bookkeeping
-        as execute(), polled via poll_status/is_terminal/is_success exactly like any other
-        effect - kept as a standalone method rather than a new effect["type"] branch inside
-        execute() itself, since this feature's own explicit buttons are a different concept from
-        the searchable-palette-item dispatch execute() otherwise handles."""
-        self._prune_pending()
-        timestamp = time.time()
-        request_id = f"{timestamp:.6f}"
-        if self._client is None or not self._authenticated:
-            self._pending[request_id] = {"status": "error_not_connected"}
-            return timestamp
-        self._pending[request_id] = {"status": "pending", "sent_at": timestamp}
-        self._send({
-            "schemaVersion": 1,
-            "type": "motracker.applyTrack",
-            "requestId": request_id,
-            "payload": request,
-        })
-        return timestamp
 
     def _blocking_request(self, action_type: str, request_id: str, timeout_ms: int) -> dict | None:
         """Send one action and block the caller (via a nested Qt event loop) for its response.

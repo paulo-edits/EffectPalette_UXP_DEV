@@ -46,30 +46,6 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
 
 ## In progress / not yet verified
 
-- **Motion Tracker** (`companion/motracker/`, `motracker.*` actions) — active development.
-  2026-08-27: a restructure that nested the apply target was tried and **reverted**. `applyTrack`
-  applies the Transform directly to the selected clip again, matching the stable CEP tool: Anchor
-  Point is normalised over the clip's own frame, which is exactly the space the tracker measures in,
-  so mixed aspect ratios need no sequence math and nesting actively breaks it. Removed for good:
-  the `motracker.testNest` / `[TESTE]` scaffolding. Changed and kept: the apply target is always the
-  current Timeline selection in both modes. **Root cause found and host-confirmed 2026-08-27: VFR
-  source footage.** The failing clip is CFR 60 throughout except one 22.2 ms interval; transcoded to
-  true CFR it locks perfectly with the same track and the same code. A second, smaller artifact was
-  keyframe phase slip - timing keyframes by the container's own pts put them 16.695 ms apart on a
-  16.667 ms sequence grid, drifting 0.35 frame across the clip and flipping the rounding once, which
-  produced a single visible deviation. Uniform timing at `frameCount / durationSec` is now the
-  default and removed it. Verified along the way: the Anchor Point coordinate math, the tracker's
-  accuracy (sub-2 px over 205 frames), and that Effect Controls stores exactly the computed values.
-  Irregular source timing is now **detected and warned about** (`analyse_frame_timing`, flagging any
-  inter-frame interval more than 20% off the clip's own median), so the user is told to convert the
-  clip instead of getting a silently wrong track. **Still open:** the conversion itself is manual;
-  automating it means conforming the source during extraction, deliberately deferred.
-  **Seguir Rastro fixed and host-confirmed 2026-08-27**: its coordinate conversion had the same
-  per-axis "footage fills the frame" assumption, measured 1.33x too far in X and 2.37x too short in
-  Y; it now converts via the tracked clip's Motion Scale, the object's real pixel size and the
-  object's own Motion Scale. The object-scale term and
-  `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX` (= 9) were both host-confirmed the same day, closing
-  the last two small unknowns. Also still open: PyInstaller packaging with `cv2` + bundled `ffmpeg.exe` (~200 MB) not re-validated.
 - **Favorite item that is a whole sequence** — built, imports as a nested clip, not host-tested.
 
 ## Recent cleanup (2026-08, this pass)
@@ -90,6 +66,17 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
   the **native-Nest watch path** (`arm_native_nest_watch` / `dispatch_when_native_nest_watch_ready`)
   shares the same `BRIDGE_FILE`. Fully deleting them needs the native-Nest path re-tested first —
   separate task.
+- **The Motion Tracker was removed entirely** — the user rebuilt it as its own Premiere UXP panel
+  plugin, with satisfactory performance and more features than this one had. Gone from here:
+  `companion/motracker/` (engine, ffmpeg extraction, Qt window), the `TOOL_WINDOWS` palette entry
+  and its `tool_window` dispatch, `show_motion_tracker`, the adapter's `get_clip_info` /
+  `get_follow_target_native_size` / `begin_apply_track`, the three `motracker.*` actions, and the
+  `opencv-contrib-python` + `numpy` dependencies, which nothing else in the companion used. The
+  vendored ~200 MB `ffmpeg.exe` and its `.gitignore` entry went with it. `performNest` (formerly
+  `motrackerPerformNest`) stays — it backs `timeline.createNest` and only carried that prefix
+  because it was extracted during the tracker's work. `TECHNICAL_PLAN.md` and
+  `CAPABILITY_MATRIX.md` keep the full history, since they are an append-only decision log and a
+  dated evidence record.
 - Deleted, kept only in git history: `tools/template_generator/` (throwaway CEP dev panel that had
   already generated the bundled template sequences), `experimental/preset-assist/` (the rejected
   native-drag preset workflow), `scripts/reference_transport_server.py` (a mock companion, obsolete
@@ -105,8 +92,9 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
 ## Planned: cleanup, optimisation and UI pass (user's call, 2026-08-27)
 
 A deliberate pass over the codebase — dead code out, optimise what measurement shows needs it, and
-rebuild the UI. Motion Tracker first, since it is the most recently churned area, then the rest of
-the product. Concrete candidates already observed, so this does not start from a blank page:
+rebuild the UI. The Motion Tracker was to be first; it has since left this repository entirely, so
+the pass now covers the rest of the product. Concrete candidates already observed, so this does not
+start from a blank page:
 
 **Dead / redundant code**
 
@@ -116,24 +104,9 @@ the product. Concrete candidates already observed, so this does not start from a
   the single largest simplification available in this repository.
 - `PremiereExecutionAdapter` + the `send_command` / `read_bridge_status` CEP bridge helpers, kept
   alive only because the native-Nest watch path still shares `BRIDGE_FILE` (see above).
-- `motrackerDebug` in `applyTrack`, plus the `appliedXs` / `appliedYs` instrumentation feeding it.
-  It earned its keep — it is what finally localised the VFR and Seguir Rastro defects — but the
-  tracker has no open unknowns now, so it should be trimmed to whatever a future investigation would
-  actually re-add.
 - The two allowlist entries named directly above.
-
-**Optimisation — measure before touching**
-
-- Bidirectional Track runs its forward and backward passes sequentially, justified in a comment by
-  the GIL. That justification is wrong (OpenCV releases the GIL during its C++ calls); the
-  conclusion may still hold, because OpenCV already spreads each call across all 16 cores and two
-  concurrent passes would contend. Untested either way, and the bidirectional case is the slowest,
-  so it is the first thing worth measuring if Track ever feels slow.
-- Extraction now runs at the source's full native resolution, which is what removed a real
-  sub-pixel error. It is also the slowest part of loading a clip. Any speed work here must not
-  reintroduce that error.
 
 **UI rebuild**
 
-`companion/motracker/qt_tracker_window.py` grew feature by feature across several rounds of host
-feedback and shows it. Worth redesigning as a whole rather than continuing to append controls.
+The palette and settings UI are worth redesigning as a whole rather than continuing to append
+controls. (The Motion Tracker window, originally the main example here, has left this repository.)

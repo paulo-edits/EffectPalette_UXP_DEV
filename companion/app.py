@@ -440,7 +440,6 @@ STRINGS: dict[str, dict[str, str]] = {
     # Inline Nest configuration
     "nest_dialog_title": {"en": "Create Nest", "pt": "Criar Nest"},
     "timeline_action_nest": {"en": "Nest clips", "pt": "Aninhar clipes"},
-    "tool_motion_tracker": {"en": "Motion Tracker", "pt": "Motion Tracker"},
     "repeat_last_action": {"en": "Repeat last action", "pt": "Repetir ultima acao"},
     "nest_dialog_question": {"en": "Create a nested sequence", "pt": "Criar sequencia aninhada"},
     "nest_mode_label": {"en": "Method", "pt": "Metodo"},
@@ -641,18 +640,6 @@ TIMELINE_ACTIONS = [
         "action": "nest",
     },
 ]
-
-# Qt-only (the tracker window has no Tk fallback) - empty on the Tk build so it never shows up
-# as a dead entry there.
-TOOL_WINDOWS = [
-    {
-        "name": tr("tool_motion_tracker"),
-        "searchText": "Motion tracker rastreamento de movimento tracking",
-        "category": "Ferramentas",
-        "type": "tool_window",
-        "toolId": "motion_tracker",
-    },
-] if HAS_QT else []
 
 BG = "#0D0C14"
 BG2 = "#111019"
@@ -2213,8 +2200,7 @@ class EffectsLoader:
 
         generic_items = tuple(dict(item) for item in GENERIC_ITEMS)
         timeline_actions = tuple(dict(item) for item in TIMELINE_ACTIONS)
-        tool_windows = tuple(dict(item) for item in TOOL_WINDOWS)
-        all_items = effects + presets + project_items + favorite_items + generic_items + timeline_actions + tool_windows
+        all_items = effects + presets + project_items + favorite_items + generic_items + timeline_actions
         indexed_items, exact_name_map, prefix_map, token_prefix_map, trigram_map = self._build_indexes(all_items)
 
         return LoaderSnapshot(
@@ -7691,8 +7677,6 @@ if HAS_QT:
             if effect.get("type") == "timeline_action" and effect.get("action") == "nest":
                 self._show_nest_options(effect)
                 return
-            if effect.get("type") == "tool_window" and effect.get("toolId") == "motion_tracker":
-                self.show_motion_tracker()
                 self.hide()
                 return
             if self._execute_label_action(effect):
@@ -8028,24 +8012,6 @@ if HAS_QT:
             center.show()
             center.raise_()
             center.activateWindow()
-
-        def show_motion_tracker(self):
-            # Lifetime independent of the palette on purpose (per the user's own explicit call) -
-            # hiding/reopening the palette must never touch this window, only its own close button.
-            window = getattr(self, "_motion_tracker", None)
-            if window is None or not window.isVisible():
-                from motracker.qt_tracker_window import MotionTrackerWindow
-                window = MotionTrackerWindow(
-                    adapter=self.execution_adapter,
-                    ui_font_family=self.ui_font_family,
-                    accent=ACCENT,
-                )
-                window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
-                window.destroyed.connect(lambda: setattr(self, "_motion_tracker", None))
-                self._motion_tracker = window
-            window.show()
-            window.raise_()
-            window.activateWindow()
 
         def show_message(self, title: str, text: str, *, error: bool = False):
             box = QtWidgets.QMessageBox(self.window)
