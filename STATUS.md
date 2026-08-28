@@ -64,7 +64,11 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
   inter-frame interval more than 20% off the clip's own median), so the user is told to convert the
   clip instead of getting a silently wrong track. **Still open:** the conversion itself is manual;
   automating it means conforming the source during extraction, deliberately deferred.
-  Follow is restored to its last confirmed configuration pending a separate decision. Also still
+  **Seguir Rastro fixed and host-confirmed 2026-08-27**: its coordinate conversion had the same
+  per-axis "footage fills the frame" assumption, measured 1.33x too far in X and 2.37x too short in
+  Y; it now converts via the tracked clip's Motion Scale, the object's real pixel size and the
+  object's own Motion Scale. The object-scale term is still unexercised (the fixture had both at
+  Scale 100). Also still
   open: `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX` (= 9) not re-verified against this Premiere
   build; PyInstaller packaging with `cv2` + bundled `ffmpeg.exe` (~200 MB) not re-validated.
 - **Favorite item that is a whole sequence** — built, imports as a nested clip, not host-tested.

@@ -954,30 +954,6 @@ class MotionTrackerWindow(QtWidgets.QDialog):
         apply_group_layout.addLayout(preview_row)
         self._preview_mode: str | None = None
 
-        # Keyframe timing (TECHNICAL_PLAN.md's Motion Tracker slice). Default is UNIFORM spacing at
-        # frameCount/durationSec - a rate derived from Premiere's own reported clip duration and the
-        # frames actually extracted, so it cannot disagree with the grid the sequence renders on.
-        #
-        # The alternative, timing each keyframe by its real ffmpeg pts, was the default until a host
-        # test measured what it costs: on a 60 fps sequence the container's own rate put keyframes
-        # 16.695 ms apart against the sequence's 16.667 ms, drifting 0.35 of a frame across the clip.
-        # That is under one frame in total, but when the drift crosses half a frame the rounding
-        # flips once - one sequence frame gets two keyframes and the next gets none - producing a
-        # single visible deviation. Uniform timing removes it because every keyframe lands exactly
-        # on a frame boundary. Kept as an option because real timestamps are still the honest
-        # reading of a genuinely variable-rate file; that case is handled properly by conforming the
-        # source, not by timing keyframes off-grid.
-        timing_row = QtWidgets.QHBoxLayout()
-        self.real_timestamps_check = QtWidgets.QCheckBox("Usar timestamps reais do arquivo (diagnóstico)")
-        self.real_timestamps_check.setChecked(False)
-        self.real_timestamps_check.setToolTip(
-            "Desmarcado (padrão): keyframes espaçados uniformemente, exatamente sobre os frames da sequência. "
-            "Marcado: cada keyframe vai no tempo real do frame no arquivo, o que pode sair da grade da sequência."
-        )
-        timing_row.addWidget(self.real_timestamps_check)
-        timing_row.addStretch(1)
-        apply_group_layout.addLayout(timing_row)
-
         apply_row = QtWidgets.QHBoxLayout()
         self.mblur_check = QtWidgets.QCheckBox("Motion Blur")
         self.mblur_check.toggled.connect(self._on_mblur_toggled)
@@ -1661,17 +1637,26 @@ class MotionTrackerWindow(QtWidgets.QDialog):
             "trackIdx": info.get("trackIdx"),
             "clipStartTicks": info.get("clipStartTicks"),
             "seedFrame": self._track_seed_frame,
+            # The TRACKED clip's own Motion Scale, read by getClipInfo. Follow needs it and
+            # Stabilize does not: Stabilize writes the Anchor Point, which is normalised over the
+            # very frame the tracker measures in, so no conversion exists to get wrong. Follow
+            # targets a DIFFERENT clip, so it has to convert a delta measured in the tracked
+            # footage's pixels into the object's own frame, and that conversion depends on how
+            # large the tracked footage actually appears in the sequence.
+            "trackedScale": info.get("motionScale"),
         }
 
-        # See the checkbox's own comment in _build. applyTrack already falls back to frame/fps when
-        # frameTimestamps is absent, so uniform timing is expressed by withholding them and sending
-        # the derived rate instead of ffmpeg's sniffed one.
-        if self.real_timestamps_check.isChecked():
-            request["frameTimestamps"] = info.get("frameTimestamps")
-        else:
-            uniform_fps = float(info.get("uniformFps") or 0)
-            if uniform_fps > 0:
-                request["fps"] = uniform_fps
+        # Keyframes are always spaced uniformly at frameCount/durationSec - a rate derived from
+        # Premiere's own reported clip duration and the frames actually extracted, so it cannot
+        # disagree with the grid the sequence renders on. Timing them by the container's own pts was
+        # tried and measured worse: on a 60 fps sequence it spaced them 16.695 ms apart against
+        # 16.667 ms, drifting 0.35 frame across the clip, and where that crosses half a frame the
+        # rounding flips once - one sequence frame gets two keyframes and the next none, a single
+        # visible deviation. applyTrack falls back to frame/fps when frameTimestamps is absent, so
+        # uniform timing is expressed by withholding them and sending the derived rate.
+        uniform_fps = float(info.get("uniformFps") or 0)
+        if uniform_fps > 0:
+            request["fps"] = uniform_fps
 
         # Follow only: the FOLLOWED object is a different, arbitrarily-sized clip, and Position is
         # normalised over the target clip's own frame - so its real pixel size is needed to scale

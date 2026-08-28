@@ -1028,6 +1028,49 @@ Follow decision (CEP writes the Anchor for both modes with the sign flipped, whi
 size lookup at all but scales by the object's own frame; this port uses Position plus the real
 object size, which the user previously confirmed working).
 
+### Seventeenth slice: Seguir Rastro's coordinate conversion (2026-08-27)
+
+Retesting Follow after the sixteenth slice's revert - it had been restored to its last confirmed
+configuration but never re-run - showed the object moving with roughly the right shape but not
+actually following. The diagnostics answered it directly rather than by hypothesis, which is the
+difference from the previous slice: the object is a 1000x1500 PNG (recovered from `followScaleX/Y`),
+Position moved `1.0669` of its frame in X where `0.80021` was needed, and `0.19745` in Y where
+`0.46803` was needed. X ran 1.33x too far, Y 2.37x too short, a ratio of 3.16 between the axes -
+distorted, not merely mis-scaled, which is exactly "tenta fazer o mesmo movimento, porém não chega a
+seguir".
+
+Same defect class as the previous slice, in the other mode. `followScaleX = (seqW / exW) / objW` and
+its Y twin encode "the tracked footage fills the sequence frame" as a separate factor per axis, so
+whenever the footage's aspect differs from the sequence's the two disagree. The tracked clip here is
+1440x2560 in a 1920x1080 sequence, giving 1.333 in X against 0.422 in Y.
+
+The conversion needs three measured numbers instead:
+
+1. **The tracked clip's own Motion Scale**, read by `getClipInfo` before anything touches it - how
+   large the footage actually appears in the sequence. This is the `displayScale` concept the
+   sixteenth slice built and then discarded; the concept was right and was applied to the wrong
+   mode. Stabilize genuinely does not need it (the Anchor Point is normalised over the very frame
+   the tracker measures in, so no conversion exists to get wrong); Follow does, because it converts
+   between two different clips' spaces.
+2. **The object's real pixel size**, from the companion's OpenCV read of its media file - unchanged.
+3. **The object's own Motion Scale**, newly read in `applyTrack`. This Transform renders BEFORE the
+   object's intrinsic Motion, so a Position change moves content inside the object's frame and
+   Motion then scales the result on its way to the sequence.
+
+`f = trackedDelta x trackedScale / (objectSize x objectScale)`. Verified offline against the host's
+own measured numbers before applying: reproduces `0.80021` and `0.46803` exactly. Host-confirmed by
+the user immediately afterwards - the object now follows correctly. Both scales fall back to 100
+when unreadable, which can only make the follow the wrong size, never distorted.
+
+Item 3 is the one part not independently verified: the fixture had both clip and object at Scale
+100, where it cannot make a difference. `motrackerDebug` reports `trackedScalePct`, `targetScalePct`
+and `targetScaleReadable`, so a follow with the right shape at the wrong distance points straight at
+it. Worth exercising once with a deliberately scaled object.
+
+Also in this slice: the keyframe-timing checkbox added during the VFR investigation was removed once
+uniform timing was confirmed as the default - it had served its purpose as an A/B and would only
+invite regressions. Uniform timing at `frameCount / durationSec` is now unconditional.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and

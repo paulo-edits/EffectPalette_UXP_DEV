@@ -2891,9 +2891,30 @@ async function getClipInfo() {
     throw new Error("The selected clip has zero duration on the timeline.");
   }
 
+  // The tracked clip's own display scale in the sequence, read from its intrinsic Motion effect.
+  // Only Follow uses it (see applyTrack): Stabilize writes the Anchor Point, which is normalised
+  // over the very frame the tracker measures in, so it needs no conversion at all. Follow targets a
+  // different clip and must convert between two coordinate spaces, which requires knowing how large
+  // the tracked footage actually appears. A failed read returns null and Follow falls back to its
+  // previous, measurably wrong assumption rather than refusing to run.
+  let motionScale = null;
+  try {
+    const trackedChain = await clip.getComponentChain();
+    const motionFound = await motrackerFindComponentByMatchName(trackedChain, "AE.ADBE Motion");
+    if (motionFound) {
+      const scaleParam = await motrackerFindParamByName(motionFound.component, null, "scale");
+      if (scaleParam) {
+        const start = await scaleParam.getStartValue();
+        const raw = start && start.value && start.value.value;
+        if (typeof raw === "number" && Number.isFinite(raw)) motionScale = raw;
+      }
+    }
+  } catch (error) { /* diagnostic only */ }
+
   return {
     ok: true,
     mediaPath,
+    motionScale,
     srcRangeStart: clipInPoint.seconds,
     durationSec,
     fps,
@@ -3158,17 +3179,27 @@ async function applyTrack(action) {
   const coordScaleX = frameW / exW;
   const coordScaleY = frameH / exH;
 
-  // Follow-only: the FOLLOWED object's own native size (not the tracked footage's) is the right
-  // denominator, since Position - like Anchor - is normalised over the TARGET clip's own frame.
-  // The built-in "Motion" effect's own Anchor Point was tried as a way to read this via the
-  // scripting API and disproven by a real host test (it came back normalised too, not real
-  // pixels, despite Effect Controls displaying pixel-looking numbers) - see TECHNICAL_PLAN.md's
-  // Motion Tracker slice. Real pixel dimensions now come from the companion, which reads the
-  // followed object's own media file directly via OpenCV (unambiguous, no Premiere-side guessing).
-  // Falls back to the sequence size (matching the old, wrong-but-at-least-non-overflowing
-  // behaviour) only if the companion couldn't supply it.
+  // Follow-only. Converting a delta measured in the tracked footage's own pixels into the followed
+  // object's frame needs THREE numbers, and getting any of them from the sequence dimensions is the
+  // mistake this code made twice:
+  //   1. how large the tracked footage appears in the sequence - its own Motion Scale, read by
+  //      getClipInfo before anything touches it. The previous `(seqW/exW)`/`(seqH/exH)` pair stood
+  //      in for this, which silently assumed the footage fills the sequence frame AND used a
+  //      separate factor per axis, so whenever the aspects differed the tracked path came out
+  //      distorted rather than merely mis-scaled. Measured on a 1440x2560 clip in a 1920x1080
+  //      sequence: X ran 1.33x too far while Y ran 2.37x too short.
+  //   2. the object's real pixel size, from the companion's own OpenCV read of its media file (no
+  //      Premiere parameter reports real pixels - both Position and Motion's Anchor Point were
+  //      tried and disproven).
+  //   3. the object's own Motion Scale, because this Transform renders BEFORE that Motion: a
+  //      Position change moves content inside the object's frame, and Motion then scales the result
+  //      on its way to the sequence.
+  // Screen displacement = f x objectNativeSize x objectScale, and we want it to equal
+  // trackedDelta x trackedScale, hence f = trackedDelta x trackedScale / (objectSize x objectScale).
   let followNativeW = seqW;
   let followNativeH = seqH;
+  let trackedScale = Number(request.trackedScale);
+  let targetScale = null;
   if (mode !== "stabilize") {
     const suppliedW = Number(request.targetNativeW) || 0;
     const suppliedH = Number(request.targetNativeH) || 0;
@@ -3176,11 +3207,25 @@ async function applyTrack(action) {
       followNativeW = suppliedW;
       followNativeH = suppliedH;
     }
+    try {
+      const targetMotion = await motrackerFindComponentByMatchName(chain, "AE.ADBE Motion");
+      if (targetMotion) {
+        const targetScaleParam = await motrackerFindParamByName(targetMotion.component, null, "scale");
+        if (targetScaleParam) {
+          const start = await targetScaleParam.getStartValue();
+          const raw = start && start.value && start.value.value;
+          if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) targetScale = raw;
+        }
+      }
+    } catch (error) { /* fall through to 100 */ }
   }
-  // Tracked-footage-pixel delta -> sequence-pixel delta (seqW/exW) -> fraction of the followed
-  // object's own native size.
-  const followScaleX = (seqW / exW) / followNativeW;
-  const followScaleY = (seqH / exH) / followNativeH;
+  // Both fall back to 100 (unscaled), which reduces to "one tracked pixel is one sequence pixel" -
+  // wrong when the clip really is scaled, but uniform across the axes, so an unreadable value can
+  // only make the follow the wrong SIZE, never distorted.
+  const trackedScalePct = Number.isFinite(trackedScale) && trackedScale > 0 ? trackedScale : 100;
+  const targetScalePct = targetScale != null ? targetScale : 100;
+  const followScaleX = (trackedScalePct / 100) / (followNativeW * (targetScalePct / 100));
+  const followScaleY = (trackedScalePct / 100) / (followNativeH * (targetScalePct / 100));
 
   // Reset the target param (and Position too, if we're about to self-heal an older run that
   // mistakenly keyframed Position instead of Anchor). Follow's base is Position's OWN current raw
@@ -3269,6 +3314,12 @@ async function applyTrack(action) {
       mode, posIsNorm, useAnchor, cx, cy, seqW, seqH, extractedW, extractedH,
       frameW, frameH, exW, exH, coordScaleX, coordScaleY, posRawX, posRawY,
       followScaleX, followScaleY,
+      // Follow-only inputs. targetScaleReadable false means the object's own Motion Scale could not
+      // be read and 100 was assumed - the follow would then be uniformly the wrong size, not
+      // distorted, which is what to check first if it tracks the right shape at the wrong distance.
+      trackedScalePct, targetScalePct,
+      targetScaleReadable: targetScale != null,
+      followNativeW, followNativeH,
       // What was actually written, and what those normalised values mean in pixels under the
       // assumption the code is built on (x over the frame width, y over the frame height). If
       // Effect Controls disagrees with expectedPxRangeX/Y for this same parameter, the
