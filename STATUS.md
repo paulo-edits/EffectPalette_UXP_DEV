@@ -67,10 +67,9 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
   **Seguir Rastro fixed and host-confirmed 2026-08-27**: its coordinate conversion had the same
   per-axis "footage fills the frame" assumption, measured 1.33x too far in X and 2.37x too short in
   Y; it now converts via the tracked clip's Motion Scale, the object's real pixel size and the
-  object's own Motion Scale. The object-scale term is still unexercised (the fixture had both at
-  Scale 100). Also still
-  open: `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX` (= 9) not re-verified against this Premiere
-  build; PyInstaller packaging with `cv2` + bundled `ffmpeg.exe` (~200 MB) not re-validated.
+  object's own Motion Scale. The object-scale term and
+  `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX` (= 9) were both host-confirmed the same day, closing
+  the last two small unknowns. Also still open: PyInstaller packaging with `cv2` + bundled `ffmpeg.exe` (~200 MB) not re-validated.
 - **Favorite item that is a whole sequence** — built, imports as a nested clip, not host-tested.
 
 ## Recent cleanup (2026-08, this pass)

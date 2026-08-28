@@ -1062,10 +1062,12 @@ own measured numbers before applying: reproduces `0.80021` and `0.46803` exactly
 the user immediately afterwards - the object now follows correctly. Both scales fall back to 100
 when unreadable, which can only make the follow the wrong size, never distorted.
 
-Item 3 is the one part not independently verified: the fixture had both clip and object at Scale
-100, where it cannot make a difference. `motrackerDebug` reports `trackedScalePct`, `targetScalePct`
+Item 3 was host-confirmed the same day with a deliberately scaled object, so the reading that this
+Transform's Position displacement is multiplied by the object's own Motion Scale is verified rather
+than deduced. `MOTRACKER_GEOMETRY2_USE_COMP_SHUTTER_INDEX = 9` was confirmed in the same pass,
+closing an item this repository had carried unverified since the fifteenth slice. `motrackerDebug` reports `trackedScalePct`, `targetScalePct`
 and `targetScaleReadable`, so a follow with the right shape at the wrong distance points straight at
-it. Worth exercising once with a deliberately scaled object.
+it.
 
 Also in this slice: the keyframe-timing checkbox added during the VFR investigation was removed once
 uniform timing was confirmed as the default - it had served its purpose as an A/B and would only
