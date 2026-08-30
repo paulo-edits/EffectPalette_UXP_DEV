@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "com.effectpalette.uxp",
   "name": "FX.palette",
-  "version": "0.52.0",
+  "version": "0.53.0",
   "main": "index.html",
   "host": {
     "app": "premierepro",
