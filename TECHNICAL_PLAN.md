@@ -1220,3 +1220,47 @@ exactly which classes/methods were added, so a future session can grep it for an
 "track", "command", "execute", "selection", or "audio transition" rather than re-reading the whole
 API surface from scratch. Worth a look next time this project resumes after a gap of a few months,
 or whenever the user mentions Premiere updated itself.
+
+## Slop audit: dead code, reliability, performance (2026-09-04)
+
+Requested by the user as a "slop audit": find unusable tests, performance and reliability issues,
+fix them, and fold the remaining branches into `main`. A full copy of the repository (working tree
+plus `.git`, plus a `git bundle --all`) was taken first at
+`Projetos Claude/EffectPalette_UXP_backup_2026-09-04`, and the pre-audit commit is tagged
+`backup/pre-slop-audit-2026-09-04`.
+
+**Evidence level for everything below: off-host only.** `npm run validate` (manifest checks, the two
+plugin test files, the companion unittest suite) passes, and an offscreen Qt smoke run constructs the
+palette, debug window, tray, hotkey listener, settings center and hotkey editor without error. No
+Premiere host test was run in this pass; nothing here changes a `CAPABILITY_MATRIX.md` row.
+
+### Findings and fixes
+
+| Area | Finding | Fix |
+| --- | --- | --- |
+| `companion/app.py` loader | `_load_effects` returned the fallback list unless the **CEP** worker's `premiere_effects.json` existed, and in fallback mode never read presets/project items/favorites either. A fresh install without the old CEP product could never leave fallback, whatever the UXP plugin reported. Masked on the dev machine by the legacy CEP data folder. | Loader reads only `companion/data/uxp_*.json` (effects + transitions, presets, project items, favorites); `source` is `"uxp"` or `"fallback"`. Covered by `test_app.py`. |
+| `companion/app.py` native Nest | `arm_native_nest_watch` wrote `premiere_cmd.json` and `dispatch_when_native_nest_watch_ready` polled it for `"done"` - written by the CEP worker, which no longer exists. Every native Nest therefore waited the full 2 s deadline and logged `native_nest_watch_arm_timeout`. | Watch removed; the keystroke is sent 80 ms after Premiere is focused, as before minus the wait. |
+| `companion/app.py` tkinter | Two parallel UIs (the user's own STATUS.md called dropping tk the largest available simplification). The Qt class even reached into the tk class for `CATEGORY_TYPE_FILTERS` and `_build_result_row_model`. | tk UI, `PaletteResultsController`, `DebugWindow`, tk helpers/dataclasses/constants and `EFFECT_PALETTE_UI` removed; shared members hoisted to module level. pyflakes clean; vulture used to find the leftovers. 8818 -> ~5300 lines. |
+| `companion/app.py` debug window | `QtDebugWindow` tailed the CEP `worker.log` and sent `exportEffects`/`diagnose`/`clearBridge` to the bridge file. | Shows the companion's own `beta_report` log, a live `collect_diagnostics()` dump, and re-requests the catalogs through the adapter's new `refresh_catalogs()` (also behind the palette's refresh button, which used to write a bridge command). |
+| `transport.js` | (1) The close listener referenced the module-level `socket`, so a superseded socket's late `close` nulled the live one and scheduled a second reconnect. (2) `stop()` closed the socket, whose close event then scheduled a reconnect - `destroy()` was not final. (3) A handler that finished after its socket died sent its result down whichever socket was current. | Listeners are bound to their own socket and bail if it is no longer the live one; `stopped` flag; results go back on the socket the request arrived on. `tests/transport.test.js` drives all three against a fake `WebSocket`. `readyState` is consulted only when the runtime exposes it. |
+| `uxp_execution_adapter.py` lifecycle | `_on_new_connection` closed the previous socket *after* installing the new one; the old socket's `disconnected` then ran `_on_disconnected`, wiping `_client`/`_authenticated` for the new connection (a UDT reload reconnects exactly like this). | Signals carry their socket; a superseded socket's events are ignored. Per-connection state is initialised in `__init__` instead of via `getattr` defaults. Covered by `test_reconnect_supersedes_without_wiping_the_live_client`. |
+| `uxp_execution_adapter.py` catalogs | Favorites and project items are re-requested every 5 s and were rewritten to disk on every response even when identical (favorites also carried an `exported_at` timestamp guaranteeing a change). Each rewrite fired watchdog, which rebuilt the whole search index. A failed `catalog.videoEffects.read` was never retried, so a transient error at connect time left video effects unresolvable all session. | `_write_catalog` skips unchanged content; `exported_at` dropped; one 3 s retry for the effect catalog. |
+| `uxp_execution_adapter.py` bookkeeping | `_prune_pending` only dropped terminal entries, so a request nobody polled stayed in memory for the session. `_blocking_request` sat out its full timeout if the client dropped mid-wait. | Pending entries are pruned once deadline + retention has passed; the nested loop also quits on `disconnected`. |
+| `execution-adapter.js` allowlist | `timeline.createSubsequence` and `timeline.insertGenericItem` were in the allowlist and `ACTION_HANDLERS` but the companion never sends them (it routes Nest through `createNest` and generic items through `insertProjectItem`). | Both removed with their handlers (~300 lines); the adapter test asserts they stay rejected. Allowlist is 15. `index.js` scanned for now-unreferenced functions: none. |
+| `beta_report.py` | Every event (`write_event` runs per hotkey press, per adapter response, per poll) did `mkdir` + `exists()` + two `stat()`s before appending. The report bundled CEP files that no longer exist. | mkdir once per process; single stat; report bundles the `uxp_*.json` catalogs and the shortcut-configuration log. `FX_PALETTE_REPORT_DIR` env override so tests never write into the real report folder. |
+| Tests | Only the adapter allowlist test existed; nothing exercised `transport.js` or any companion code. | Added `tests/transport.test.js` (fake WebSocket; handshake, echo, reconnect, stale socket, stop) and `companion/tests/` (real `PremiereUxpExecutionAdapter` on an OS-chosen port against an in-process `QWebSocket`; loader/search/helpers). `npm run validate` runs all of it. |
+| Leftovers | `capturedTransformCurveReference` (probe global), `QtHotkeyEditor` (dead dialog), tk-compat shims on `QtRootAdapter`, write-only nest-mode preference, ~50 unused constants, three mojibake comment lines, `PIL.ImageTk` hidden import in the PyInstaller spec, "proof of concept" wording in the adapter's error message, `package.json` name. | Removed / corrected. `tkinter` is now explicitly excluded from the PyInstaller bundle. |
+
+### Deliberately not changed
+
+- Settings path (`%APPDATA%/Adobe/CEP/extensions/EffectPalette/settings.json`): moving it would
+  drop every existing user's aliases/hotkeys/language. Product decision, not cleanup.
+- `EFFECT_IDENTITY_MATRIX.json` fixture and its 829-entry assertion in `validate.js`.
+- `.gitattributes` stays untracked (pending EOL decision). `CLAUDE.md` is now tracked.
+- No push to `origin` was made; the remote is far behind local `main` and pushing is the user's call.
+
+### Branches
+
+`motracker-vfr-root-cause` was strictly ahead of `main` (seven commits, fast-forward). The audit was
+done on `slop-audit`, then `main` was fast-forwarded to it and both branches deleted, so `main` is
+the only local branch.

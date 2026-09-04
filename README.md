@@ -1,5 +1,11 @@
 # FX.palette UXP
 
+> **Status note (2026-09-04):** this README is a historical, mostly chronological record of the
+> migration probes. For what the product does today read `STATUS.md`; the probe actions described
+> below that are no longer in `execution-adapter.js` (`timeline.createSubsequence`,
+> `timeline.insertGenericItem`, `catalog.videoEffects.resolve`, the `probe*` family) were removed
+> from the shipped allowlist and live only in git history.
+
 UXP plugin for Adobe Premiere 25.6 or newer, migrated from the stable CEP extension, plus the
 Python companion it talks to (`companion/`).
 

@@ -9,8 +9,8 @@ Short, current snapshot of what this repo is and what works. For the full decisi
 FX.palette is a floating Windows companion for Adobe Premiere Pro:
 
 - **Companion** (`companion/`, Python + PySide6) — the search palette, global hotkeys, settings,
-  installer. `companion/app.py` is the whole app; `companion/uxp_execution_adapter.py` is the
-  Premiere-side boundary.
+  installer. `companion/app.py` is the whole app (Qt only); `companion/uxp_execution_adapter.py` is
+  the Premiere-side boundary.
 - **UXP plugin** (`index.js`, `execution-adapter.js`, `transport.js`, `manifest.json`) — runs
   headless inside Premiere 25.6+. **No panel**: the only entrypoint is one headless command; all
   real work arrives over the transport. `index.html` is a bootstrap shell with no UI.
@@ -47,66 +47,58 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
 ## In progress / not yet verified
 
 - **Favorite item that is a whole sequence** — built, imports as a nested clip, not host-tested.
+- **The 2026-09 audit changes below have not been host-tested yet.** Everything in that pass is
+  covered by the off-host suites (`npm run validate`), which prove the transport/companion contract
+  but not Premiere behavior. The first real session after it should confirm: palette lists the
+  catalogs after a fresh plugin connection, native Nest still lands (it no longer waits 2 s for a
+  CEP watch that nothing served), the debug window's Log / Diagnostico / Atualizar catalogos
+  buttons, and a UDT plugin reload keeping the companion connected.
 
-## Recent cleanup (2026-08, this pass)
+## Automated checks
 
-- The former diagnostics **panel** was removed from the shipped plugin (`index.html` body,
-  `styles.css`, `wirePanel`, the `run*` wrappers). The plugin declares no `panel` entrypoint; it
-  runs headless.
-- The **research / diagnostic probe actions** (`probe*`, `captureTransformCurveReference`,
-  `applyTransformCurveReference`, `compareImportedTransform`, `inspectSelectedVideoComponents`,
-  `catalog.videoEffects.resolve`, `inspectImported`) and the rejected preset **bridge**
-  (`buildImportedPresetBridge` / `exportBridge` / `inspectBridgeCandidate`) were removed from
-  `index.js` and the allowlist. `execution-adapter.js` `SUPPORTED_ACTIONS` is now 21, matching
-  what the companion sends. What each probe found is preserved in `TECHNICAL_PLAN.md` /
-  `CAPABILITY_MATRIX.md`; the code itself is in git history.
-- `companion/app.py`: `create_execution_adapter()` no longer falls back to the CEP bridge — if the
-  UXP transport can't start it returns a stub that fails actions closed. `PremiereExecutionAdapter`
-  and the `send_command` / `read_bridge_status` bridge helpers are still physically present because
-  the **native-Nest watch path** (`arm_native_nest_watch` / `dispatch_when_native_nest_watch_ready`)
-  shares the same `BRIDGE_FILE`. Fully deleting them needs the native-Nest path re-tested first —
-  separate task.
-- **The Motion Tracker was removed entirely** — the user rebuilt it as its own Premiere UXP panel
-  plugin, with satisfactory performance and more features than this one had. Gone from here:
-  `companion/motracker/` (engine, ffmpeg extraction, Qt window), the `TOOL_WINDOWS` palette entry
-  and its `tool_window` dispatch, `show_motion_tracker`, the adapter's `get_clip_info` /
-  `get_follow_target_native_size` / `begin_apply_track`, the three `motracker.*` actions, and the
-  `opencv-contrib-python` + `numpy` dependencies, which nothing else in the companion used. The
-  vendored ~200 MB `ffmpeg.exe` and its `.gitignore` entry went with it. `performNest` (formerly
-  `motrackerPerformNest`) stays — it backs `timeline.createNest` and only carried that prefix
-  because it was extracted during the tracker's work. `TECHNICAL_PLAN.md` and
-  `CAPABILITY_MATRIX.md` keep the full history, since they are an append-only decision log and a
-  dated evidence record.
-- Deleted, kept only in git history: `tools/template_generator/` (throwaway CEP dev panel that had
-  already generated the bundled template sequences), `experimental/preset-assist/` (the rejected
-  native-drag preset workflow), `scripts/reference_transport_server.py` (a mock companion, obsolete
-  now that the real one exists).
+`npm run validate` runs, in order: manifest/JS syntax checks (`scripts/validate.js`), the plugin
+tests (`tests/execution-adapter.test.js`, `tests/transport.test.js` — the latter drives
+`transport.js` against a fake WebSocket), and the companion tests
+(`companion/tests/run_tests.py` — the real `PremiereUxpExecutionAdapter` server against an
+in-process WebSocket client, plus loader/search/helper tests, ~25 s, offscreen Qt). None of them
+touch Premiere.
+
+## Slop audit (2026-09-04)
+
+A dead-code / reliability / performance pass over the whole repository. Details and evidence in
+`TECHNICAL_PLAN.md` ("Slop audit"). Summary:
+
+- **tkinter UI deleted.** `app.py` is Qt-only (8818 → ~5300 lines); the shared bits the Qt code
+  borrowed from the tk class (`CATEGORY_TYPE_FILTERS`, the result-row model builder) are module
+  level now. `EFFECT_PALETTE_UI=tk` is gone; `main()` exits with a message if PySide6 is missing.
+- **CEP bridge deleted.** `PremiereExecutionAdapter`, `send_command`, `read_bridge_status`,
+  `send_debug_command`, the `premiere_cmd.json` / `current_selection.json` paths, and the native-Nest
+  "watch" that wrote to that bridge file. Nothing had read that file since the CEP worker left, so
+  every native Nest paid a fixed 2 s wait and logged a bogus `native_nest_watch_arm_timeout`.
+- **Catalog loading is UXP-only, and that fixed a real bug:** `EffectsLoader` required the CEP
+  worker's `premiere_effects.json` to exist before it would read *any* catalog, so a fresh install
+  without the old CEP product stayed on the fallback list forever, presets/project items/favorites
+  included. It now reads `companion/data/uxp_*.json` directly.
+- **Transport lifecycle** (`transport.js`): a superseded socket's late close/message events no
+  longer touch the live connection, `stop()` can no longer be undone by the close event of the
+  socket it closed, and a result whose socket died mid-handler is dropped instead of sent down the
+  next connection. **Companion server**: a plugin reload (new connection before the old socket
+  finished closing) no longer wipes the new client's state; catalog files are rewritten only when
+  their content changed (favorites/project items were rewritten every 5 s, each rewrite firing the
+  file watcher and a full search-index rebuild); a failed video-effect catalog pull is retried; a
+  dropped client releases blocking requests immediately; unanswered requests are pruned.
+- **Allowlist trimmed** to the 15 actions the companion sends (`timeline.createSubsequence`,
+  `timeline.insertGenericItem` and their handlers removed; tests assert they stay rejected).
+- **Debug window** rebuilt around the companion's own log and live diagnostics (it read a CEP
+  `worker.log` that no longer exists and sent commands to nobody). Beta reports bundle the
+  `uxp_*.json` catalogs instead of the CEP files. `beta_report` no longer `mkdir`s and double-stats
+  on every event.
+- Removed leftovers: `capturedTransformCurveReference`, `QtHotkeyEditor` (superseded by
+  `QtHotkeyCatalogEditor`), ~50 tk-era layout/colour constants, tk-compat shims on `QtRootAdapter`,
+  write-only nest-mode preference, mojibake comments, `PIL.ImageTk` in the PyInstaller spec.
 
 ## Still to do
 
-- Delete `PremiereExecutionAdapter` + the CEP bridge functions from `app.py` once native Nest is
-  confirmed not to need them (or once that path is reworked to not use `BRIDGE_FILE`).
-- `timeline.createSubsequence` / `timeline.insertGenericItem` are still in the allowlist but the
-  companion routes through `createNest` / `insertProjectItem` instead — verify and likely drop.
-
-## Planned: cleanup, optimisation and UI pass (user's call, 2026-08-27)
-
-A deliberate pass over the codebase — dead code out, optimise what measurement shows needs it, and
-rebuild the UI. The Motion Tracker was to be first; it has since left this repository entirely, so
-the pass now covers the rest of the product. Concrete candidates already observed, so this does not
-start from a blank page:
-
-**Dead / redundant code**
-
-- `companion/app.py` carries **two parallel UI implementations, Qt and tkinter**, kept in feature
-  parity by hand (`EffectPalette`/`QtEffectPalette`, `DebugWindow`/`QtDebugWindow` and helpers).
-  Qt is the real UI; tkinter is legacy and doubles the cost of every UI-facing fix. Dropping it is
-  the single largest simplification available in this repository.
-- `PremiereExecutionAdapter` + the `send_command` / `read_bridge_status` CEP bridge helpers, kept
-  alive only because the native-Nest watch path still shares `BRIDGE_FILE` (see above).
-- The two allowlist entries named directly above.
-
-**UI rebuild**
-
-The palette and settings UI are worth redesigning as a whole rather than continuing to append
-controls. (The Motion Tracker window, originally the main example here, has left this repository.)
+- Host-test the audit pass (see "In progress").
+- UI redesign of the palette and settings (user's call, 2026-08-27) — now unblocked, since there is
+  a single UI implementation to redesign.
