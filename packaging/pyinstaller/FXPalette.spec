@@ -18,7 +18,6 @@ for package in ("pynput", "pystray", "watchdog"):
 hiddenimports += [
     "PIL.Image",
     "PIL.ImageDraw",
-    "PIL.ImageTk",
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
@@ -37,7 +36,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # The companion is Qt-only since the 2026-09 audit; keep tkinter out of the bundle.
+    excludes=["tkinter", "_tkinter", "PIL.ImageTk"],
     noarchive=False,
     optimize=0,
 )

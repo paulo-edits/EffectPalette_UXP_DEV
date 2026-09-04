@@ -36,15 +36,23 @@ def _documents_dir() -> Path:
     return Path.home()
 
 
-REPORT_DIR = _documents_dir() / REPORT_DIR_NAME
+# FX_PALETTE_REPORT_DIR redirects every log/telemetry write (the off-host tests point it at a
+# temporary folder so they never touch the real beta-report folder).
+REPORT_DIR = Path(os.environ["FX_PALETTE_REPORT_DIR"]) if os.environ.get("FX_PALETTE_REPORT_DIR") else _documents_dir() / REPORT_DIR_NAME
 APP_LOG_FILE = REPORT_DIR / "effect_palette_app.log"
 EVENTS_FILE = REPORT_DIR / "telemetry_events.jsonl"
 MAX_APP_LOG_BYTES = 256 * 1024
 MAX_EVENTS_LOG_BYTES = 512 * 1024
 
 
+_report_dir_ready = False
+
+
 def ensure_report_dir() -> Path:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    global _report_dir_ready
+    if not _report_dir_ready:
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        _report_dir_ready = True
     return REPORT_DIR
 
 
@@ -55,10 +63,14 @@ def _now_iso() -> str:
 def _append_bounded(file_path: Path, text: str, max_bytes: int) -> None:
     ensure_report_dir()
     try:
-        if file_path.exists() and file_path.stat().st_size >= max_bytes:
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            size = 0
+        if size >= max_bytes:
             keep_bytes = max_bytes // 2
             with file_path.open("rb") as source:
-                source.seek(max(0, file_path.stat().st_size - keep_bytes))
+                source.seek(max(0, size - keep_bytes))
                 tail = source.read()
             first_newline = tail.find(b"\n")
             if first_newline >= 0:
@@ -67,7 +79,8 @@ def _append_bounded(file_path: Path, text: str, max_bytes: int) -> None:
         with file_path.open("a", encoding="utf-8") as file_obj:
             file_obj.write(text)
     except Exception:
-        pass
+        global _report_dir_ready
+        _report_dir_ready = False  # the folder may have been removed; recreate on the next call
 
 
 def log_app(message: str, level: str = "INFO") -> None:
@@ -252,7 +265,6 @@ def _detect_premiere_profile_versions() -> list[dict[str, Any]]:
 
 
 def _build_system_info(ext_data: Path, extension_dir: Path, reason: str) -> dict[str, Any]:
-    host_info = _read_json(ext_data / "premiere_host_info.json")
     preferred_encoding = ""
     try:
         preferred_encoding = locale.getencoding()
@@ -306,8 +318,6 @@ def _build_system_info(ext_data: Path, extension_dir: Path, reason: str) -> dict
             "documents_dir": str(_documents_dir()),
         },
         "premiere": {
-            "host_info_file": _file_info(ext_data / "premiere_host_info.json"),
-            "host_info": host_info,
             "detected_profile_versions": _detect_premiere_profile_versions(),
         },
     }
@@ -354,16 +364,14 @@ def build_report(
     system_info = _build_system_info(ext_data, extension_dir, reason)
     _write_json(report_dir / "system_info.json", system_info)
 
+    # ext_data is the companion's own data folder (companion/data), where the UXP adapter writes
+    # the catalogs it receives from the plugin.
     data_files = {
-        "worker.log": ext_data / "worker.log",
-        "premiere_host_info.json": ext_data / "premiere_host_info.json",
-        "premiere_diagnose.txt": ext_data / "premiere_diagnose.txt",
-        "current_selection.json": ext_data / "current_selection.json",
-        "premiere_effects.json": ext_data / "premiere_effects.json",
-        "premiere_project_items.json": ext_data / "premiere_project_items.json",
-        "premiere_favorites.json": ext_data / "premiere_favorites.json",
-        "premiere_sequences.json": ext_data / "premiere_sequences.json",
-        "generic_item_templates.json": ext_data / "generic_item_templates.json",
+        "uxp_effects.json": ext_data / "uxp_effects.json",
+        "uxp_video_transitions.json": ext_data / "uxp_video_transitions.json",
+        "uxp_project_items.json": ext_data / "uxp_project_items.json",
+        "uxp_favorites.json": ext_data / "uxp_favorites.json",
+        "premiere_shortcut_configuration.log": ext_data / "premiere_shortcut_configuration.log",
     }
     for dest_name, src in data_files.items():
         _safe_copy(src, report_dir / "data" / dest_name)
@@ -371,19 +379,19 @@ def build_report(
     _safe_copy(APP_LOG_FILE, report_dir / "logs" / APP_LOG_FILE.name)
     _safe_copy(EVENTS_FILE, report_dir / "logs" / EVENTS_FILE.name)
 
-    presets_file = ext_data / "premiere_presets.json"
+    presets_file = ext_data / "uxp_presets.json"
     summary = {
         "files": {name: _file_info(path) for name, path in data_files.items()},
-        "premiere_presets_json": {
+        "uxp_presets_json": {
             **_file_info(presets_file),
             "preset_count": _json_count(presets_file, "presets"),
             "note": "Full presets file is summarized instead of copied to keep the beta report lighter.",
         },
         "counts": {
-            "effects": _json_count(ext_data / "premiere_effects.json", "effects"),
-            "project_items": _json_count(ext_data / "premiere_project_items.json", "items"),
-            "favorites": _json_count(ext_data / "premiere_favorites.json", "items"),
-            "sequences": _json_count(ext_data / "premiere_sequences.json", "sequences"),
+            "effects": _json_count(ext_data / "uxp_effects.json", "effects"),
+            "transitions": _json_count(ext_data / "uxp_video_transitions.json", "transitions"),
+            "project_items": _json_count(ext_data / "uxp_project_items.json", "items"),
+            "favorites": _json_count(ext_data / "uxp_favorites.json", "items"),
         },
     }
     _write_json(report_dir / "data_summary.json", summary)
@@ -392,7 +400,7 @@ def build_report(
         "FX.palette closed beta report\n\n"
         "This package was generated locally on the tester's PC. It includes logs,\n"
         "runtime summaries, optional feedback, and small JSON manifests useful for\n"
-        "debugging. The full premiere_presets.json file is summarized, not copied.\n"
+        "debugging. The full uxp_presets.json file is summarized, not copied.\n"
     )
     (report_dir / "README.txt").write_text(readme, encoding="utf-8")
 

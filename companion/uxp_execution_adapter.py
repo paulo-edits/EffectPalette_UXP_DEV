@@ -1,14 +1,12 @@
 """UXP execution adapter (TECHNICAL_PLAN.md stage 5, companion side).
 
-Talks to the EffectPalette_UXP Premiere plugin over the WebSocket protocol
-`transport.js` already implements and host-tested: this class is the server,
-the plugin is the client, and every request/response after the handshake is
-one `executionAdapter.execute()` action from `execution-adapter.js`.
+Talks to the FX.palette Premiere UXP plugin over the WebSocket protocol
+`transport.js` implements: this class is the server, the plugin is the client,
+and every request/response after the handshake is one `executionAdapter.execute()`
+action from `execution-adapter.js`.
 
-Same public shape as `PremiereExecutionAdapter` from the stable product
-(`execute(effect) -> float`, `diagnostics() -> dict`), plus `poll_status`,
-`is_terminal` and `is_success`, so callers that currently poll the CEP
-bridge file can instead poll through whichever adapter is active.
+Public shape: `execute(effect) -> float` (a request timestamp), `poll_status`,
+`is_terminal`, `is_success`, `last_response_data` and `diagnostics() -> dict`.
 
 Port and token are copied from `transport.js` verbatim - they must stay in
 sync, since the UXP manifest pre-declares this exact domain and cannot
@@ -249,8 +247,9 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
 
     backend_name = "uxp"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, port: int = TRANSPORT_PORT):
         super().__init__(parent)
+        self._port = port
         self._server = QWebSocketServer(
             "FX.palette UXP transport", QWebSocketServer.SslMode.NonSecureMode, self
         )
@@ -260,6 +259,12 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._video_match_names_by_display: dict[str, str] = {}
         self._transition_match_names_by_label: dict[str, str] = {}
         self._catalog_requested = False
+        self._effect_preset_retry_scheduled = False
+        # Last serialized payload per catalog file, so a repeating catalog that has not changed
+        # (favorites and project items are re-read every few seconds) is not rewritten to disk -
+        # each rewrite also fired the palette's file watcher and a full search-index rebuild.
+        self._last_written: dict[Path, str] = {}
+        self._reset_connection_log_state()
         # None until the first catalog.effectPresets.read round-trip settles (including its one
         # retry) - surfaced in diagnostics() so the settings center can tell the user a preset
         # catalog needs (re-)importing, now that the diagnostics panel's own import button is gone
@@ -270,11 +275,20 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._project_items_timer = QtCore.QTimer(self)
         self._project_items_timer.timeout.connect(self._request_project_item_catalog)
         self._server.newConnection.connect(self._on_new_connection)
-        if not self._server.listen(QHostAddress.SpecialAddress.LocalHost, TRANSPORT_PORT):
+        if not self._server.listen(QHostAddress.SpecialAddress.LocalHost, port):
             raise RuntimeError(
-                f"Could not start the UXP transport server on port {TRANSPORT_PORT}: "
+                f"Could not start the UXP transport server on port {port}: "
                 f"{self._server.errorString()}"
             )
+        self._port = self._server.serverPort()  # port 0 (tests) resolves to whatever was bound
+
+    def _reset_connection_log_state(self):
+        # "Only log on change" bookkeeping; reset per connection so the first response of a new
+        # connection always logs, whatever the previous one last reported.
+        self._favorites_last_applicable = None
+        self._favorites_last_error_code = None
+        self._favorites_last_logged_count = None
+        self._project_items_last_count = None
 
     # ---- connection lifecycle -------------------------------------------------
 
@@ -282,31 +296,37 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         socket = self._server.nextPendingConnection()
         if socket is None:
             return
-        if self._client is not None:
-            try:
-                self._client.close()
-            except Exception:
-                pass
+        previous = self._client
         self._client = socket
         self._authenticated = False
-        socket.textMessageReceived.connect(self._on_message)
-        socket.disconnected.connect(self._on_disconnected)
+        self._catalog_requested = False
+        self._effect_preset_retry_scheduled = False
+        self._reset_connection_log_state()
+        socket.textMessageReceived.connect(lambda raw, ws=socket: self._on_message(raw, ws))
+        socket.disconnected.connect(lambda ws=socket: self._on_disconnected(ws))
+        if previous is not None:
+            # A plugin reload reconnects before the old socket has finished closing. Closing it
+            # here fires its disconnected signal *after* the new client was installed above, so
+            # _on_disconnected must check which socket it is being told about.
+            try:
+                previous.close()
+            except Exception:
+                pass
 
-    def _on_disconnected(self):
+    def _on_disconnected(self, socket=None):
+        if socket is not None and socket is not self._client:
+            return  # a superseded connection; the live one is unaffected
         self._client = None
         self._authenticated = False
         self._catalog_requested = False
         self._favorites_timer.stop()
         self._project_items_timer.stop()
-        # Reset so the next connection's first response always logs, regardless of whether it
-        # happens to match whatever this now-dead connection last reported.
-        self._favorites_last_applicable = None
-        self._favorites_last_error_code = None
-        self._favorites_last_logged_count = None
-        self._project_items_last_count = None
         self._effect_preset_retry_scheduled = False
+        self._reset_connection_log_state()
 
-    def _on_message(self, raw: str):
+    def _on_message(self, raw: str, socket=None):
+        if socket is not None and socket is not self._client:
+            return  # late frame from a superseded connection
         try:
             message = json.loads(raw)
         except (ValueError, TypeError):
@@ -318,7 +338,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             if message.get("type") == "hello" and message.get("token") == TRANSPORT_TOKEN:
                 self._authenticated = True
                 print("[UXP adapter] UXP plugin connected and authenticated over ws://localhost:"
-                      f"{TRANSPORT_PORT}", flush=True)
+                      f"{self._port}", flush=True)
                 self._send({"type": "hello-ack", "ok": True})
                 self._request_catalogs()
             elif self._client is not None:
@@ -352,6 +372,27 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         if self._client is None:
             return
         self._client.sendTextMessage(json.dumps(payload))
+
+    def _write_catalog(self, path: Path, payload: dict) -> bool:
+        """Atomically write a catalog file; returns False when the content is unchanged."""
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        if self._last_written.get(path) == serialized and path.exists():
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(serialized, encoding="utf-8")
+        tmp.replace(path)
+        self._last_written[path] = serialized
+        return True
+
+    def refresh_catalogs(self) -> bool:
+        """Re-request every catalog from the connected plugin (the palette's refresh button).
+        Returns False when no authenticated plugin is connected."""
+        if self._client is None or not self._authenticated:
+            return False
+        self._catalog_requested = False
+        self._request_catalogs()
+        return True
 
     # ---- video match-name resolution -------------------------------------------
 
@@ -390,13 +431,10 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             return
         items = (message.get("data") or {}).get("items") or []
         try:
-            UXP_PROJECT_ITEMS_FILE.parent.mkdir(parents=True, exist_ok=True)
             payload = {"schemaVersion": 1, "source": "uxp", "items": items}
-            tmp = UXP_PROJECT_ITEMS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(UXP_PROJECT_ITEMS_FILE)
+            self._write_catalog(UXP_PROJECT_ITEMS_FILE, payload)
             # Repeats every PROJECT_ITEMS_REFRESH_INTERVAL_MS - only log on an actual count change.
-            if len(items) != getattr(self, "_project_items_last_count", None):
+            if len(items) != self._project_items_last_count:
                 self._project_items_last_count = len(items)
                 print(f"[UXP adapter] {len(items)} project items written to {UXP_PROJECT_ITEMS_FILE}", flush=True)
         except Exception as error:
@@ -424,6 +462,11 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "payload": {},
         })
 
+    def _request_catalogs_retry(self):
+        if self._client is None or not self._authenticated or self._catalog_requested:
+            return
+        self._request_catalogs()
+
     def _request_effect_preset_catalog_retry(self):
         # QTimer.singleShot still fires even if the connection that scheduled it has since dropped;
         # _on_disconnected resets the pending flag but there is nothing to send to a closed socket.
@@ -441,7 +484,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             # this response can genuinely arrive before that async restore has finished reading and
             # parsing the .prfpset file. One retry after a short delay covers that race without
             # delaying the whole transport's connection just for presets specifically.
-            if not getattr(self, "_effect_preset_retry_scheduled", False):
+            if not self._effect_preset_retry_scheduled:
                 self._effect_preset_retry_scheduled = True
                 QtCore.QTimer.singleShot(3000, self._request_effect_preset_catalog_retry)
             else:
@@ -452,17 +495,14 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._preset_catalog_available = True
         presets = data.get("presets") or []
         try:
-            UXP_PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "schemaVersion": 1,
                 "source": "uxp",
                 "fileName": data.get("fileName"),
                 "presets": [{"name": p["name"], "category": p.get("category", ""), "filterPresets": []} for p in presets if p.get("name")],
             }
-            tmp = UXP_PRESETS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(UXP_PRESETS_FILE)
-            print(f"[UXP adapter] {len(payload['presets'])} presets written to {UXP_PRESETS_FILE}", flush=True)
+            if self._write_catalog(UXP_PRESETS_FILE, payload):
+                print(f"[UXP adapter] {len(payload['presets'])} presets written to {UXP_PRESETS_FILE}", flush=True)
         except Exception as error:
             print(f"[UXP adapter] could not write the preset catalog: {error}", flush=True)
 
@@ -481,14 +521,14 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         # "open, but the favorites bin is empty" (write an empty list, matching what's really there).
         if not message.get("ok"):
             error = message.get("error") or {}
-            if error.get("code") != getattr(self, "_favorites_last_error_code", None):
+            if error.get("code") != self._favorites_last_error_code:
                 self._favorites_last_error_code = error.get("code")
                 print(f"[UXP adapter] catalog.favorites.read failed: {error}", flush=True)
             return
         self._favorites_last_error_code = None
         data = message.get("data") or {}
         applicable = bool(data.get("applicable"))
-        if applicable != getattr(self, "_favorites_last_applicable", None):
+        if applicable != self._favorites_last_applicable:
             self._favorites_last_applicable = applicable
             print(
                 f"[UXP adapter] catalog.favorites.read applicable={applicable} "
@@ -499,19 +539,17 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             return
         items = data.get("items") or []
         try:
-            UXP_FAVORITES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            # No timestamp in the payload: the file only changes when the favorites do, so the
+            # 5-second refresh stops rewriting an identical file (and re-triggering the watcher).
             payload = {
                 "version": 1,
-                "exported_at": time.time(),
                 "sourceProjectPath": data.get("sourceProjectPath", ""),
                 "items": items,
             }
-            tmp = UXP_FAVORITES_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(UXP_FAVORITES_FILE)
+            self._write_catalog(UXP_FAVORITES_FILE, payload)
             # This response repeats every FAVORITES_REFRESH_INTERVAL_MS while the template project
             # stays open - only log when the count actually changes, so the console isn't spammed.
-            if len(items) != getattr(self, "_favorites_last_logged_count", None):
+            if len(items) != self._favorites_last_logged_count:
                 self._favorites_last_logged_count = len(items)
                 print(f"[UXP adapter] {len(items)} favorites written to {UXP_FAVORITES_FILE}", flush=True)
         except Exception as error:
@@ -533,12 +571,9 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         entries = build_transition_entries(match_names)
         self._transition_match_names_by_label = {e["name"]: e["matchName"] for e in entries}
         try:
-            UXP_TRANSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
             payload = {"schemaVersion": 1, "source": "uxp", "transitions": entries}
-            tmp = UXP_TRANSITIONS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(UXP_TRANSITIONS_FILE)
-            print(f"[UXP adapter] {len(entries)} video transitions written to {UXP_TRANSITIONS_FILE}", flush=True)
+            if self._write_catalog(UXP_TRANSITIONS_FILE, payload):
+                print(f"[UXP adapter] {len(entries)} video transitions written to {UXP_TRANSITIONS_FILE}", flush=True)
         except Exception as error:
             # Non-fatal: this session can still apply transitions from the in-memory lookup;
             # only the palette's own listing falls back to whatever it had before.
@@ -546,7 +581,11 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
 
     def _handle_catalog_response(self, message: dict):
         if not message.get("ok"):
+            # Nothing re-requested this after a failure before, so a transient host error at
+            # connection time left video effects unresolvable for the whole session.
             self._catalog_requested = False
+            print(f"[UXP adapter] catalog.videoEffects.read failed: {message.get('error')} - retrying", flush=True)
+            QtCore.QTimer.singleShot(3000, self._request_catalogs_retry)
             return
         data = message.get("data") or {}
         display_names = data.get("displayNames") or []
@@ -570,12 +609,9 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         entries += [{"name": name, "category": "Audio", "type": "audio"} for name in dict.fromkeys(audio_display_names)]
         if entries:
             try:
-                UXP_EFFECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
                 payload = {"schemaVersion": 1, "source": "uxp", "effects": entries}
-                tmp = UXP_EFFECTS_FILE.with_suffix(".tmp")
-                tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                tmp.replace(UXP_EFFECTS_FILE)
-                print(f"[UXP adapter] {len(entries)} effects written to {UXP_EFFECTS_FILE}", flush=True)
+                if self._write_catalog(UXP_EFFECTS_FILE, payload):
+                    print(f"[UXP adapter] {len(entries)} effects written to {UXP_EFFECTS_FILE}", flush=True)
             except Exception as error:
                 print(f"[UXP adapter] could not write the effect catalog: {error}", flush=True)
 
@@ -793,13 +829,20 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         entry["status"] = "done"
 
     def _prune_pending(self):
-        cutoff = time.time() - PENDING_RETENTION_SECONDS
-        stale = [
-            request_id
-            for request_id, entry in self._pending.items()
-            if entry.get("status") == "done" or (entry.get("status") or "").startswith("error")
-            if float(request_id) < cutoff
-        ]
+        now = time.time()
+        cutoff = now - PENDING_RETENTION_SECONDS
+        stale = []
+        for request_id, entry in self._pending.items():
+            status = entry.get("status") or ""
+            sent_at = entry.get("sent_at") or float(request_id)
+            if status == "pending":
+                # Still unanswered: keep it for its own deadline plus the retention window, so a
+                # caller that stopped polling does not leave it in memory for the whole session.
+                deadline = sent_at + (entry.get("timeout_seconds") or REQUEST_TIMEOUT_SECONDS)
+                if deadline < cutoff:
+                    stale.append(request_id)
+            elif sent_at < cutoff:
+                stale.append(request_id)
         for request_id in stale:
             del self._pending[request_id]
 
@@ -835,7 +878,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         return {
             "backend": self.backend_name,
             "listening": self._server.isListening(),
-            "port": TRANSPORT_PORT,
+            "port": self._port,
             "client_connected": self._client is not None,
             "authenticated": self._authenticated,
             "video_catalog_entries": len(self._video_match_names_by_display),
@@ -881,7 +924,9 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
                 outcome["message"] = message
                 loop.quit()
 
-        self._client.textMessageReceived.connect(on_message)
+        client = self._client
+        client.textMessageReceived.connect(on_message)
+        client.disconnected.connect(loop.quit)  # do not sit out the full timeout on a dead socket
         timer = QtCore.QTimer()
         timer.setSingleShot(True)
         timer.timeout.connect(loop.quit)
@@ -889,10 +934,11 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         self._send({"schemaVersion": 1, "type": action_type, "requestId": request_id, "payload": {}})
         loop.exec()
         timer.stop()
-        try:
-            self._client.textMessageReceived.disconnect(on_message)
-        except (RuntimeError, TypeError):
-            pass  # client already gone (disconnected mid-wait)
+        for signal, slot in ((client.textMessageReceived, on_message), (client.disconnected, loop.quit)):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass  # client already gone (disconnected mid-wait)
 
         message = outcome.get("message")
         if not message or not message.get("ok"):
