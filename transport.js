@@ -1,11 +1,10 @@
 "use strict";
 
-// Optional localhost transport (TECHNICAL_PLAN.md stage 5). Connects this plugin to the stable
-// product's Python companion so the UXP side can eventually replace CEP for the operations
-// CAPABILITY_MATRIX.md already proves have parity, per the architecture decision in
-// TECHNICAL_PLAN.md. This file only ever calls out over WebSocket; it never listens, matching the
-// only network capability official UXP documentation describes (fetch/XHR/WebSocket as a client).
-// The Python companion is therefore the server, and this plugin is the client that reconnects to it.
+// Localhost transport (TECHNICAL_PLAN.md stage 5). Connects this plugin to the Python companion so
+// every Premiere operation the product needs arrives as one execution-adapter.js action. This file
+// only ever calls out over WebSocket; it never listens, matching the only network capability
+// official UXP documentation describes (fetch/XHR/WebSocket as a client). The Python companion is
+// therefore the server, and this plugin is the client that reconnects to it.
 //
 // The port and token below are fixed at build time on purpose: UXP's manifest network permission
 // requires an exact pre-declared domain, so there is no way to negotiate a port at runtime without
@@ -21,17 +20,17 @@ const TRANSPORT_TOKEN = "fxpalette-uxp-transport-v1-2eaf1cf6a94b4a5b8f0e3b7c9a5d
 const TRANSPORT_URL = `ws://localhost:${TRANSPORT_PORT}`;
 
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000, 20000, 30000];
+const WEBSOCKET_OPEN = 1;
 
 let socket = null;
+let stopped = true;
 let reconnectAttempt = 0;
 let reconnectTimer = null;
 let handshakeAcknowledged = false;
 let handlersRef = null;
 let executionAdapterRef = null;
-let statusListeners = [];
 
-// Exposed for the diagnostics panel, so the transport's live state can be shown without needing a
-// separate probe action - this is read-only, it never drives the connection itself.
+// Read-only view of the connection, surfaced through diagnostics; it never drives the connection.
 const state = {
   status: "disconnected", // disconnected | connecting | connected | error
   lastError: null,
@@ -39,21 +38,20 @@ const state = {
   lastMessageAt: null
 };
 
-function notifyStatus() {
-  statusListeners.forEach((listener) => {
-    try { listener({ ...state }); } catch (error) { /* a bad listener must not break the transport */ }
-  });
-}
-
 function setStatus(status, extra) {
   state.status = status;
   if (extra && extra.lastError !== undefined) state.lastError = extra.lastError;
   if (extra && extra.connectedSince !== undefined) state.connectedSince = extra.connectedSince;
-  notifyStatus();
+}
+
+function errorMessage(error) {
+  return error && error.message ? error.message : String(error);
 }
 
 function scheduleReconnect() {
-  if (reconnectTimer) return;
+  // stop() must be final: the close event of the socket it just closed still fires afterwards,
+  // and without this guard that event would schedule a fresh connection from a destroyed plugin.
+  if (stopped || reconnectTimer) return;
   const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
   reconnectAttempt += 1;
   reconnectTimer = setTimeout(() => {
@@ -62,7 +60,21 @@ function scheduleReconnect() {
   }, delay);
 }
 
-async function handleIncoming(raw) {
+function sendOn(ws, payload) {
+  if (!ws) return false;
+  // readyState is only consulted when the runtime exposes it - not every WebSocket implementation
+  // does, and a missing property must not silently disable the transport.
+  if (typeof ws.readyState === "number" && ws.readyState !== WEBSOCKET_OPEN) return false;
+  try {
+    ws.send(JSON.stringify(payload));
+    return true;
+  } catch (error) {
+    // The socket closed between the check and the send; its close listener drives reconnection.
+    return false;
+  }
+}
+
+async function handleIncoming(ws, raw) {
   state.lastMessageAt = new Date().toISOString();
   let message;
   try {
@@ -78,24 +90,21 @@ async function handleIncoming(raw) {
       setStatus("connected", { connectedSince: new Date().toISOString(), lastError: null });
     } else {
       // The server did not accept our token; do not treat any further traffic as trusted.
-      try { socket.close(); } catch (error) { /* already closing */ }
+      try { ws.close(); } catch (error) { /* already closing */ }
     }
     return;
   }
 
   // Every message after the handshake is one already-shaped executionAdapter action; the response
   // is that same executionAdapter result shape, echoing requestId so the companion can correlate it.
+  // The reply goes to the socket the request arrived on: if that connection dropped while the
+  // handler ran, the result is discarded rather than sent down a newer connection that never asked.
   const result = await executionAdapterRef.execute(message, handlersRef);
-  try {
-    socket.send(JSON.stringify(result));
-  } catch (error) {
-    // The socket likely closed between receiving the request and finishing the handler; the
-    // close/error listener below will already be driving reconnection.
-  }
+  sendOn(ws, result);
 }
 
 function openSocket() {
-  if (socket) return;
+  if (stopped || socket) return;
   if (typeof WebSocket === "undefined") {
     // Defensive: if this UXP runtime does not expose WebSocket, fail visibly in diagnostics rather
     // than silently never connecting.
@@ -104,26 +113,32 @@ function openSocket() {
   }
   setStatus("connecting");
   handshakeAcknowledged = false;
+  let ws;
   try {
-    socket = new WebSocket(TRANSPORT_URL);
+    ws = new WebSocket(TRANSPORT_URL);
   } catch (error) {
-    socket = null;
-    setStatus("error", { lastError: error && error.message ? error.message : String(error) });
+    setStatus("error", { lastError: errorMessage(error) });
     scheduleReconnect();
     return;
   }
+  socket = ws;
 
-  socket.addEventListener("open", () => {
-    try {
-      socket.send(JSON.stringify({ type: "hello", schemaVersion: 1, token: TRANSPORT_TOKEN }));
-    } catch (error) {
-      setStatus("error", { lastError: error && error.message ? error.message : String(error) });
+  // Every listener checks it still belongs to the current socket. A superseded socket's late
+  // close/error/message events must not touch the connection that replaced it.
+  ws.addEventListener("open", () => {
+    if (ws !== socket) return;
+    if (!sendOn(ws, { type: "hello", schemaVersion: 1, token: TRANSPORT_TOKEN })) {
+      setStatus("error", { lastError: "Could not send the transport handshake." });
     }
   });
 
-  socket.addEventListener("message", (event) => { handleIncoming(event.data); });
+  ws.addEventListener("message", (event) => {
+    if (ws !== socket) return;
+    handleIncoming(ws, event.data);
+  });
 
-  socket.addEventListener("close", () => {
+  ws.addEventListener("close", () => {
+    if (ws !== socket) return;
     const wasConnected = handshakeAcknowledged;
     socket = null;
     handshakeAcknowledged = false;
@@ -131,34 +146,34 @@ function openSocket() {
     scheduleReconnect();
   });
 
-  socket.addEventListener("error", () => {
+  ws.addEventListener("error", () => {
+    if (ws !== socket) return;
     // The close event still fires after error and is what actually drives reconnection; this only
     // records the failure for diagnostics.
     setStatus("error", { lastError: "WebSocket connection error." });
   });
 }
 
-// handlers must be the same { actionType: handlerFunction } map the diagnostics panel already uses,
-// so the transport never has a different notion of what an action does than the visible UI does.
+// handlers must be the same { actionType: handlerFunction } map index.js uses for everything, so
+// the transport never has a different notion of what an action does than the plugin itself.
 function start(handlers, executionAdapter) {
   handlersRef = handlers;
   executionAdapterRef = executionAdapter;
+  stopped = false;
+  reconnectAttempt = 0;
   openSocket();
 }
 
 function stop() {
+  stopped = true;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (socket) {
-    try { socket.close(); } catch (error) { /* best effort */ }
-    socket = null;
-  }
+  const ws = socket;
+  socket = null;
   handshakeAcknowledged = false;
-  setStatus("disconnected");
-}
-
-function onStatusChange(listener) {
-  statusListeners.push(listener);
-  return () => { statusListeners = statusListeners.filter((entry) => entry !== listener); };
+  if (ws) {
+    try { ws.close(); } catch (error) { /* best effort */ }
+  }
+  setStatus("disconnected", { connectedSince: null });
 }
 
 function getStatus() {
@@ -166,16 +181,12 @@ function getStatus() {
 }
 
 // Fire-and-forget progress line, sent mid-request while an executionAdapter action is still
-// awaiting (handleIncoming only sends the final result once execute() resolves) - added to diagnose
+// awaiting (handleIncoming only sends the final result once execute() resolves) - used to diagnose
 // a hang inside a long multi-step action (ensureGenericProjectItem, index.js) without needing the
 // UXP plugin's own DevTools console, which is harder to reach than the companion's own log output.
 function sendDiagnosticLog(message) {
-  if (!socket || !handshakeAcknowledged) return;
-  try {
-    socket.send(JSON.stringify({ type: "diagnostic.log", message: String(message) }));
-  } catch (error) {
-    // Best-effort only; a lost log line must not affect the actual request/response flow.
-  }
+  if (!handshakeAcknowledged) return;
+  sendOn(socket, { type: "diagnostic.log", message: String(message) });
 }
 
-module.exports = { start, stop, onStatusChange, getStatus, sendDiagnosticLog, TRANSPORT_PORT, TRANSPORT_URL };
+module.exports = { start, stop, getStatus, sendDiagnosticLog, TRANSPORT_PORT, TRANSPORT_URL };

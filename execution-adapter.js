@@ -14,10 +14,8 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.applyImportedEffectPreset",
   "timeline.applyAudioEffect",
   "timeline.applyVideoTransition",
-  "timeline.createSubsequence",
   "timeline.createNest",
   "timeline.insertProjectItem",
-  "timeline.insertGenericItem",
   "timeline.checkTrackAvailability"
 ]);
 
@@ -54,7 +52,7 @@ function normalizeAction(action) {
   }
 
   if (SUPPORTED_ACTIONS.indexOf(type) === -1) {
-    return failure("UNSUPPORTED_ACTION", "Action is not implemented in this proof of concept.", type, requestId);
+    return failure("UNSUPPORTED_ACTION", "Action is not supported by this plugin.", type, requestId);
   }
 
   return {

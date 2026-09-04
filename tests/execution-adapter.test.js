@@ -23,17 +23,18 @@ async function run() {
     "timeline.applyImportedEffectPreset",
     "timeline.applyAudioEffect",
     "timeline.applyVideoTransition",
-    "timeline.createSubsequence",
     "timeline.createNest",
     "timeline.insertProjectItem",
-    "timeline.insertGenericItem",
     "timeline.checkTrackAvailability"
   ]) {
     assert.strictEqual(adapter.normalizeAction({ type }).ok, true, `expected ${type} to be supported`);
   }
 
-  // Research / diagnostic probes were removed from the shipped allowlist (git history keeps them).
+  // Research / diagnostic probes were removed from the shipped allowlist (git history keeps them),
+  // as were the two actions the companion never sent (2026-09 audit).
   for (const type of [
+    "timeline.createSubsequence",
+    "timeline.insertGenericItem",
     "catalog.videoEffects.resolve",
     "timeline.probeVideoEffectParameters",
     "timeline.probeStaticVideoEffectParameter",

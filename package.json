@@ -1,8 +1,10 @@
 {
-  "name": "effectpalette-uxp-poc",
+  "name": "fxpalette-uxp",
   "version": "0.53.0",
   "private": true,
   "scripts": {
-    "validate": "node scripts/validate.js && node tests/execution-adapter.test.js"
+    "validate": "node scripts/validate.js && npm run test:plugin && npm run test:companion",
+    "test:plugin": "node tests/execution-adapter.test.js && node tests/transport.test.js",
+    "test:companion": "python companion/tests/run_tests.py"
   }
 }
