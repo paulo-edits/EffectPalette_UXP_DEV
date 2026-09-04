@@ -1104,6 +1104,62 @@ is the point of an append-only log, and the VFR and coordinate-space findings in
 anything that writes keyframes against extracted frames - including the plugin this feature moved
 into.
 
+### Nineteenth slice: the transport dropped every error it was told about (2026-09-04)
+
+The user reported an animated preset failing to apply onto a clip that already had a keyframed
+effect: the palette showed "applying" for a few seconds, then nothing landed. The beta telemetry
+(`Documents/FX.palette_Beta_Report/telemetry_events.jsonl`) held the shape of the answer already -
+32 `apply_failed` entries across four sessions, **every one of them at ~5.04s**, none anywhere near
+the 30s or 45s the code believed it was allowing.
+
+Two independent defects, both on the companion/transport seam rather than in Premiere:
+
+1. **Every plugin-side error was silently dropped.** `execution-adapter.js`'s `failure()` never
+   included `requestId`, while `execute()`'s success branch always did. The companion correlates
+   responses by `requestId` alone (`if request_id in self._pending`), so a failure response was an
+   unknown frame: discarded, request left pending, and 5s later relabelled `error_timeout` with the
+   plugin's actual message gone. Every error this project is careful to fail closed with - the
+   arbitrary-parameter guard, `"Select at least one video clip."`, the clip-too-short guard, a
+   rejected transaction - reached the user as the same anonymous timeout. Fixed by echoing
+   `requestId` on all five failure paths; `tests/execution-adapter.test.js` now asserts it for
+   EXECUTION_FAILED, MISSING_HANDLER, UNSUPPORTED_ACTION and MISSING_ACTION_TYPE, and asserts the
+   deliberate `null` for INVALID_ACTION, where there is no action object to read one from.
+
+   Verified off-host, since this is protocol logic and needs no Premiere: the real
+   `execution-adapter.js` run under node, its output fed into the companion's real routing and
+   `_resolve_pending`. Pre-fix `requestId: undefined` -> dropped; post-fix -> `error_execution_failed`
+   carrying the plugin's own message, immediately.
+
+2. **The per-effect timeouts had never once been in effect.** `poll_status` applied a flat
+   `REQUEST_TIMEOUT_SECONDS = 5.0` to every request, and `_poll_apply_status` acts on that terminal
+   status *before* it consults `apply_status_timeout_ms`. So `PRESET_APPLY_STATUS_TIMEOUT_MS` (30s,
+   added by the tenth slice above) and `GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS` (45s, sixth slice)
+   were dead from the day they were written - `git log -L` confirms the 5s cap predates both and was
+   never touched by either, and the uniformly ~5.04s telemetry confirms it empirically. The
+   deadlines now live once, in `uxp_execution_adapter.EFFECT_TIMEOUT_SECONDS`, enforced where they
+   are actually checked; `apply_status_timeout_ms` reads that table and adds a grace margin, since
+   its only remaining job is to backstop an adapter that never transitions at all (the stubs, whose
+   `poll_status` always returns `None`).
+
+   This also means the tenth slice's "fixed with a 30s timeout" conclusion was wrong about its own
+   mechanism. Whatever made that preset appear to start working, it was not that constant.
+
+**The reported bug itself was not reproduced.** Six host applies this session all succeeded in
+64-82ms, including the exact scenario as described - `Slide OUT DOWN` onto a clip with
+`componentCountBefore=4`, already carrying the keyframed Transform from a previous apply. That
+falsifies the pre-existing-keyframe hypothesis (and the intrinsic-collision theory built on it:
+`createSetTimeVaryingAction(true)` plus `createAddKeyframeAction` over a parameter that already has
+keys is not, on this evidence, rejected). The original trigger is still unidentified. What changed
+is that it can no longer fail mutely: `_resolve_pending` now writes an `adapter_response` telemetry
+event per response - ok, error code and message, true `elapsed_ms`, and whether it beat the
+deadline - so the next occurrence names its own cause instead of leaving another ~5.04s entry.
+
+Worth recording as method: the deciding evidence here was the user's own beta telemetry, read
+before touching any code. The uniform 5.04s across 32 failures spanning weeks is what ruled out
+"the preset is slow" and pointed at a fixed cap, and it is also what proves the per-effect
+constants never fired. The instrumentation that was missing - the plugin's actual verdict - had
+been going to `print()` only, invisible in the installed windowed build.
+
 ## Parity assessment (2026-08-24)
 
 Requested by the user after five slices: how close is this to the stable CEP product today, and

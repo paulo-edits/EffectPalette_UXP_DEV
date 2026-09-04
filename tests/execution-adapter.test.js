@@ -68,6 +68,37 @@ async function run() {
   assert.strictEqual(result.requestId, "test-request");
   assert.deepStrictEqual(JSON.parse(JSON.stringify(result)), result);
 
+  // Every failure response must echo requestId. The companion routes strictly by it
+  // (uxp_execution_adapter.py's _handle_text_message: `if request_id in self._pending`), so a
+  // failure without one is dropped on the floor - the request stays pending and surfaces to the
+  // user as a 5s "timeout" with the plugin's real error message discarded.
+  const failingAction = { type: "diagnostics.read", requestId: "failure-request", payload: {} };
+
+  const thrown = await adapter.execute(failingAction, {
+    "diagnostics.read": async () => { throw new Error("host said no"); }
+  });
+  assert.strictEqual(thrown.ok, false);
+  assert.strictEqual(thrown.error.code, "EXECUTION_FAILED");
+  assert.strictEqual(thrown.requestId, "failure-request");
+
+  const noHandler = await adapter.execute(failingAction, {});
+  assert.strictEqual(noHandler.error.code, "MISSING_HANDLER");
+  assert.strictEqual(noHandler.requestId, "failure-request");
+
+  const unsupported = await adapter.execute(
+    { type: "timeline.notARealAction", requestId: "failure-request", payload: {} }, {});
+  assert.strictEqual(unsupported.error.code, "UNSUPPORTED_ACTION");
+  assert.strictEqual(unsupported.requestId, "failure-request");
+
+  const noType = await adapter.execute({ requestId: "failure-request" }, {});
+  assert.strictEqual(noType.error.code, "MISSING_ACTION_TYPE");
+  assert.strictEqual(noType.requestId, "failure-request");
+
+  // A non-object action carries no requestId to echo; it must still be a well-formed response.
+  const invalid = await adapter.execute("not an action", {});
+  assert.strictEqual(invalid.error.code, "INVALID_ACTION");
+  assert.strictEqual(invalid.requestId, null);
+
   console.log("Execution adapter tests passed.");
 }
 

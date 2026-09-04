@@ -21,13 +21,25 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.checkTrackAvailability"
 ]);
 
-function failure(code, message, actionType) {
+// requestId is echoed on failures for the same reason it is on successes: the companion
+// correlates every response by it alone (uxp_execution_adapter.py routes with
+// `if request_id in self._pending`), so a failure without one is dropped as an unknown frame -
+// leaving the request pending until it surfaces as a generic 5s timeout, with the real error
+// message lost. null only where the caller genuinely had no action object to read one from.
+function failure(code, message, actionType, requestId) {
   return {
     ok: false,
     schemaVersion: ACTION_SCHEMA_VERSION,
     actionType: actionType || null,
+    requestId: typeof requestId === "string" ? requestId : null,
     error: { code, message }
   };
+}
+
+function readRequestId(action) {
+  return action && typeof action === "object" && typeof action.requestId === "string"
+    ? action.requestId
+    : null;
 }
 
 function normalizeAction(action) {
@@ -35,13 +47,14 @@ function normalizeAction(action) {
     return failure("INVALID_ACTION", "Action must be a serializable object.");
   }
 
+  const requestId = readRequestId(action);
   const type = typeof action.type === "string" ? action.type.trim() : "";
   if (!type) {
-    return failure("MISSING_ACTION_TYPE", "Action type is required.");
+    return failure("MISSING_ACTION_TYPE", "Action type is required.", null, requestId);
   }
 
   if (SUPPORTED_ACTIONS.indexOf(type) === -1) {
-    return failure("UNSUPPORTED_ACTION", "Action is not implemented in this proof of concept.", type);
+    return failure("UNSUPPORTED_ACTION", "Action is not implemented in this proof of concept.", type, requestId);
   }
 
   return {
@@ -63,7 +76,7 @@ async function execute(action, handlers) {
 
   const handler = handlers && handlers[normalized.action.type];
   if (typeof handler !== "function") {
-    return failure("MISSING_HANDLER", "No execution handler is registered.", normalized.action.type);
+    return failure("MISSING_HANDLER", "No execution handler is registered.", normalized.action.type, normalized.action.requestId);
   }
 
   try {
@@ -76,7 +89,7 @@ async function execute(action, handlers) {
       data
     };
   } catch (error) {
-    return failure("EXECUTION_FAILED", error && error.message ? error.message : String(error), normalized.action.type);
+    return failure("EXECUTION_FAILED", error && error.message ? error.message : String(error), normalized.action.type, normalized.action.requestId);
   }
 }
 

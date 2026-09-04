@@ -93,6 +93,7 @@ try:
         UXP_PROJECT_ITEMS_FILE,
         UXP_PRESETS_FILE,
         RECONSTRUCT_EASING_DEFAULT,
+        timeout_seconds_for_effect,
     )
     HAS_UXP_ADAPTER = HAS_QT
 except Exception:
@@ -101,6 +102,12 @@ except Exception:
     UXP_FAVORITES_FILE = Path(__file__).resolve().parent / "data" / "uxp_favorites.json"
     UXP_EFFECTS_FILE = Path(__file__).resolve().parent / "data" / "uxp_effects.json"
     RECONSTRUCT_EASING_DEFAULT = True
+
+    def timeout_seconds_for_effect(effect: dict) -> float:
+        # Mirrors uxp_execution_adapter's table for the no-Qt/tkinter path, where that module
+        # (and therefore the UXP backend it serves) is unavailable in the first place.
+        return {"generic_item": 45.0, "preset": 30.0}.get((effect or {}).get("type"), 5.0)
+
     UXP_PROJECT_ITEMS_FILE = Path(__file__).resolve().parent / "data" / "uxp_project_items.json"
     UXP_PRESETS_FILE = Path(__file__).resolve().parent / "data" / "uxp_presets.json"
     HAS_UXP_ADAPTER = False
@@ -562,31 +569,20 @@ FOCUS_OUT_REBIND_MS = 850
 FOCUS_GRACE_SECONDS = 1.2
 APPLY_STATUS_INITIAL_DELAY_MS = 40
 APPLY_STATUS_POLL_MS = 60
-APPLY_STATUS_TIMEOUT_MS = 5000
-# A "generic item" that isn't already in the project imports a whole template project, moves the
-# result into a bin, and deletes the leftover sequence (index.js's ensureGenericProjectItem) - a
-# multi-transaction round trip that measured well past APPLY_STATUS_TIMEOUT_MS on first use, making
-# the palette report a false "no response" for a request the plugin was still actually completing.
-# 20s wasn't enough either once template_project.prproj grew to ~80 sequences (originally just the
-# 20 Adjustment Layer ones) - only the first import of a given resolution pays this cost, since
-# ensureGenericProjectItem reuses whatever it already imported on every later call.
-GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS = 45000
-# reconstructEasing (on by default) writes one keyframe per frame across an animated parameter's
-# whole duration, each its own createKeyframe/position/setTemporalInterpolationMode call - a preset
-# with many animated parameters over several seconds ("SUPER SMOOTH SHAKE", found by the user to
-# silently fail to apply) can need thousands of these, well past APPLY_STATUS_TIMEOUT_MS.
-PRESET_APPLY_STATUS_TIMEOUT_MS = 30000
+# The per-effect deadlines themselves live in uxp_execution_adapter.EFFECT_TIMEOUT_SECONDS, which
+# is what actually enforces them: the adapter marks a request error_timeout, and _poll_apply_status
+# acts on that terminal status. This UI-side deadline is only the backstop for an adapter that never
+# transitions at all (the stubs below, whose poll_status always returns None), so it deliberately
+# sits just *past* the adapter's own - a UI deadline at or below it would pre-empt the real status
+# the adapter was about to produce, which is exactly the bug that made both per-effect values above
+# unreachable for as long as this module kept its own parallel copy of them.
+APPLY_STATUS_TIMEOUT_GRACE_MS = 2000
 APPLY_SUCCESS_CLOSE_DELAY_MS = 300
 MAX_RECENT_ACTIONS = 20
 
 
 def apply_status_timeout_ms(effect: dict) -> float:
-    effect_type = effect.get("type")
-    if effect_type == "generic_item":
-        return GENERIC_ITEM_APPLY_STATUS_TIMEOUT_MS
-    if effect_type == "preset":
-        return PRESET_APPLY_STATUS_TIMEOUT_MS
-    return APPLY_STATUS_TIMEOUT_MS
+    return timeout_seconds_for_effect(effect) * 1000.0 + APPLY_STATUS_TIMEOUT_GRACE_MS
 HEADER_PAD_X = 14
 HEADER_PAD_Y = 10
 SEARCH_PAD_X = 14

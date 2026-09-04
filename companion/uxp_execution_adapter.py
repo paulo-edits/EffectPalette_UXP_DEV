@@ -27,10 +27,32 @@ from PySide6 import QtCore
 from PySide6.QtNetwork import QHostAddress
 from PySide6.QtWebSockets import QWebSocketServer
 
+import beta_report
+
 TRANSPORT_PORT = 58756
 TRANSPORT_TOKEN = "fxpalette-uxp-transport-v1-2eaf1cf6a94b4a5b8f0e3b7c9a5d6e21"
 
 REQUEST_TIMEOUT_SECONDS = 5.0
+# Per-effect-type deadlines, and the single source of truth for them: app.py's own
+# apply_status_timeout_ms reads this table rather than keeping a parallel copy. It used to keep
+# one, and the duplication was a real bug - poll_status applied the flat REQUEST_TIMEOUT_SECONDS
+# to every request and reported error_timeout (terminal) before app.py's longer per-effect
+# deadline could ever be consulted, so both entries below were dead code from the day they were
+# written. Every recorded timeout in the beta telemetry landed at ~5.04s, never at 30s or 45s.
+#
+# "generic_item": an item not already in the project imports a whole template project, moves the
+# result into a bin, and deletes the leftover sequence (index.js's ensureGenericProjectItem) - a
+# multi-transaction round trip measured well past the default on first use. 20s was not enough
+# once template_project.prproj grew to ~80 sequences; only the first import of a given resolution
+# pays this, since later calls reuse whatever was already imported.
+#
+# "preset": reconstructEasing (on by default) writes one keyframe per frame across an animated
+# parameter's whole duration, each its own createKeyframe/position/setTemporalInterpolationMode
+# call - a preset with many animated parameters over several seconds can need thousands of these.
+EFFECT_TIMEOUT_SECONDS = {
+    "generic_item": 45.0,
+    "preset": 30.0,
+}
 PENDING_RETENTION_SECONDS = 60.0
 CATALOG_REQUEST_ID = "uxp-adapter-video-catalog"
 TRANSITION_CATALOG_REQUEST_ID = "uxp-adapter-video-transitions"
@@ -187,6 +209,11 @@ def build_transition_entries(match_names) -> list[dict]:
             "matchName": name,
         })
     return entries
+
+
+def timeout_seconds_for_effect(effect: dict) -> float:
+    """How long this one effect is allowed to stay pending before it counts as timed out."""
+    return EFFECT_TIMEOUT_SECONDS.get((effect or {}).get("type"), REQUEST_TIMEOUT_SECONDS)
 
 
 def _error_code_to_status(code) -> str:
@@ -684,6 +711,8 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             "status": "pending",
             "requested_display_name": requested_display_name,
             "sent_at": timestamp,
+            "action_type": action_type,
+            "timeout_seconds": timeout_seconds_for_effect(effect),
         }
         print(f"[UXP adapter] -> {action_type} requestId={request_id} payload={payload}", flush=True)
         self._send({
@@ -722,6 +751,19 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         if entry is None:
             return
         print(f"[UXP adapter] <- requestId={request_id} ok={message.get('ok')} data/error={message.get('data') or message.get('error')}", flush=True)
+        # stdout alone is invisible in the installed (windowed) build, so a plugin-side failure
+        # left no trace anywhere - the palette's own telemetry only records that it gave up
+        # waiting. Record the plugin's real verdict, and how long it actually took, so a request
+        # that outlives REQUEST_TIMEOUT_SECONDS is still diagnosable after the fact.
+        sent_at = entry.get("sent_at")
+        beta_report.write_event("adapter_response", {
+            "requestId": request_id,
+            "actionType": entry.get("action_type"),
+            "ok": bool(message.get("ok")),
+            "error": message.get("error"),
+            "elapsed_ms": round((time.time() - sent_at) * 1000.0, 2) if sent_at else None,
+            "timedOutBeforeResponse": entry.get("status") == "error_timeout",
+        })
 
         if not message.get("ok"):
             error = message.get("error") or {}
@@ -768,7 +810,8 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         entry = self._pending.get(request_id)
         if entry is None:
             return None
-        if entry["status"] == "pending" and (time.time() - entry["sent_at"]) > REQUEST_TIMEOUT_SECONDS:
+        timeout_seconds = entry.get("timeout_seconds") or REQUEST_TIMEOUT_SECONDS
+        if entry["status"] == "pending" and (time.time() - entry["sent_at"]) > timeout_seconds:
             entry["status"] = "error_timeout"
         return None if entry["status"] == "pending" else entry["status"]
 
