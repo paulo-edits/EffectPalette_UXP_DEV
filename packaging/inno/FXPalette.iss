@@ -3,7 +3,7 @@
 #define MyAppExeName "FX.palette.exe"
 
 #ifndef MyAppVersion
-#define MyAppVersion "0.53.0"
+#define MyAppVersion "0.54.0"
 #endif
 
 #ifndef SourceDir
