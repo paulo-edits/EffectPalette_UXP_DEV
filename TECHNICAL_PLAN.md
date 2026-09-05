@@ -1327,3 +1327,5 @@ Screenshot after run 1: the V1 clip reads `FXN-001` and "Nested Clips" is in the
 Both nests were left in the user's `Test` sequence (undo twice to remove them). Off-host:
 `npm run validate` passes (27 companion tests, including the new snapshot/organize round trip).
 Two runs is a small sample; the user's own sessions will say whether the intermittent miss is gone.
+
+User confirmation, same evening: native Nest works again in their own session ("Now it works").
