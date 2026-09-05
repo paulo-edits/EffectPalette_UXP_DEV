@@ -17,5 +17,7 @@ assets/template_project/Adobe Premiere Pro Audio Previews/
 
 # Build outputs - the packaged plugin (built once via UDT's own Package menu, not by any script
 # here) and everything build_release.ps1 produces from it.
-packaging/dist/*.ccx
+packaging/dist/*.ccx*
+# Clean plugin-only copy for UDT's Package command (scripts/stage-plugin.js regenerates it).
+packaging/plugin-src/
 release/
