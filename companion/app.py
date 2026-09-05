@@ -1058,7 +1058,7 @@ def fill_and_confirm_native_nest_dialog(nest_name: str) -> bool:
     return send_native_shortcut(PremiereCommandShortcut(vk=0x0D))  # Enter
 
 
-def schedule_native_nest_dialog_confirmation(palette, premiere_hwnd: int, nest_name: str) -> None:
+def schedule_native_nest_dialog_confirmation(palette, premiere_hwnd: int, nest_name: str, on_confirmed=None) -> None:
     premiere_process_id = native_window_process_id(premiere_hwnd)
     if premiere_process_id is None:
         beta_report.write_event("native_nest_dialog_autofill_unavailable", {"reason": "process_unknown"})
@@ -1079,6 +1079,8 @@ def schedule_native_nest_dialog_confirmation(palette, premiere_hwnd: int, nest_n
                 "confirmed": confirmed,
                 "custom_name": bool(nest_name),
             })
+            if confirmed and on_confirmed is not None:
+                on_confirmed()
             return
         if time.monotonic() >= deadline:
             beta_report.write_event("native_nest_dialog_autofill_unavailable", {"reason": "dialog_timeout"})
@@ -1086,6 +1088,70 @@ def schedule_native_nest_dialog_confirmation(palette, premiere_hwnd: int, nest_n
         palette.root.after(50, poll)
 
     palette.root.after(100, poll)
+
+
+NATIVE_NEST_ORGANIZE_POLL_MS = 750
+NATIVE_NEST_ORGANIZE_TIMEOUT_SECONDS = 20.0
+
+
+def schedule_native_nest_organization(palette, baseline_guids: list[str], nest_name: str, bin_name: str) -> None:
+    """After Premiere's own Nest dialog was confirmed, poll the plugin until the new sequence exists,
+    then have it renamed/filed into the bin (timeline.organizeNativeNest). This is the UXP-side
+    replacement for the CEP worker's watchNativeNest, which the old bridge-file watch armed."""
+    adapter = getattr(palette, "execution_adapter", None)
+    if adapter is None or not hasattr(adapter, "organize_native_nest"):
+        beta_report.write_event("native_nest_organize_unavailable", {"reason": "no_adapter"})
+        return
+    deadline = time.monotonic() + NATIVE_NEST_ORGANIZE_TIMEOUT_SECONDS
+    attempts = {"count": 0, "failures": 0}
+
+    def poll():
+        attempts["count"] += 1
+        result = adapter.organize_native_nest(baseline_guids, nest_name, bin_name)
+        if result is None:
+            attempts["failures"] += 1
+        elif result.get("found"):
+            beta_report.write_event("native_nest_organized", {
+                "attempts": attempts["count"],
+                "sequence": result.get("sequence"),
+                "renamed": result.get("renameTransactionSucceeded"),
+                "bin": result.get("binPlacement"),
+            })
+            return
+        if time.monotonic() >= deadline:
+            beta_report.write_event("native_nest_organize_timeout", attempts)
+            return
+        palette.root.after(NATIVE_NEST_ORGANIZE_POLL_MS, poll)
+
+    palette.root.after(NATIVE_NEST_ORGANIZE_POLL_MS, poll)
+
+
+NATIVE_DISPATCH_MIN_DELAY_MS = 80
+NATIVE_DISPATCH_FOCUS_TIMEOUT_MS = 1500
+
+
+def dispatch_when_window_foreground(palette, hwnd: int, dispatch, *, action: str) -> None:
+    """Send a synthesized keystroke only once `hwnd` (Premiere) is actually the foreground window.
+
+    activate_window_handle_native() asks for focus; Windows grants it asynchronously, so a keystroke
+    sent a fixed 80 ms later can land before Premiere is in front. The old bridge-file watch hid
+    this: on a machine with the CEP worker still installed its acknowledgement took a few hundred
+    ms, and native Nest never missed. The wait is bounded and logged so a miss is diagnosable.
+    """
+    started = time.monotonic()
+
+    def poll():
+        foreground = foreground_window_handle_native() == hwnd
+        waited_ms = (time.monotonic() - started) * 1000.0
+        if foreground or waited_ms >= NATIVE_DISPATCH_FOCUS_TIMEOUT_MS:
+            beta_report.write_event("native_dispatch_focus", {
+                "action": action, "foreground": foreground, "waited_ms": round(waited_ms, 1),
+            })
+            dispatch()
+            return
+        palette.root.after(30, poll)
+
+    palette.root.after(NATIVE_DISPATCH_MIN_DELAY_MS, poll)
 
 
 VK_TAB = 0x09
@@ -4284,6 +4350,15 @@ class QtEffectPalette:
             self.status_label.setText(tr("status_premiere_window_unavailable"))
             return True
 
+        adapter = self.execution_adapter
+        nest_name = str(effect.get("nestName", "")).strip()
+        if not nest_name and hasattr(adapter, "next_nest_codename"):
+            # Blank name = CEP's FXN-NNN codename, typed into Premiere's own dialog, exactly like
+            # the API path resolves it before timeline.createNest.
+            nest_name = adapter.next_nest_codename() or ""
+        bin_name = str(effect.get("nestBin") or DEFAULT_NEST_BIN)
+        baseline_guids = adapter.snapshot_sequence_guids() if hasattr(adapter, "snapshot_sequence_guids") else None
+
         beta_report.write_event("timeline_action_started", {
             "action": "nest",
             "shortcut_vk": shortcut.vk,
@@ -4291,8 +4366,16 @@ class QtEffectPalette:
             "shortcut_alt": shortcut.alt,
             "shortcut_shift": shortcut.shift,
             "shortcut_file": str(shortcut_file or ""),
+            "nest_name": nest_name,
+            "baseline_sequences": None if baseline_guids is None else len(baseline_guids),
         })
         self.hide()
+
+        def on_dialog_confirmed():
+            if baseline_guids is None:
+                beta_report.write_event("native_nest_organize_unavailable", {"reason": "no_baseline"})
+                return
+            schedule_native_nest_organization(self, baseline_guids, nest_name, bin_name)
 
         def focus_then_send():
             activate_window_handle_native(premiere_hwnd)
@@ -4302,14 +4385,9 @@ class QtEffectPalette:
                 beta_report.write_event("timeline_action_dispatched", {"action": "nest", "sent": sent})
                 if sent:
                     record_successful_action(effect, confirmed_by="native_dispatch")
-                    schedule_native_nest_dialog_confirmation(
-                        self,
-                        premiere_hwnd,
-                        str(effect.get("nestName", "")),
-                    )
+                    schedule_native_nest_dialog_confirmation(self, premiere_hwnd, nest_name, on_confirmed=on_dialog_confirmed)
 
-            # Give Premiere a moment to take focus before the keystroke lands.
-            self.root.after(80, dispatch)
+            dispatch_when_window_foreground(self, premiere_hwnd, dispatch, action="nest")
 
         self.root.after(CLOSE_ANIMATION_MS + 40, focus_then_send)
         return True
@@ -4344,7 +4422,7 @@ class QtEffectPalette:
                 beta_report.write_event("timeline_action_dispatched", {"action": "set_label", "label_index": label_index, "sent": sent})
                 if sent:
                     record_successful_action(effect, confirmed_by="native_dispatch")
-            self.root.after(80, dispatch)
+            dispatch_when_window_foreground(self, premiere_hwnd, dispatch, action="set_label")
 
         self.root.after(CLOSE_ANIMATION_MS + 40, focus_then_send)
         return True

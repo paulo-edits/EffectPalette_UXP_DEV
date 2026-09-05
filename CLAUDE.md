@@ -50,7 +50,7 @@ Every Premiere operation is one serializable action `{ schemaVersion, type, requ
 returning `{ ok, actionType, requestId, data | error }`. Failures echo `requestId` too — the
 companion correlates responses by it alone.
 
-- **`execution-adapter.js`** — `SUPPORTED_ACTIONS` allowlist (15 actions) + `normalizeAction`/
+- **`execution-adapter.js`** — `SUPPORTED_ACTIONS` allowlist (16 actions) + `normalizeAction`/
   `execute`. Unknown or unhandled actions fail closed. This list must stay equal to what the
   companion actually sends — `tests/execution-adapter.test.js` asserts both the supported set and
   that removed actions stay rejected.
@@ -83,8 +83,13 @@ companion correlates responses by it alone.
 - Operations with no UXP API stay companion-side: Timeline-clip Label / Label group (reads the
   bound shortcut from the user's Premiere `.kys` and synthesizes the keystroke — provisioned by
   `scripts/configure_premiere_shortcuts.ps1`), native Nest (keystroke + typing the name into
-  Premiere's own dialog), creating a Timeline track (drives Premiere's own "Add Tracks…" dialog),
-  and global hotkeys (Win32 `RegisterHotKey`).
+  Premiere's own dialog, then `timeline.organizeNativeNest` renames/files the result into the bin),
+  creating a Timeline track (drives Premiere's own "Add Tracks…" dialog), and global hotkeys
+  (Win32 `RegisterHotKey`). Synthesized keystrokes go through `dispatch_when_window_foreground`.
+- The dev machine still has the old **CEP extension installed and running** inside Premiere. It
+  writes its own files under `%APPDATA%\Adobe\CEP\extensions\EffectPalette\data`; nothing in this
+  repo reads them any more, but don't mistake its side effects (or its absence on a user's PC) for
+  this product's behavior.
 - `beta_report.py` writes local-only logs/telemetry under `Documents/FX.palette_Beta_Report`
   (`FX_PALETTE_REPORT_DIR` overrides it; the tests point it at a temp folder).
 

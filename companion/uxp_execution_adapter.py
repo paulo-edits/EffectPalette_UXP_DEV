@@ -900,7 +900,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
             self._request_effect_preset_catalog()
         return result
 
-    def _blocking_request(self, action_type: str, request_id: str, timeout_ms: int) -> dict | None:
+    def _blocking_request(self, action_type: str, request_id: str, timeout_ms: int, payload: dict | None = None) -> dict | None:
         """Send one action and block the caller (via a nested Qt event loop) for its response.
 
         Only for UI-callback call sites that need a synchronous-looking answer and cannot
@@ -931,7 +931,7 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         timer.setSingleShot(True)
         timer.timeout.connect(loop.quit)
         timer.start(timeout_ms)
-        self._send({"schemaVersion": 1, "type": action_type, "requestId": request_id, "payload": {}})
+        self._send({"schemaVersion": 1, "type": action_type, "requestId": request_id, "payload": payload or {}})
         loop.exec()
         timer.stop()
         for signal, slot in ((client.textMessageReceived, on_message), (client.disconnected, loop.quit)):
@@ -963,6 +963,24 @@ class PremiereUxpExecutionAdapter(QtCore.QObject):
         items = (data.get("timelineSelection") or {}).get("items") or []
         audio_tracks = {item.get("trackIndex") for item in items if item.get("isAudio")}
         return len(audio_tracks) > 1
+
+    def snapshot_sequence_guids(self, timeout_ms: int = 1500) -> list[str] | None:
+        """GUIDs of every sequence in the project right now - taken before a native (keystroke)
+        Nest so organize_native_nest can tell which sequence Premiere created. None on failure."""
+        data = self._blocking_request("diagnostics.read", "adapter-sequence-snapshot", timeout_ms)
+        if data is None:
+            return None
+        sequences = (data.get("project") or {}).get("sequences") or []
+        return [str(entry.get("guid")) for entry in sequences if entry.get("guid")]
+
+    def organize_native_nest(self, baseline_guids: list[str], name: str, bin_name: str, timeout_ms: int = 4000) -> dict | None:
+        """Ask the plugin to find the sequence a native Nest created (anything not in the snapshot),
+        rename it if the dialog typing did not take, and file it into the bin. Returns the plugin's
+        data ({"found": False} while Premiere has not created it yet) or None on failure."""
+        return self._blocking_request(
+            "timeline.organizeNativeNest", "adapter-organize-native-nest", timeout_ms,
+            payload={"baselineSequenceGuids": list(baseline_guids), "name": name, "binName": bin_name},
+        )
 
     def next_nest_codename(self, timeout_ms: int = 1200) -> str | None:
         """The same default Nest name CEP generated for a blank name field: "FXN-NNN", the

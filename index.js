@@ -1160,6 +1160,54 @@ async function ensureBinAndMoveProjectItem(project, projectItem, binName) {
   return { binName, binCreated, moveTransactionSucceeded };
 }
 
+// Native Nest is Premiere's own Nest command, driven by the companion as a keystroke plus typing the
+// name into Premiere's dialog. Premiere then leaves the new sequence wherever it likes. The companion
+// snapshots project.sequences (diagnostics.read) before sending the keystroke and calls this
+// afterwards, every ~750 ms, until the new sequence shows up; it is then renamed if the dialog
+// typing did not take, and filed into the bin - the same end state timeline.createNest produces,
+// and what the CEP product's watchNativeNest/organizeCreatedNest did. found:false is not an error:
+// it just means Premiere has not created the sequence yet (or the user cancelled the dialog).
+async function organizeNativeNest(action) {
+  const baseline = new Set(
+    (Array.isArray(action.payload.baselineSequenceGuids) ? action.payload.baselineSequenceGuids : []).map(String)
+  );
+  const requestedName = typeof action.payload.name === "string" ? action.payload.name.trim() : "";
+  const binName = typeof action.payload.binName === "string" && action.payload.binName.trim()
+    ? action.payload.binName.trim()
+    : "Nested Clips";
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("No active project.");
+  const sequences = await project.getSequences();
+  const created = (Array.isArray(sequences) ? sequences : []).filter((entry) => !baseline.has(guidToString(entry.guid)));
+  if (created.length === 0) return { found: false };
+
+  const sequence = created[created.length - 1];
+  const projectItem = await sequence.getProjectItem();
+  if (!projectItem) throw new Error("Premiere did not return the Nest project item.");
+  const nameBefore = sequence.name || projectItem.name || "";
+  let renameTransactionSucceeded = null;
+  if (requestedName && requestedName !== nameBefore) {
+    project.lockedAccess(() => {
+      const renameAction = projectItem.createSetNameAction(requestedName);
+      renameTransactionSucceeded = project.executeTransaction((compoundAction) => {
+        compoundAction.addAction(renameAction);
+      }, `FX.palette: Rename Nest to ${requestedName}`);
+    });
+  }
+  const binPlacement = await ensureBinAndMoveProjectItem(project, projectItem, binName);
+  return {
+    found: true,
+    candidateCount: created.length,
+    sequence: {
+      guid: guidToString(sequence.guid),
+      nameBefore,
+      nameAfter: renameTransactionSucceeded ? requestedName : nameBefore
+    },
+    renameTransactionSucceeded,
+    binPlacement
+  };
+}
+
 async function createNestFromSelection(action) {
   const requestedName = typeof action.payload.name === "string" ? action.payload.name.trim() : "";
   if (!requestedName) throw new Error("A Nest name is required.");
@@ -2188,7 +2236,13 @@ async function readDiagnostics() {
     guid: guidToString(project.guid),
     // Lets a caller compute a collision-free default name (e.g. the companion's FXN-NNN Nest
     // codename scheme) against real project state instead of guessing at a number.
-    sequenceNames: (Array.isArray(projectSequences) ? projectSequences : []).map((entry) => entry.name || null)
+    sequenceNames: (Array.isArray(projectSequences) ? projectSequences : []).map((entry) => entry.name || null),
+    // GUIDs let the companion snapshot the project before a native (keystroke-driven) Nest and
+    // hand the snapshot back to timeline.organizeNativeNest to find the sequence Premiere created.
+    sequences: (Array.isArray(projectSequences) ? projectSequences : []).map((entry) => ({
+      name: entry.name || null,
+      guid: guidToString(entry.guid)
+    }))
   };
 
   const projectSelection = await premiere.ProjectUtils.getSelection(project);
@@ -2494,6 +2548,7 @@ const ACTION_HANDLERS = {
   "timeline.applyAudioEffect": applyAudioEffectToSelection,
   "timeline.applyVideoTransition": applyVideoTransitionToSelection,
   "timeline.createNest": createNestFromSelection,
+  "timeline.organizeNativeNest": organizeNativeNest,
   "timeline.insertProjectItem": insertSelectedProjectItem,
   "timeline.checkTrackAvailability": checkTrackAvailability
 };

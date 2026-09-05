@@ -24,6 +24,7 @@ async function run() {
     "timeline.applyAudioEffect",
     "timeline.applyVideoTransition",
     "timeline.createNest",
+    "timeline.organizeNativeNest",
     "timeline.insertProjectItem",
     "timeline.checkTrackAvailability"
   ]) {

@@ -15,6 +15,7 @@ const SUPPORTED_ACTIONS = Object.freeze([
   "timeline.applyAudioEffect",
   "timeline.applyVideoTransition",
   "timeline.createNest",
+  "timeline.organizeNativeNest",
   "timeline.insertProjectItem",
   "timeline.checkTrackAvailability"
 ]);

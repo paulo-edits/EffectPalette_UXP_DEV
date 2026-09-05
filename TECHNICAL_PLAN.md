@@ -1264,3 +1264,66 @@ Premiere host test was run in this pass; nothing here changes a `CAPABILITY_MATR
 `motracker-vfr-root-cause` was strictly ahead of `main` (seven commits, fast-forward). The audit was
 done on `slop-audit`, then `main` was fast-forwarded to it and both branches deleted, so `main` is
 the only local branch.
+
+## Native Nest regression from the audit, and its UXP-side replacement (2026-09-04, same day)
+
+The user's first host session after the audit: "the native Nest isn't really working, the API Nest
+is working". Telemetry for the four native attempts that session: two never saw Premiere's Nest
+dialog within 3 s (`native_nest_dialog_autofill_unavailable: dialog_timeout`), two did but ended
+with `custom_name: false`.
+
+### Root cause: the audit's "dead watch" claim was wrong on this machine
+
+The audit removed `arm_native_nest_watch` / `dispatch_when_native_nest_watch_ready` as dead code,
+on the reasoning that nothing reads `premiere_cmd.json` any more. On the dev machine that is false:
+the stable **CEP extension is still installed** (`%APPDATA%\Adobe\CEP\extensions\EffectPalette`,
+CSXS host range `[14.0,99.9]`) and its worker runs inside Premiere - `premiere_cmd.json` carried a
+`watchNativeNest ... "status": "done"` from 18:10 that day, `worker.log` and the `premiere_*.json`
+exports were still being refreshed during the session, and the telemetry has **zero**
+`native_nest_watch_arm_timeout` events across 20 native dispatches. So the watch was being served,
+and it did two things the removal lost:
+
+1. `bridge.js`'s `armNativeNestWatcher` snapshotted the project's sequences, acknowledged, then
+   polled every 750 ms for a sequence not in the snapshot and ran `organizeCreatedNest` on it:
+   rename to the requested name (or the `FXN-NNN` codename) and file it into the "Nested Clips"
+   bin. Without it a native Nest stays "Nested Sequence 01" at the project root.
+2. Its acknowledgement was an ExtendScript round trip, so the keystroke went out a few hundred
+   milliseconds after `activate_window_handle_native()` rather than the audit's fixed 80 ms.
+
+For a user **without** the CEP product (every installed build) the watch always timed out after
+2 s and organised nothing - so the organise step never existed on the UXP-only product at all.
+
+### Fix
+
+- **`timeline.organizeNativeNest`** (new plugin action, allowlist now 16): payload
+  `{ baselineSequenceGuids, name, binName }`. Finds any sequence whose GUID is not in the baseline,
+  renames its project item if the dialog typing did not take, files it into the bin through the
+  existing `ensureBinAndMoveProjectItem`, and returns `{ found: false }` while Premiere has not
+  created it yet. `diagnostics.read` now also returns `project.sequences` (`name` + `guid`) so the
+  companion can take the baseline.
+- **Companion** (`_execute_timeline_action`): a blank name resolves to the `FXN-NNN` codename
+  *before* dispatch (via `next_nest_codename()`), so Premiere's own dialog gets it typed - CEP's
+  `_uniqueNestSequenceName` behaviour. The sequence baseline is taken before hiding the palette.
+  After `native_nest_dialog_autofill` confirms, `schedule_native_nest_organization` polls the new
+  action every 750 ms for up to 20 s (`native_nest_organized` / `native_nest_organize_timeout`).
+- **Keystroke timing**: both native paths (Nest and Label) now go through
+  `dispatch_when_window_foreground`, which waits (80 ms minimum, 1.5 s maximum) until Premiere is
+  actually the foreground window and logs `native_dispatch_focus` with the wait. In the two host
+  runs below Premiere was already foreground at ~95 ms, so the focus-timing hypothesis for the two
+  `dialog_timeout` misses is **not confirmed** - the wait stays as a bounded, logged guard, and the
+  telemetry will show `foreground: false` if that is ever the cause.
+
+### Evidence (host-tested, Premiere 26.0 profile, project `TESTE MOTRACK`, sequence `Test`)
+
+Two consecutive native Nests driven end to end by automation (clip click, Ctrl+Space, `nest`,
+Enter, Enter with a blank name), companion restarted on the new code, plugin hot-reloaded by UDT:
+
+| Run | `native_dispatch_focus` | dialog | organised |
+| --- | --- | --- | --- |
+| 1 | foreground true, 92.8 ms | confirmed, `custom_name: true` | attempt 1: `FXN-001`, bin "Nested Clips" created, move ok |
+| 2 | foreground true, 96.2 ms | confirmed, `custom_name: true` | attempt 1: `FXN-002`, bin existed, move ok |
+
+Screenshot after run 1: the V1 clip reads `FXN-001` and "Nested Clips" is in the Project panel.
+Both nests were left in the user's `Test` sequence (undo twice to remove them). Off-host:
+`npm run validate` passes (27 companion tests, including the new snapshot/organize round trip).
+Two runs is a small sample; the user's own sessions will say whether the intermittent miss is gone.

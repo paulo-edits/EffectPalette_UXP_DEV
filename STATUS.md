@@ -49,10 +49,11 @@ Universal Counting Leader creation; preset reconstruction of effects with a grap
 - **Favorite item that is a whole sequence** — built, imports as a nested clip, not host-tested.
 - **The 2026-09 audit changes below have not been host-tested yet.** Everything in that pass is
   covered by the off-host suites (`npm run validate`), which prove the transport/companion contract
-  but not Premiere behavior. The first real session after it should confirm: palette lists the
-  catalogs after a fresh plugin connection, native Nest still lands (it no longer waits 2 s for a
-  CEP watch that nothing served), the debug window's Log / Diagnostico / Atualizar catalogos
-  buttons, and a UDT plugin reload keeping the companion connected.
+  but not Premiere behavior. Host-confirmed so far (2026-09-04, user's session plus automation):
+  catalogs listed after a fresh plugin connection, effect/preset apply, API Nest, native Nest
+  (two runs, see below). Still to confirm: the debug window's Log / Diagnostico / Atualizar
+  catalogos buttons, Label via the new focus-conditioned dispatch, and a UDT plugin reload keeping
+  the companion connected.
 
 ## Automated checks
 
@@ -87,8 +88,17 @@ A dead-code / reliability / performance pass over the whole repository. Details 
   their content changed (favorites/project items were rewritten every 5 s, each rewrite firing the
   file watcher and a full search-index rebuild); a failed video-effect catalog pull is retried; a
   dropped client releases blocking requests immediately; unanswered requests are pruned.
-- **Allowlist trimmed** to the 15 actions the companion sends (`timeline.createSubsequence`,
-  `timeline.insertGenericItem` and their handlers removed; tests assert they stay rejected).
+- **Allowlist trimmed** to the actions the companion sends (`timeline.createSubsequence`,
+  `timeline.insertGenericItem` and their handlers removed; tests assert they stay rejected). Now 16
+  with `timeline.organizeNativeNest` (below).
+- **Native Nest regression, same day, fixed and host-tested.** The audit called the bridge-file
+  watch dead; on the dev machine the old CEP extension is still installed and was serving it,
+  renaming the native Nest to `FXN-NNN` and filing it into "Nested Clips". That step now runs
+  through the plugin: the companion resolves the codename up front, types it into Premiere's dialog,
+  snapshots the project's sequence GUIDs, and after the dialog confirms polls the new
+  `timeline.organizeNativeNest` action until the new sequence exists and is filed. Both native
+  keystroke paths (Nest, Label) also wait until Premiere is actually foreground before sending.
+  Two consecutive native Nests verified in Premiere (`TECHNICAL_PLAN.md`, last section).
 - **Debug window** rebuilt around the companion's own log and live diagnostics (it read a CEP
   `worker.log` that no longer exists and sent commands to nobody). Beta reports bundle the
   `uxp_*.json` catalogs instead of the CEP files. `beta_report` no longer `mkdir`s and double-stats

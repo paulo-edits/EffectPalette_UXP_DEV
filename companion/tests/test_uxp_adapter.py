@@ -293,6 +293,30 @@ class AdapterServerTests(unittest.TestCase):
         self.assertIsNone(self.adapter.next_nest_codename(timeout_ms=5000))
         self.assertLess(time.monotonic() - started, 3.0, "must not wait out the whole timeout")
 
+    def test_native_nest_snapshot_and_organize_round_trip(self):
+        plugin = self.connect_plugin()
+        self.assertTrue(plugin.acknowledged)
+
+        def answer():
+            for request in plugin.received:
+                if request["requestId"] == "adapter-sequence-snapshot":
+                    plugin.reply(request, data={"project": {"sequences": [{"name": "Test", "guid": "g-1"}, {"name": "x", "guid": None}]}})
+                    return True
+                if request["requestId"] == "adapter-organize-native-nest":
+                    self.assertEqual(request["payload"], {"baselineSequenceGuids": ["g-1"], "name": "FXN-002", "binName": "Nested Clips"})
+                    plugin.reply(request, data={"found": True, "sequence": {"guid": "g-2"}})
+                    return True
+            return False
+
+        timer = QtCore.QTimer()
+        timer.timeout.connect(answer)
+        timer.start(20)
+        self.assertEqual(self.adapter.snapshot_sequence_guids(timeout_ms=3000), ["g-1"])
+        plugin.received.clear()
+        result = self.adapter.organize_native_nest(["g-1"], "FXN-002", "Nested Clips", timeout_ms=3000)
+        timer.stop()
+        self.assertEqual(result, {"found": True, "sequence": {"guid": "g-2"}})
+
     def test_next_nest_codename_counts_existing_sequences(self):
         plugin = self.connect_plugin()
         self.assertTrue(plugin.acknowledged)
