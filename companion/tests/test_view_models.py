@@ -339,6 +339,30 @@ class ApplyControllerTests(unittest.TestCase):
         self.controller.reset()
         self.assertIsNone(self.controller.command_timestamp)
 
+    def test_intermediate_statuses_are_recorded_without_ending_the_apply(self):
+        self.controller.begin({"name": "X"})
+        self.controller.set_last_status("queued")
+        self.assertEqual(self.controller.lastStatus, "queued")
+        self.assertEqual(self.controller.state, "busy")
+        self.controller.set_last_status("running")
+        self.assertEqual(self.controller.lastStatus, "running")
+        self.assertEqual(self.controller.state, "busy")
+
+    def test_begin_clears_the_status_from_the_previous_apply(self):
+        self.controller.begin({"name": "X"})
+        self.controller.complete("error")
+        self.controller.begin({"name": "Y"})
+        self.assertEqual(self.controller.lastStatus, "")
+
+    def test_begin_defaults_the_timestamp_then_it_can_be_set(self):
+        # The palette paints itself busy before the command is sent, so the timestamp
+        # arrives a moment after begin().
+        self.controller.begin({"name": "X"})
+        self.assertIsNone(self.controller.command_timestamp)
+        self.assertEqual(self.controller.state, "busy")
+        self.controller.set_command_timestamp(7.5)
+        self.assertEqual(self.controller.command_timestamp, 7.5)
+
 
 if __name__ == "__main__":
     unittest.main()

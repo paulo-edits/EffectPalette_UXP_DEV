@@ -25,7 +25,7 @@ except ImportError:
 
 import beta_report
 from models import MatchInfo, PaletteLayoutMetrics, ResultRowModel, SearchResultSet
-from palette_view_models import PaletteViewModel
+from palette_view_models import ApplyController, PaletteViewModel
 
 try:
     from pynput import keyboard
@@ -3616,6 +3616,8 @@ class QtEffectPalette:
         self.loader = EffectsLoader()
         self.view_model = PaletteViewModel(AppQueryServices(self.loader))
         self.execution_adapter = create_execution_adapter()
+        self.apply_controller = ApplyController(self.execution_adapter, self.root)
+        self.apply_controller.stateChanged.connect(self._on_apply_state_changed)
         self.animations_enabled = load_app_preferences()["animations"]
         self.reconstruct_easing_enabled = load_app_preferences()["reconstructEasing"]
         self.is_open = False
@@ -3638,14 +3640,9 @@ class QtEffectPalette:
         self._native_hwnd = None
         self._open_requested_at = None
         self._focus_reported = False
-        self._apply_busy = False
-        self._apply_finishing = False
         self._apply_poll_job = None
         self._apply_close_job = None
-        self._apply_command_timestamp = None
         self._apply_started_at = None
-        self._apply_last_status = None
-        self._current_apply_effect: dict = {}
         self._exiting = False
         self._build()
         self._start_file_watcher()
@@ -4036,13 +4033,19 @@ class QtEffectPalette:
             return tr("action_executing")
         return tr("action_applying")
 
-    def _set_apply_busy(self, busy: bool, label: str = ""):
-        self._apply_busy = busy
-        self.apply_progress.setVisible(busy)
-        self.entry.setEnabled(not busy)
-        self.refresh_btn.setEnabled(not busy)
+    def _on_apply_state_changed(self):
+        """Widgets follow the controller; the controller never touches widgets."""
+        state = self.apply_controller.state
+        locked = state in {"busy", "success"}
+        self.apply_progress.setVisible(state == "busy")
+        self.entry.setEnabled(not locked)
+        self.refresh_btn.setEnabled(not locked)
         for button in self.category_buttons.values():
-            button.setEnabled(not busy)
+            button.setEnabled(not locked)
+
+    def _set_apply_busy(self, busy: bool, label: str = ""):
+        if not busy:
+            self.apply_controller.reset()
         if label:
             self.status_label.setText(label)
 
@@ -4051,32 +4054,26 @@ class QtEffectPalette:
         elapsed_ms = None
         if self._apply_started_at is not None:
             elapsed_ms = round((time.perf_counter() - self._apply_started_at) * 1000.0, 2)
-        effect_name = ""
-        if self._current_apply_effect:
-            effect_name = self._current_apply_effect.get("name", "")
+        effect = self.apply_controller.activeEffect
+        effect_name = effect.get("name", "") if effect else ""
         self.apply_progress.hide()
-        if self.execution_adapter.is_success(status):
+
+        self.apply_controller.complete(status)
+
+        if self.apply_controller.state == "success":
             self.status_label.setText(tr("status_applied", name=effect_name))
-            record_successful_action(self._current_apply_effect, confirmed_by=self.execution_adapter.backend_name)
+            record_successful_action(effect, confirmed_by=self.execution_adapter.backend_name)
             beta_report.write_event("apply_completed", {
                 "name": effect_name,
                 "status": status,
                 "elapsed_ms": elapsed_ms,
             })
-            self._apply_busy = True
-            self._apply_finishing = True
             self._apply_close_job = self.root.after(
                 APPLY_SUCCESS_CLOSE_DELAY_MS,
                 self._finish_successful_apply,
             )
             return
 
-        self._apply_busy = False
-        self._apply_finishing = False
-        self.entry.setEnabled(True)
-        self.refresh_btn.setEnabled(True)
-        for button in self.category_buttons.values():
-            button.setEnabled(True)
         self.status_label.setText(format_apply_failure(status))
         beta_report.write_event("apply_failed", {
             "name": effect_name,
@@ -4087,19 +4084,18 @@ class QtEffectPalette:
 
     def _finish_successful_apply(self):
         self._apply_close_job = None
-        self._apply_finishing = False
         self._set_apply_busy(False)
         self.hide()
 
     def _poll_apply_status(self):
         self._apply_poll_job = None
-        if not self._apply_busy:
+        if not self.apply_controller.busy:
             return
-        status = self.execution_adapter.poll_status(self._apply_command_timestamp)
-        if status and status != self._apply_last_status:
-            self._apply_last_status = status
+        status = self.execution_adapter.poll_status(self.apply_controller.command_timestamp)
+        if status and status != self.apply_controller.lastStatus:
+            self.apply_controller.set_last_status(status)
             beta_report.write_event("apply_status_changed", {
-                "name": self._current_apply_effect.get("name", ""),
+                "name": self.apply_controller.activeEffect.get("name", ""),
                 "status": status,
             })
         if status and self.execution_adapter.is_terminal(status):
@@ -4107,17 +4103,14 @@ class QtEffectPalette:
             return
         if self._apply_started_at is not None:
             elapsed_ms = (time.perf_counter() - self._apply_started_at) * 1000.0
-            if elapsed_ms >= apply_status_timeout_ms(self._current_apply_effect):
-                self._apply_busy = False
-                self._apply_finishing = False
+            if elapsed_ms >= apply_status_timeout_ms(self.apply_controller.activeEffect):
+                effect_name = self.apply_controller.activeEffect.get("name", "")
+                # reset() re-enables the widgets through _on_apply_state_changed.
+                self.apply_controller.reset()
                 self.apply_progress.hide()
-                self.entry.setEnabled(True)
-                self.refresh_btn.setEnabled(True)
-                for button in self.category_buttons.values():
-                    button.setEnabled(True)
                 self.status_label.setText(tr("status_no_response"))
                 beta_report.write_event("apply_timeout", {
-                    "name": self._current_apply_effect.get("name", ""),
+                    "name": effect_name,
                     "elapsed_ms": round(elapsed_ms, 2),
                 })
                 self.entry.setFocus(QtCore.Qt.FocusReason.ActiveWindowFocusReason)
@@ -4127,7 +4120,7 @@ class QtEffectPalette:
     def _begin_apply(self, effect: dict):
         action = self._apply_action_label(effect)
         name = effect.get("name", "")
-        self._current_apply_effect = effect
+        self.apply_controller.begin(effect)
         self._set_apply_busy(True, f"{action}: {name}")
         self.app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
         if effect.get("type") in {"project_item", "generic_item", "favorite_item"}:
@@ -4175,23 +4168,20 @@ class QtEffectPalette:
     def _dispatch_apply(self, effect: dict):
         name = effect.get("name", "")
         try:
-            self._apply_command_timestamp = execute_effect_through_adapter(self, effect)
+            command_timestamp = execute_effect_through_adapter(self, effect)
         except Exception as exc:
-            self._apply_busy = False
+            # reset() re-enables the widgets through _on_apply_state_changed.
+            self.apply_controller.reset()
             self.apply_progress.hide()
-            self.entry.setEnabled(True)
-            self.refresh_btn.setEnabled(True)
-            for button in self.category_buttons.values():
-                button.setEnabled(True)
             self.status_label.setText(tr("status_send_failed"))
             beta_report.log_exception("Apply command failed", exc)
             return
+        self.apply_controller.set_command_timestamp(command_timestamp)
         self._apply_started_at = time.perf_counter()
-        self._apply_last_status = None
         beta_report.write_event("apply_started", {
             "name": name,
             "type": effect.get("type", ""),
-            "timestamp": self._apply_command_timestamp,
+            "timestamp": command_timestamp,
         })
         self._apply_poll_job = self.root.after(
             APPLY_STATUS_INITIAL_DELAY_MS,
@@ -4393,7 +4383,7 @@ class QtEffectPalette:
         return True
 
     def _apply_selected(self):
-        if self._apply_busy or self._apply_finishing:
+        if self.apply_controller.state in {"busy", "success"}:
             return
         effect = self._selected_payload()
         if not effect:
@@ -4415,7 +4405,7 @@ class QtEffectPalette:
         self._begin_apply(effect)
 
     def _manual_refresh(self):
-        if self._apply_busy or self._apply_finishing:
+        if self.apply_controller.state in {"busy", "success"}:
             return
         refresh = getattr(self.execution_adapter, "refresh_catalogs", None)
         if callable(refresh):
@@ -4657,7 +4647,7 @@ class QtEffectPalette:
         self._animate_window_geometry(target_geometry, OPEN_ANIMATION_MS, opening=True)
 
     def hide(self):
-        if self._apply_busy:
+        if self.apply_controller.busy:
             return
         if not self.is_open:
             return

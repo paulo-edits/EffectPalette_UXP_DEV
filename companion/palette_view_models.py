@@ -282,11 +282,21 @@ class ApplyController(QtCore.QObject):
     def activeEffect(self) -> dict:
         return self._active_effect
 
-    def begin(self, effect: dict, command_timestamp: float) -> None:
+    def begin(self, effect: dict, command_timestamp: float | None = None) -> None:
         self._active_effect = dict(effect)
         self._command_timestamp = command_timestamp
         self._last_status = ""
         self._set_state("busy")
+
+    def set_last_status(self, status: str) -> None:
+        """Records a non-terminal status seen while polling, so the caller can tell a
+        genuinely new status from a repeat of the one it already reported."""
+        self._last_status = status
+
+    def set_command_timestamp(self, command_timestamp: float | None) -> None:
+        """The timestamp only exists once the command is actually sent, which happens
+        after the palette has already painted itself busy."""
+        self._command_timestamp = command_timestamp
 
     def complete(self, status: str) -> None:
         # A late status for an apply that already finished must not resurrect the machine.
