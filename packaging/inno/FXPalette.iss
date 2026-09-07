@@ -1,5 +1,5 @@
 #define MyAppName "FX.palette"
-#define MyAppPublisher "Paulo Edits"
+#define MyAppPublisher "paulo.edits"
 #define MyAppExeName "FX.palette.exe"
 
 #ifndef MyAppVersion
@@ -40,7 +40,10 @@ OutputBaseFilename=FX.palette_Setup_{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=..\..\companion\assets\fx_palette.ico
+; Points at the bundled .ico rather than the exe so the "Installed apps" row keeps a real
+; icon even before the exe's own resource is read.
+UninstallDisplayIcon={app}\fx_palette.ico
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -53,6 +56,7 @@ Name: "startupicon"; Description: "Iniciar FX.palette junto com o Windows (recom
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\scripts\configure_premiere_shortcuts.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "{#CcxFile}"; DestDir: "{app}\plugin"; Flags: ignoreversion
+Source: "..\..\companion\assets\fx_palette.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\FX.palette"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

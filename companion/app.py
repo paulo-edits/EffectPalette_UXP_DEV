@@ -129,6 +129,10 @@ FONTS_DIR = ASSETS_DIR / "fonts"
 DATA_DIR = UXP_EFFECTS_FILE.parent
 GOOGLE_SANS_FLEX_REGULAR = FONTS_DIR / "GoogleSansFlex-Regular.ttf"
 GOOGLE_SANS_FLEX_MEDIUM = FONTS_DIR / "GoogleSansFlex-Medium.ttf"
+# One mark for the taskbar, Alt-Tab, every window and the tray. The .ico is the installer's
+# and the exe's; the .png is Qt's and pystray's.
+APP_ICON_ICO = ASSETS_DIR / "fx_palette.ico"
+APP_ICON_PNG = ASSETS_DIR / "fx_palette.png"
 
 # ─── Language / i18n ──────────────────────────────────────────────────────────
 
@@ -3614,6 +3618,8 @@ class QtEffectPalette:
     def __init__(self):
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
         self.app.setQuitOnLastWindowClosed(False)
+        if APP_ICON_PNG.exists():
+            self.app.setWindowIcon(QtGui.QIcon(str(APP_ICON_PNG)))
         self.root = QtRootAdapter(self.app)
         self.loader = EffectsLoader()
         self.execution_adapter = create_execution_adapter()
@@ -4955,6 +4961,11 @@ class SystemTrayController:
         self.available = HAS_TRAY
 
     def _make_icon_image(self):
+        if APP_ICON_PNG.exists():
+            return Image.open(APP_ICON_PNG).convert("RGBA")
+        return self._draw_fallback_icon_image()
+
+    def _draw_fallback_icon_image(self):
         image = Image.new("RGBA", (64, 64), (15, 15, 17, 255))
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((6, 6, 58, 58), radius=14, fill=(26, 26, 31, 255), outline=(91, 107, 248, 255), width=3)

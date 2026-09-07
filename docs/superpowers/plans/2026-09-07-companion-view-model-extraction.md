@@ -105,7 +105,7 @@ class AppIdentityTests(unittest.TestCase):
         text = ISS.read_text(encoding="utf-8")
         self.assertIn("SetupIconFile=", text)
         # The uninstall entry must point at a real .ico, not the icon-less exe.
-        self.assertIn("UninstallDisplayIcon={app}\\fx_palette.ico", text)
+        self.assertIn(r"UninstallDisplayIcon={app}\fx_palette.ico", text)
 
 
 if __name__ == "__main__":

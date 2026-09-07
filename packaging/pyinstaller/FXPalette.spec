@@ -5,6 +5,15 @@
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo,
+    StringFileInfo,
+    StringStruct,
+    StringTable,
+    VarFileInfo,
+    VarStruct,
+    VSVersionInfo,
+)
 
 
 ROOT = Path(SPECPATH).parents[1]
@@ -26,6 +35,28 @@ hiddenimports += [
 ]
 
 companion_assets = ROOT / "companion" / "assets"
+APP_ICON = companion_assets / "fx_palette.ico"
+
+# Written into the exe's Properties -> Details tab. Without this the file shows up as a
+# nameless PyInstaller bootloader.
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=(0, 54, 0, 0), prodvers=(0, 54, 0, 0)),
+    kids=[
+        StringFileInfo([
+            StringTable("040904B0", [
+                StringStruct("CompanyName", "paulo.edits"),
+                StringStruct("FileDescription", "FX.palette - search palette for Adobe Premiere Pro"),
+                StringStruct("FileVersion", "0.54.0"),
+                StringStruct("InternalName", "FX.palette"),
+                StringStruct("LegalCopyright", "Copyright (c) paulo.edits"),
+                StringStruct("OriginalFilename", "FX.palette.exe"),
+                StringStruct("ProductName", "FX.palette"),
+                StringStruct("ProductVersion", "0.54.0"),
+            ]),
+        ]),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)
 
 a = Analysis(
     [str(ENTRYPOINT)],
@@ -55,6 +86,8 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=str(APP_ICON),
+    version=version_info,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
