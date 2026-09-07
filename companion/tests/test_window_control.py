@@ -175,6 +175,23 @@ class PreviousFocusTests(unittest.TestCase):
     def test_handle_is_forwarded_from_the_adapter(self):
         self.assertEqual(self.controller.handle(), 4242)
 
+    def test_previous_handle_is_readable_by_the_keystroke_paths(self):
+        self.controller.remember_previous_focus()
+        self.assertEqual(self.controller.previous_handle, 9999)
+
+    def test_previous_handle_can_be_set_directly(self):
+        # The recent-action path captures Premiere's handle itself when the palette
+        # already owns focus.
+        self.controller.previous_handle = 1234
+        self.assertEqual(self.controller.previous_handle, 1234)
+        self.controller.restore_previous_focus()
+        self.assertEqual(self.native.activated, [1234])
+
+    def test_restore_clears_the_previous_handle(self):
+        self.controller.remember_previous_focus()
+        self.controller.restore_previous_focus()
+        self.assertIsNone(self.controller.previous_handle)
+
 
 class AnchorTests(unittest.TestCase):
     def test_anchor_offsets_by_the_screen_origin(self):

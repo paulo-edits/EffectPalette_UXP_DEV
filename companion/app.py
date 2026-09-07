@@ -26,6 +26,7 @@ except ImportError:
 import beta_report
 from models import MatchInfo, PaletteLayoutMetrics, ResultRowModel, SearchResultSet
 from palette_view_models import ApplyController, PaletteViewModel
+from window_control import PaletteWindowController, WidgetWindowAdapter
 
 try:
     from pynput import keyboard
@@ -2256,7 +2257,7 @@ def execute_configured_hotkey_action(palette, action: dict) -> bool:
     # When invoked from a visible recent-action row, the palette itself owns
     # focus. Preserve the Premiere handle captured when the palette opened.
     if premiere_hwnd and premiere_is_focused():
-        palette._previous_foreground_hwnd = premiere_hwnd
+        palette.window_controller.previous_handle = premiere_hwnd
 
     if action_type == "open_search":
         query = str(action.get("query", ""))
@@ -2538,6 +2539,16 @@ def window_is_minimized_native(hwnd: int | None) -> bool:
         return bool(USER32.IsIconic(hwnd))
     except Exception:
         return False
+
+
+class _NativeWindowCalls:
+    """Adapts the module-level Win32 helpers to what PaletteWindowController expects."""
+
+    def foreground_handle(self):
+        return foreground_window_handle_native()
+
+    def activate_handle(self, handle):
+        activate_window_handle_native(handle)
 
 
 def activate_window_handle_native(hwnd: int | None):
@@ -3635,11 +3646,8 @@ class QtEffectPalette:
         self._opacity_animation = None
         self._geometry_animation = None
         self._qt_middle_height = 0
-        self._previous_foreground_hwnd = None
-        self._focus_attempt_job = None
-        self._native_hwnd = None
+        self.window_controller = None  # built in _build(), once the window exists
         self._open_requested_at = None
-        self._focus_reported = False
         self._apply_poll_job = None
         self._apply_close_job = None
         self._apply_started_at = None
@@ -3757,7 +3765,12 @@ class QtEffectPalette:
         self.window.layout().activate()
         self._resize_to_content()
         self._idle_window_height = self.window.height()
-        self._native_hwnd = self._window_hwnd()
+        self.window_controller = PaletteWindowController(
+            WidgetWindowAdapter(self.window, self.entry),
+            self.root,
+            _NativeWindowCalls(),
+            on_focus_acquired=self._report_focus_acquired,
+        )
         self.window.hide()
 
     def _load_qt_fonts(self):
@@ -4149,7 +4162,7 @@ class QtEffectPalette:
             data = adapter.last_response_data(check_timestamp) or {}
             need_video = bool(data.get("needsVideo")) and not bool(data.get("videoAvailable", True))
             need_audio = bool(data.get("needsAudio")) and not bool(data.get("audioAvailable", True))
-            premiere_hwnd = self._previous_foreground_hwnd
+            premiere_hwnd = self.window_controller.previous_handle
             if (need_video or need_audio) and premiere_hwnd:
                 self.status_label.setText(tr("status_creating_track"))
                 # The palette still holds OS focus here - force it onto Premiere first so the
@@ -4300,7 +4313,7 @@ class QtEffectPalette:
         if shortcut is None:
             self.status_label.setText(tr("status_shortcut_unavailable"))
             return True
-        premiere_hwnd = self._previous_foreground_hwnd
+        premiere_hwnd = self.window_controller.previous_handle
         if not premiere_hwnd:
             self.status_label.setText(tr("status_premiere_window_unavailable"))
             return True
@@ -4357,7 +4370,7 @@ class QtEffectPalette:
         if shortcut is None:
             self.status_label.setText(tr("status_label_shortcut_unavailable"))
             return True
-        premiere_hwnd = self._previous_foreground_hwnd
+        premiere_hwnd = self.window_controller.previous_handle
         if not premiere_hwnd:
             self.status_label.setText(tr("status_premiere_window_unavailable"))
             return True
@@ -4491,17 +4504,11 @@ class QtEffectPalette:
         screen = self.app.primaryScreen()
         available = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
         pointer = QtGui.QCursor.pos()
-        width = self.window.width()
-        height = self.window.sizeHint().height()
-        x, y = choose_window_position_near_pointer(
-            pointer_x=pointer.x(),
-            pointer_y=pointer.y(),
-            window_width=width,
-            window_height=height,
-            screen_width=available.width(),
-            screen_height=available.height(),
+        self.window_controller.anchor_to_pointer(
+            pointer=(pointer.x(), pointer.y()),
+            available=(available.x(), available.y(), available.width(), available.height()),
+            position_chooser=choose_window_position_near_pointer,
         )
-        self.window.move(available.x() + x, available.y() + y)
 
     def _resize_to_content(self):
         self.window.setMinimumSize(FIXED_SEARCH_WINDOW_WIDTH, 0)
@@ -4545,73 +4552,34 @@ class QtEffectPalette:
         self._geometry_animation = animation
 
     def _window_hwnd(self) -> int | None:
-        if self._native_hwnd:
-            return self._native_hwnd
-        try:
-            self._native_hwnd = int(self.window.winId())
-            return self._native_hwnd
-        except Exception:
-            return None
+        return self.window_controller.handle()
+
+    def _report_focus_acquired(self, attempt: int):
+        elapsed_ms = None
+        if self._open_requested_at is not None:
+            elapsed_ms = round((time.perf_counter() - self._open_requested_at) * 1000.0, 2)
+        beta_report.write_event("palette_focus_acquired", {
+            "attempt": attempt,
+            "elapsed_ms": elapsed_ms,
+        })
+        if self._open_requested_at is not None:
+            beta_report.write_event("palette_open_latency", {
+                "elapsed_ms": elapsed_ms,
+                "focus_attempt": attempt,
+            })
 
     def _remember_previous_focus(self):
-        previous = foreground_window_handle_native()
-        current = self._window_hwnd()
-        if previous and previous != current:
-            self._previous_foreground_hwnd = previous
-
-    def _activate_window_native(self):
-        activate_window_handle_native(self._window_hwnd())
-
-    def _force_focus_attempt(self, attempt: int = 0, max_attempts: int = OPEN_FOCUS_ATTEMPTS):
-        if not self.is_open:
-            return
-        try:
-            self.window.show()
-            self.window.raise_()
-            self.window.activateWindow()
-            self._activate_window_native()
-            self.entry.setFocus(QtCore.Qt.FocusReason.ActiveWindowFocusReason)
-        except Exception:
-            pass
-        if self.entry.hasFocus():
-            self._cancel_focus_attempts()
-            if not self._focus_reported:
-                self._focus_reported = True
-                elapsed_ms = None
-                if self._open_requested_at is not None:
-                    elapsed_ms = round((time.perf_counter() - self._open_requested_at) * 1000.0, 2)
-                beta_report.write_event("palette_focus_acquired", {
-                    "attempt": attempt,
-                    "elapsed_ms": elapsed_ms,
-                })
-                if self._open_requested_at is not None:
-                    beta_report.write_event("palette_open_latency", {
-                        "elapsed_ms": elapsed_ms,
-                        "focus_attempt": attempt,
-                    })
-            return
-        if attempt < max_attempts:
-            retry_delay = (25, 75)[min(attempt, 1)]
-            self._focus_attempt_job = self.root.after(
-                retry_delay,
-                lambda a=attempt + 1, m=max_attempts: self._force_focus_attempt(a, m),
-            )
-
-    def _cancel_focus_attempts(self):
-        if self._focus_attempt_job is None:
-            return
-        try:
-            self.root.after_cancel(self._focus_attempt_job)
-        except Exception:
-            pass
-        self._focus_attempt_job = None
+        self.window_controller.remember_previous_focus()
 
     def _restore_previous_focus(self):
-        current = self._window_hwnd()
-        previous = self._previous_foreground_hwnd
-        self._previous_foreground_hwnd = None
-        if previous and previous != current:
-            activate_window_handle_native(previous)
+        self.window_controller.restore_previous_focus()
+
+    def _cancel_focus_attempts(self):
+        self.window_controller.cancel_focus_attempts()
+
+    def _force_focus_attempt(self, attempt: int = 0, max_attempts: int = OPEN_FOCUS_ATTEMPTS):
+        self.window_controller.is_open = self.is_open
+        self.window_controller.begin_focus_attempts(max_attempts)
 
     def show(self, invoked_at: float | None = None):
         if self.is_open:
@@ -4620,10 +4588,10 @@ class QtEffectPalette:
             self._force_focus_attempt()
             return
         self._open_requested_at = invoked_at or time.perf_counter()
-        self._focus_reported = False
         beta_report.write_event("palette_open_requested")
         self._remember_previous_focus()
         self.is_open = True
+        self.window_controller.is_open = True
         self.entry.blockSignals(True)
         self.entry.clear()
         self.entry.blockSignals(False)
@@ -4654,6 +4622,8 @@ class QtEffectPalette:
         if getattr(self, "_nest_inline_panel", None) is not None:
             self._close_nest_options(restore=False)
         self.is_open = False
+        # The retry loop reads is_open from the controller; a stale True would keep it going.
+        self.window_controller.is_open = False
         self._cancel_focus_attempts()
 
         def finish():
@@ -4740,13 +4710,14 @@ class QtEffectPalette:
 
     def shutdown(self):
         beta_report.write_event("session_shutdown")
+        if self.window_controller is not None:
+            self.window_controller.cancel_focus_attempts()
         for job_name in (
             "_watch_job",
             "_data_refresh_job",
             "_search_job",
             "_premiere_monitor_job",
             "_render_chunk_job",
-            "_focus_attempt_job",
             "_apply_poll_job",
             "_apply_close_job",
         ):

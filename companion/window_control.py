@@ -88,6 +88,20 @@ class PaletteWindowController:
 
     # --- previous-focus bookkeeping -------------------------------------------------
 
+    @property
+    def previous_handle(self) -> int | None:
+        """Premiere's window, captured when the palette opened.
+
+        The native Nest and Label paths read this to know which window to put back in
+        the foreground before synthesising a keystroke, and the recent-action path sets
+        it when the palette itself already owns focus.
+        """
+        return self._previous_handle
+
+    @previous_handle.setter
+    def previous_handle(self, handle: int | None) -> None:
+        self._previous_handle = handle
+
     def remember_previous_focus(self) -> None:
         previous = self._native.foreground_handle()
         if previous and previous != self._adapter.handle():
