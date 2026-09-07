@@ -244,3 +244,72 @@ class PaletteViewModel(QtCore.QObject):
         if value != self._view_state:
             self._view_state = value
             self.viewStateChanged.emit()
+
+
+class ApplyController(QtCore.QObject):
+    """The apply lifecycle: idle -> busy -> success | error -> idle.
+
+    Owns no widgets and does no I/O beyond polling the adapter it is given, so the whole
+    state machine is testable with a fake adapter and a fake scheduler.
+    """
+
+    stateChanged = QtCore.Signal()
+    succeeded = QtCore.Signal(str)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, adapter, scheduler, parent=None):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._scheduler = scheduler
+        self._state = "idle"
+        self._last_status = ""
+        self._active_effect: dict = {}
+        self._command_timestamp: float | None = None
+
+    @QtCore.Property(str, notify=stateChanged)
+    def state(self) -> str:
+        return self._state
+
+    @QtCore.Property(bool, notify=stateChanged)
+    def busy(self) -> bool:
+        return self._state == "busy"
+
+    @QtCore.Property(str, notify=stateChanged)
+    def lastStatus(self) -> str:
+        return self._last_status
+
+    @QtCore.Property("QVariant", notify=stateChanged)
+    def activeEffect(self) -> dict:
+        return self._active_effect
+
+    def begin(self, effect: dict, command_timestamp: float) -> None:
+        self._active_effect = dict(effect)
+        self._command_timestamp = command_timestamp
+        self._last_status = ""
+        self._set_state("busy")
+
+    def complete(self, status: str) -> None:
+        # A late status for an apply that already finished must not resurrect the machine.
+        if self._state != "busy":
+            return
+        self._last_status = status
+        if self._adapter.is_success(status):
+            self._set_state("success")
+            self.succeeded.emit(status)
+        else:
+            self._set_state("error")
+            self.failed.emit(status)
+
+    def reset(self) -> None:
+        self._active_effect = {}
+        self._command_timestamp = None
+        self._set_state("idle")
+
+    @property
+    def command_timestamp(self) -> float | None:
+        return self._command_timestamp
+
+    def _set_state(self, value: str) -> None:
+        if value != self._state:
+            self._state = value
+            self.stateChanged.emit()

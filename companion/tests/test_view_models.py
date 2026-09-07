@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from models import MatchInfo, ResultRowModel, SearchResultSet
-from palette_view_models import PaletteViewModel, ResultsModel
+from palette_view_models import ApplyController, PaletteViewModel, ResultsModel
 
 
 def make_row(title: str, *, accent: str = "video", payload: dict | None = None) -> ResultRowModel:
@@ -240,6 +240,104 @@ class AppQueryServicesTests(unittest.TestCase):
         for category, expected in app.CATEGORY_TYPE_FILTERS.items():
             self.assertEqual(services.category_type_filters(category), expected)
         self.assertIsNone(services.category_type_filters("Todos"))
+
+
+class FakeAdapter:
+    backend_name = "fake"
+
+    def __init__(self):
+        self.statuses = []
+
+    def is_success(self, status):
+        return status == "ok"
+
+    def is_terminal(self, status):
+        return status in {"ok", "error"}
+
+    def poll_status(self, timestamp):
+        return self.statuses.pop(0) if self.statuses else None
+
+
+class FakeScheduler:
+    def __init__(self):
+        self.jobs = {}
+        self.next_id = 1
+        self.cancelled = []
+
+    def after(self, delay_ms, callback):
+        job_id = self.next_id
+        self.next_id += 1
+        self.jobs[job_id] = callback
+        return job_id
+
+    def after_cancel(self, job_id):
+        self.cancelled.append(job_id)
+        self.jobs.pop(job_id, None)
+
+
+class ApplyControllerTests(unittest.TestCase):
+    def setUp(self):
+        self.adapter = FakeAdapter()
+        self.scheduler = FakeScheduler()
+        self.controller = ApplyController(self.adapter, self.scheduler)
+
+    def test_starts_idle(self):
+        self.assertEqual(self.controller.state, "idle")
+        self.assertFalse(self.controller.busy)
+
+    def test_begin_moves_to_busy_and_records_the_effect(self):
+        effect = {"name": "Gaussian Blur", "type": "effect_video"}
+        self.controller.begin(effect, command_timestamp=123.0)
+        self.assertEqual(self.controller.state, "busy")
+        self.assertTrue(self.controller.busy)
+        self.assertEqual(self.controller.activeEffect["name"], "Gaussian Blur")
+
+    def test_success_status_moves_to_success_and_emits(self):
+        seen = []
+        self.controller.succeeded.connect(seen.append)
+        self.controller.begin({"name": "X"}, command_timestamp=1.0)
+        self.controller.complete("ok")
+        self.assertEqual(self.controller.state, "success")
+        self.assertEqual(seen, ["ok"])
+
+    def test_failure_status_moves_to_error_and_emits(self):
+        seen = []
+        self.controller.failed.connect(seen.append)
+        self.controller.begin({"name": "X"}, command_timestamp=1.0)
+        self.controller.complete("error")
+        self.assertEqual(self.controller.state, "error")
+        self.assertFalse(self.controller.busy)
+        self.assertEqual(seen, ["error"])
+
+    def test_reset_returns_to_idle(self):
+        self.controller.begin({"name": "X"}, command_timestamp=1.0)
+        self.controller.complete("error")
+        self.controller.reset()
+        self.assertEqual(self.controller.state, "idle")
+        self.assertEqual(self.controller.activeEffect, {})
+
+    def test_complete_while_idle_is_ignored(self):
+        self.controller.complete("ok")
+        self.assertEqual(self.controller.state, "idle")
+
+    def test_last_status_is_retained(self):
+        self.controller.begin({"name": "X"}, command_timestamp=1.0)
+        self.controller.complete("error")
+        self.assertEqual(self.controller.lastStatus, "error")
+
+    def test_state_changed_fires_on_each_transition(self):
+        seen = []
+        self.controller.stateChanged.connect(lambda: seen.append(self.controller.state))
+        self.controller.begin({"name": "X"}, command_timestamp=1.0)
+        self.controller.complete("ok")
+        self.controller.reset()
+        self.assertEqual(seen, ["busy", "success", "idle"])
+
+    def test_command_timestamp_is_exposed_for_polling(self):
+        self.controller.begin({"name": "X"}, command_timestamp=42.5)
+        self.assertEqual(self.controller.command_timestamp, 42.5)
+        self.controller.reset()
+        self.assertIsNone(self.controller.command_timestamp)
 
 
 if __name__ == "__main__":
