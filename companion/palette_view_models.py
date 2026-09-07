@@ -7,9 +7,11 @@ Nothing here imports QtWidgets, so all of it is unit-testable without a display.
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from PySide6 import QtCore
 
-from models import ResultRowModel
+from models import MatchInfo, ResultRowModel, SearchResultSet
 
 
 class ResultsModel(QtCore.QAbstractListModel):
@@ -80,3 +82,165 @@ class ResultsModel(QtCore.QAbstractListModel):
     def payload_at(self, index: int) -> dict | None:
         row = self.row_at(index)
         return row.payload if row is not None else None
+
+
+class QueryServices(Protocol):
+    """The pure query-interpretation helpers, injected so the view-model stays testable.
+
+    app.py supplies the real implementation; the tests supply a fake.
+    """
+
+    def resolve_alias(self, raw_query: str) -> str: ...
+    def parse_label_command(self, query: str) -> str | None: ...
+    def build_label_color_items(self, label_filter: str) -> list[dict]: ...
+    def parse_slash_command(self, query: str) -> tuple[str, str | None, bool]: ...
+    def build_recent_action_items(self) -> tuple[dict, ...]: ...
+    def search(self, query: str, type_filters: set[str] | None) -> SearchResultSet: ...
+    def build_row_model(self, payload: dict) -> ResultRowModel: ...
+    def category_type_filters(self, category: str) -> set[str] | None: ...
+
+
+def _unscored(items) -> SearchResultSet:
+    """A result set for items that bypassed the search index (labels, recent actions)."""
+    items = tuple(items)
+    return SearchResultSet(
+        items=items,
+        match_infos=tuple(MatchInfo(score=0.0, ranges=()) for _ in items),
+        total_count=len(items),
+        visible_count=len(items),
+        query="",
+    )
+
+
+class PaletteViewModel(QtCore.QObject):
+    queryChanged = QtCore.Signal()
+    activeCategoryChanged = QtCore.Signal()
+    selectedIndexChanged = QtCore.Signal()
+    viewStateChanged = QtCore.Signal()
+
+    def __init__(self, services: QueryServices, parent=None):
+        super().__init__(parent)
+        self._services = services
+        self._results = ResultsModel(self)
+        self._result_set = _unscored(())
+        self._query = ""
+        self._raw_query = ""
+        self._active_category: str | None = None
+        self._selected_index = -1
+        self._view_state = "idle"
+
+    # --- properties -----------------------------------------------------------------
+
+    @QtCore.Property(str, notify=queryChanged)
+    def query(self) -> str:
+        return self._query
+
+    @QtCore.Property("QVariant", notify=activeCategoryChanged)
+    def activeCategory(self):
+        return self._active_category
+
+    @QtCore.Property(int, notify=selectedIndexChanged)
+    def selectedIndex(self) -> int:
+        return self._selected_index
+
+    @QtCore.Property(str, notify=viewStateChanged)
+    def viewState(self) -> str:
+        return self._view_state
+
+    @QtCore.Property(QtCore.QObject, constant=True)
+    def results(self) -> ResultsModel:
+        return self._results
+
+    @property
+    def resultSet(self) -> SearchResultSet:
+        return self._result_set
+
+    # --- commands -------------------------------------------------------------------
+
+    @QtCore.Slot(str)
+    def set_query(self, raw_query: str) -> None:
+        self._raw_query = raw_query
+        self._recompute()
+
+    @QtCore.Slot(str)
+    def select_category(self, category: str) -> None:
+        self._set_active_category(None if category == "Todos" else category)
+        self._recompute()
+
+    @QtCore.Slot(int)
+    def move_selection(self, direction: int) -> None:
+        count = self._results.rowCount()
+        if count == 0:
+            self._set_selected_index(-1)
+            return
+        current = self._selected_index if self._selected_index >= 0 else 0
+        self._set_selected_index(max(0, min(current + direction, count - 1)))
+
+    @QtCore.Slot(int)
+    def set_selected_index(self, index: int) -> None:
+        self._set_selected_index(index)
+
+    @QtCore.Slot(result="QVariant")
+    def selected_payload(self) -> dict | None:
+        return self._results.payload_at(self._selected_index)
+
+    @QtCore.Slot()
+    def refresh(self) -> None:
+        self._recompute()
+
+    # --- internals ------------------------------------------------------------------
+
+    def _recompute(self) -> None:
+        raw = self._services.resolve_alias(self._raw_query.strip())
+        label_filter = self._services.parse_label_command(raw)
+
+        if label_filter is not None:
+            self._result_set = _unscored(self._services.build_label_color_items(label_filter))
+            query = label_filter
+        else:
+            query, slash_category, matched = self._services.parse_slash_command(raw)
+            if matched and slash_category != self._active_category:
+                self._set_active_category(slash_category)
+            if query:
+                self._result_set = self._services.search(
+                    query, type_filters=self._resolve_type_filters()
+                )
+            else:
+                self._result_set = _unscored(self._services.build_recent_action_items())
+
+        self._set_query(query)
+        rows = [self._services.build_row_model(item) for item in self._result_set.items]
+        self._results.set_rows(rows)
+
+        if rows:
+            self._set_selected_index(0)
+            self._set_view_state("results")
+        else:
+            self._set_selected_index(-1)
+            # An empty query with nothing to show is the resting state, not a failed search.
+            self._set_view_state("idle" if not query else "message")
+
+    def _resolve_type_filters(self) -> set[str] | None:
+        if self._active_category is None:
+            return None
+        return self._services.category_type_filters(self._active_category)
+
+    def _set_query(self, value: str) -> None:
+        if value != self._query:
+            self._query = value
+            self.queryChanged.emit()
+
+    def _set_active_category(self, value: str | None) -> None:
+        if value != self._active_category:
+            self._active_category = value
+            self.activeCategoryChanged.emit()
+
+    def _set_selected_index(self, value: int) -> None:
+        if value != self._selected_index:
+            self._selected_index = value
+            self.selectedIndexChanged.emit()
+
+    def _set_view_state(self, value: str) -> None:
+        if value != self._view_state:
+            self._view_state = value
+            self.viewStateChanged.emit()
