@@ -3614,6 +3614,9 @@ class AppQueryServices:
     def category_type_filters(self, category: str):
         return CATEGORY_TYPE_FILTERS.get(category)
 
+    def translate(self, key: str, **kwargs) -> str:
+        return tr(key, **kwargs)
+
 
 class QtEffectPalette:
     CATEGORY_TYPE_FILTERS = CATEGORY_TYPE_FILTERS
@@ -3742,7 +3745,7 @@ class QtEffectPalette:
         self.footer.setObjectName("footer")
         footer_layout = QtWidgets.QHBoxLayout(self.footer)
         footer_layout.setContentsMargins(16, 9, 16, 9)
-        self.help_label = QtWidgets.QLabel(tr("footer_hint"))
+        self.help_label = QtWidgets.QLabel(self.view_model.footerHint)
         self.help_label.setObjectName("helpLabel")
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setObjectName("statusLabel")
@@ -3760,6 +3763,7 @@ class QtEffectPalette:
 
         self._apply_styles()
         self._update_category_buttons()
+        self.view_model.set_connection_state(self.loader.snapshot.connection_state)
         self._update_connection_indicator()
         self._set_idle_state()
         self.window.layout().activate()
@@ -3904,7 +3908,7 @@ class QtEffectPalette:
             self._style_category_button(button, category, active)
 
     def _update_connection_indicator(self):
-        tokens = get_connection_state_tokens(self.loader.snapshot.connection_state)
+        tokens = get_connection_state_tokens(self.view_model.connectionState)
         self.conn_dot.setStyleSheet(
             f"background: {tokens['fill']}; border: 1px solid {tokens['outline']}; border-radius: 5px;"
         )
@@ -3932,23 +3936,13 @@ class QtEffectPalette:
             self._cancel_render_chunk()
             self._row_widgets = []
             self.results_list.clear()
-            self.status_label.setText("")
             self._set_idle_state()
-            self._resize_to_content()
-            return
-        if state == "message":
-            self.status_label.setText(tr("status_no_results"))
+        elif state == "message":
             self._set_message_state()
-            self._resize_to_content()
-            return
-        self._populate_results()
-        result_set = self.view_model.resultSet
-        self.status_label.setText(tr(
-            "status_results_count",
-            visible=result_set.visible_count,
-            total=result_set.total_count,
-        ))
-        self._set_results_state()
+        else:
+            self._populate_results()
+            self._set_results_state()
+        self.status_label.setText(self.view_model.statusText)
         self._resize_to_content()
 
     def _cancel_render_chunk(self):
@@ -4428,6 +4422,7 @@ class QtEffectPalette:
 
     def _on_loader_snapshot_ready(self, snapshot: LoaderSnapshot):
         print(f"[Watcher] Lista atualizada - {snapshot.count} efeitos")
+        self.view_model.set_connection_state(snapshot.connection_state)
         self._update_connection_indicator()
         if self.is_open:
             self._refresh_list()

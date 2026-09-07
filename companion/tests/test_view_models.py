@@ -116,6 +116,15 @@ class FakeQueryServices:
     def category_type_filters(self, category):
         return self.CATEGORY_FILTERS.get(category)
 
+    def translate(self, key, **kwargs):
+        if key == "status_results_count":
+            return f"{kwargs['visible']}/{kwargs['total']}"
+        if key == "status_no_results":
+            return "no results"
+        if key == "footer_hint":
+            return "Enter to apply"
+        return key
+
 
 CATALOG = [
     {"name": "Gaussian Blur", "type": "effect_video"},
@@ -212,6 +221,46 @@ class PaletteViewModelTests(unittest.TestCase):
         self.vm.set_query("gaussian")
         self.vm.set_query("nothing matches this")
         self.assertEqual(seen, ["results", "message"])
+
+
+class PaletteViewModelStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+
+    def test_results_state_reports_the_visible_and_total_counts(self):
+        self.vm.set_query("gaussian")
+        self.assertEqual(self.vm.statusText, "2/2")
+
+    def test_message_state_reports_no_results(self):
+        self.vm.set_query("nothing matches this")
+        self.assertEqual(self.vm.statusText, "no results")
+
+    def test_idle_state_has_no_status_text(self):
+        self.services.recent = ()
+        self.vm.set_query("")
+        self.assertEqual(self.vm.statusText, "")
+
+    def test_footer_hint_comes_from_the_translator(self):
+        self.assertEqual(self.vm.footerHint, "Enter to apply")
+
+    def test_connection_state_defaults_to_offline(self):
+        self.assertEqual(self.vm.connectionState, "offline")
+
+    def test_set_connection_state_emits_once_per_change(self):
+        seen = []
+        self.vm.connectionStateChanged.connect(lambda: seen.append(self.vm.connectionState))
+        self.vm.set_connection_state("connected")
+        self.vm.set_connection_state("connected")
+        self.vm.set_connection_state("offline")
+        self.assertEqual(seen, ["connected", "offline"])
+
+    def test_status_text_changed_fires_on_transition(self):
+        seen = []
+        self.vm.statusTextChanged.connect(lambda: seen.append(self.vm.statusText))
+        self.vm.set_query("gaussian")
+        self.vm.set_query("nothing matches this")
+        self.assertEqual(seen, ["2/2", "no results"])
 
 
 class AppQueryServicesTests(unittest.TestCase):

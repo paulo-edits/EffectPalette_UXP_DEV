@@ -98,6 +98,7 @@ class QueryServices(Protocol):
     def search(self, query: str, type_filters: set[str] | None) -> SearchResultSet: ...
     def build_row_model(self, payload: dict) -> ResultRowModel: ...
     def category_type_filters(self, category: str) -> set[str] | None: ...
+    def translate(self, key: str, **kwargs) -> str: ...
 
 
 def _unscored(items) -> SearchResultSet:
@@ -117,6 +118,9 @@ class PaletteViewModel(QtCore.QObject):
     activeCategoryChanged = QtCore.Signal()
     selectedIndexChanged = QtCore.Signal()
     viewStateChanged = QtCore.Signal()
+    statusTextChanged = QtCore.Signal()
+    connectionStateChanged = QtCore.Signal()
+    footerHintChanged = QtCore.Signal()
 
     def __init__(self, services: QueryServices, parent=None):
         super().__init__(parent)
@@ -128,6 +132,8 @@ class PaletteViewModel(QtCore.QObject):
         self._active_category: str | None = None
         self._selected_index = -1
         self._view_state = "idle"
+        self._status_text = ""
+        self._connection_state = "offline"
 
     # --- properties -----------------------------------------------------------------
 
@@ -150,6 +156,18 @@ class PaletteViewModel(QtCore.QObject):
     @QtCore.Property(QtCore.QObject, constant=True)
     def results(self) -> ResultsModel:
         return self._results
+
+    @QtCore.Property(str, notify=statusTextChanged)
+    def statusText(self) -> str:
+        return self._status_text
+
+    @QtCore.Property(str, notify=connectionStateChanged)
+    def connectionState(self) -> str:
+        return self._connection_state
+
+    @QtCore.Property(str, notify=footerHintChanged)
+    def footerHint(self) -> str:
+        return self._services.translate("footer_hint")
 
     @property
     def resultSet(self) -> SearchResultSet:
@@ -179,6 +197,12 @@ class PaletteViewModel(QtCore.QObject):
     @QtCore.Slot(int)
     def set_selected_index(self, index: int) -> None:
         self._set_selected_index(index)
+
+    @QtCore.Slot(str)
+    def set_connection_state(self, state: str) -> None:
+        if state != self._connection_state:
+            self._connection_state = state
+            self.connectionStateChanged.emit()
 
     @QtCore.Slot(result="QVariant")
     def selected_payload(self) -> dict | None:
@@ -214,11 +238,21 @@ class PaletteViewModel(QtCore.QObject):
 
         if rows:
             self._set_selected_index(0)
+            self._set_status_text(self._services.translate(
+                "status_results_count",
+                visible=self._result_set.visible_count,
+                total=self._result_set.total_count,
+            ))
             self._set_view_state("results")
         else:
             self._set_selected_index(-1)
             # An empty query with nothing to show is the resting state, not a failed search.
-            self._set_view_state("idle" if not query else "message")
+            if not query:
+                self._set_status_text("")
+                self._set_view_state("idle")
+            else:
+                self._set_status_text(self._services.translate("status_no_results"))
+                self._set_view_state("message")
 
     def _resolve_type_filters(self) -> set[str] | None:
         if self._active_category is None:
@@ -239,6 +273,11 @@ class PaletteViewModel(QtCore.QObject):
         if value != self._selected_index:
             self._selected_index = value
             self.selectedIndexChanged.emit()
+
+    def _set_status_text(self, value: str) -> None:
+        if value != self._status_text:
+            self._status_text = value
+            self.statusTextChanged.emit()
 
     def _set_view_state(self, value: str) -> None:
         if value != self._view_state:
