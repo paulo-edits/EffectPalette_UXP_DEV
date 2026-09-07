@@ -214,5 +214,33 @@ class PaletteViewModelTests(unittest.TestCase):
         self.assertEqual(seen, ["results", "message"])
 
 
+class AppQueryServicesTests(unittest.TestCase):
+    """app.py's real services object must satisfy the QueryServices protocol."""
+
+    def test_app_exposes_a_services_implementation(self):
+        import app
+        self.assertTrue(hasattr(app, "AppQueryServices"))
+
+    def test_services_methods_are_all_present(self):
+        import app
+        required = (
+            "resolve_alias", "parse_label_command", "build_label_color_items",
+            "parse_slash_command", "build_recent_action_items", "search",
+            "build_row_model", "category_type_filters",
+        )
+        for name in required:
+            self.assertTrue(
+                callable(getattr(app.AppQueryServices, name, None)),
+                f"AppQueryServices is missing {name}()",
+            )
+
+    def test_category_type_filters_matches_the_palette_table(self):
+        import app
+        services = app.AppQueryServices(loader=None)
+        for category, expected in app.CATEGORY_TYPE_FILTERS.items():
+            self.assertEqual(services.category_type_filters(category), expected)
+        self.assertIsNone(services.category_type_filters("Todos"))
+
+
 if __name__ == "__main__":
     unittest.main()

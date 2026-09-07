@@ -25,6 +25,7 @@ except ImportError:
 
 import beta_report
 from models import MatchInfo, PaletteLayoutMetrics, ResultRowModel, SearchResultSet
+from palette_view_models import PaletteViewModel
 
 try:
     from pynput import keyboard
@@ -3569,6 +3570,40 @@ class QtPaletteWindow(QtWidgets.QWidget):
         super().keyPressEvent(event)
 
 
+class AppQueryServices:
+    """Binds the module-level query helpers and the loader into one injectable object.
+
+    Exists so PaletteViewModel can be unit-tested against a fake instead of the whole app.
+    """
+
+    def __init__(self, loader):
+        self.loader = loader
+
+    def resolve_alias(self, raw_query: str) -> str:
+        return resolve_alias_query(raw_query)
+
+    def parse_label_command(self, query: str):
+        return parse_label_command(query)
+
+    def build_label_color_items(self, label_filter: str):
+        return list(build_label_color_items(label_filter))
+
+    def parse_slash_command(self, query: str):
+        return parse_slash_command(query)
+
+    def build_recent_action_items(self):
+        return build_recent_action_items()
+
+    def search(self, query: str, type_filters=None):
+        return self.loader.search(query, type_filters=type_filters)
+
+    def build_row_model(self, payload: dict) -> ResultRowModel:
+        return build_result_row_model(payload)
+
+    def category_type_filters(self, category: str):
+        return CATEGORY_TYPE_FILTERS.get(category)
+
+
 class QtEffectPalette:
     CATEGORY_TYPE_FILTERS = CATEGORY_TYPE_FILTERS
 
@@ -3579,14 +3614,11 @@ class QtEffectPalette:
             self.app.setWindowIcon(QtGui.QIcon(str(APP_ICON_PNG)))
         self.root = QtRootAdapter(self.app)
         self.loader = EffectsLoader()
+        self.view_model = PaletteViewModel(AppQueryServices(self.loader))
         self.execution_adapter = create_execution_adapter()
         self.animations_enabled = load_app_preferences()["animations"]
         self.reconstruct_easing_enabled = load_app_preferences()["reconstructEasing"]
         self.is_open = False
-        self._active_category = None
-        self._current_results: list[dict] = []
-        self._current_row_models: list[ResultRowModel] = []
-        self._current_result_set = SearchResultSet(items=(), match_infos=(), total_count=0, visible_count=0, query="")
         self._search_job = None
         self._data_refresh_job = None
         self._watch_job = None
@@ -3857,7 +3889,8 @@ class QtEffectPalette:
 
     def _update_category_buttons(self):
         for category, button in self.category_buttons.items():
-            active = (category == "Todos" and self._active_category is None) or category == self._active_category
+            active_category = self.view_model.activeCategory
+            active = (category == "Todos" and active_category is None) or category == active_category
             self._style_category_button(button, category, active)
 
     def _update_connection_indicator(self):
@@ -3866,18 +3899,10 @@ class QtEffectPalette:
             f"background: {tokens['fill']}; border: 1px solid {tokens['outline']}; border-radius: 5px;"
         )
 
-    def _build_result_row_model(self, effect: dict) -> ResultRowModel:
-        return build_result_row_model(effect)
-
-    def _resolve_type_filters(self) -> set[str] | None:
-        if self._active_category is None:
-            return None
-        return self.CATEGORY_TYPE_FILTERS.get(self._active_category)
-
     def _on_category_click(self, category: str):
-        self._active_category = None if category == "Todos" else category
+        self.view_model.select_category(category)
         self._update_category_buttons()
-        self._refresh_list()
+        self._render_view_model()
 
     def _on_search_change(self, *_args):
         if self._search_job is not None:
@@ -3887,50 +3912,32 @@ class QtEffectPalette:
 
     def _refresh_list(self):
         self._search_job = None
-        raw_query = self.entry.text().strip()
-        raw_query = resolve_alias_query(raw_query)
-        label_filter = parse_label_command(raw_query)
-        if label_filter is not None:
-            items = tuple(build_label_color_items(label_filter))
-            query = label_filter
-            self._current_result_set = SearchResultSet(
-                items=items,
-                match_infos=tuple(MatchInfo(score=0.0, ranges=()) for _ in items),
-                total_count=len(items),
-                visible_count=len(items),
-                query=query,
-            )
-        else:
-            query, slash_category, matched = parse_slash_command(raw_query)
-            if matched and slash_category != self._active_category:
-                self._active_category = slash_category
-                self._update_category_buttons()
-            self._current_result_set = self.loader.search(query, type_filters=self._resolve_type_filters())
-            if not query:
-                items = build_recent_action_items()
-                self._current_result_set = SearchResultSet(
-                    items=items,
-                    match_infos=tuple(MatchInfo(score=0.0, ranges=()) for _ in items),
-                    total_count=len(items), visible_count=len(items), query="",
-                )
-        self._current_results = list(self._current_result_set.items)
-        if not query and label_filter is None and not self._current_results:
+        self.view_model.set_query(self.entry.text())
+        self._update_category_buttons()
+        self._render_view_model()
+
+    def _render_view_model(self):
+        state = self.view_model.viewState
+        if state == "idle":
             self._cancel_render_chunk()
-            self._current_row_models = []
             self._row_widgets = []
             self.results_list.clear()
             self.status_label.setText("")
             self._set_idle_state()
             self._resize_to_content()
             return
-        self._current_row_models = [self._build_result_row_model(effect) for effect in self._current_results]
-        if not self._current_row_models:
+        if state == "message":
             self.status_label.setText(tr("status_no_results"))
             self._set_message_state()
             self._resize_to_content()
             return
         self._populate_results()
-        self.status_label.setText(tr("status_results_count", visible=self._current_result_set.visible_count, total=self._current_result_set.total_count))
+        result_set = self.view_model.resultSet
+        self.status_label.setText(tr(
+            "status_results_count",
+            visible=result_set.visible_count,
+            total=result_set.total_count,
+        ))
         self._set_results_state()
         self._resize_to_content()
 
@@ -3976,10 +3983,11 @@ class QtEffectPalette:
     def _append_result_rows(self, start: int, count: int, generation: int):
         if generation != self._render_generation:
             return
-        end = min(len(self._current_row_models), start + count)
+        end = min(self.view_model.results.rowCount(), start + count)
         self.results_list.setUpdatesEnabled(False)
         try:
-            for model in self._current_row_models[start:end]:
+            for index in range(start, end):
+                model = self.view_model.results.row_at(index)
                 item = QtWidgets.QListWidgetItem()
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, model.payload)
                 item.setSizeHint(QtCore.QSize(FIXED_SEARCH_WINDOW_WIDTH - 34, PaletteLayoutMetrics().row_height + 4))
@@ -3994,7 +4002,7 @@ class QtEffectPalette:
                 self._sync_row_selection(0)
         finally:
             self.results_list.setUpdatesEnabled(True)
-        if end < len(self._current_row_models):
+        if end < self.view_model.results.rowCount():
             self._render_chunk_job = self.root.after(
                 1,
                 lambda next_start=end, gen=generation: self._append_result_rows(next_start, QT_RENDER_CHUNK_ROWS, gen),
@@ -4003,24 +4011,18 @@ class QtEffectPalette:
             self._render_chunk_job = None
 
     def _sync_row_selection(self, selected_row: int):
+        self.view_model.set_selected_index(selected_row)
         for index, row in enumerate(self._row_widgets):
             row.apply_state(selected=index == selected_row)
             if index == selected_row and row._fade_animation is None:
                 row.animate_selection()
 
     def _move_selection(self, direction: int):
-        if not self._row_widgets:
-            return
-        row = self.results_list.currentRow()
-        if row < 0:
-            row = 0
-        self.results_list.setCurrentRow(max(0, min(row + direction, len(self._row_widgets) - 1)))
+        self.view_model.move_selection(direction)
+        self.results_list.setCurrentRow(self.view_model.selectedIndex)
 
     def _selected_payload(self):
-        row = self.results_list.currentRow()
-        if 0 <= row < len(self._current_row_models):
-            return self._current_row_models[row].payload
-        return None
+        return self.view_model.selected_payload()
 
     def _apply_action_label(self, effect: dict) -> str:
         effect_type = effect.get("type")
@@ -4635,12 +4637,10 @@ class QtEffectPalette:
         self.entry.blockSignals(True)
         self.entry.clear()
         self.entry.blockSignals(False)
-        self._active_category = None
+        # Resets the category and the result set in one go; _refresh_list() below recomputes.
+        self.view_model.select_category("Todos")
         self._update_category_buttons()
         self._cancel_render_chunk()
-        self._current_results = []
-        self._current_row_models = []
-        self._current_result_set = SearchResultSet(items=(), match_infos=(), total_count=0, visible_count=0, query="")
         self.results_list.clear()
         self.status_label.setText("")
         self._set_idle_state()
