@@ -20,6 +20,13 @@ Window {
     signal dismissed()
     signal refreshRequested()
     signal applyRequested()
+    signal nestConfirmed(string name)
+    signal nestCancelled()
+
+    property alias nestPanelOpen: nestPanel.open
+
+    function openNestPanel() { nestPanel.open = true; nestPanel.takeFocus() }
+    function closeNestPanel() { nestPanel.open = false }
 
     function focusSearch() { searchField.takeFocus() }
     readonly property bool searchHasFocus: searchField.inputHasFocus
@@ -66,6 +73,14 @@ Window {
                 onCategoryPicked: (category) => vm.select_category(category)
             }
 
+            NestPanel {
+                id: nestPanel
+                objectName: "nestPanel"
+                width: parent.width
+                onConfirmed: (name) => root.nestConfirmed(name)
+                onCancelled: root.nestCancelled()
+            }
+
             ResultList {
                 id: resultList
                 objectName: "resultList"
@@ -108,7 +123,7 @@ Window {
                 id: footer
                 objectName: "footer"
                 width: parent.width
-                hint: vm.footerHint
+                hint: nestPanel.open ? i18n.t("nest_footer_hint") : vm.footerHint
                 status: vm.statusText
                 busy: applyState.busy
                 applyPhase: applyState.state

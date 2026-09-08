@@ -289,5 +289,69 @@ class FooterTests(unittest.TestCase):
         self.assertTrue(empty.property("visible"))
 
 
+class NestPanelTests(unittest.TestCase):
+    def setUp(self):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        self.host = QmlPaletteHost(
+            self.vm, self.apply, self.services.translate, animations_enabled=False,
+        )
+        self.host.load()
+        self.root = self.host.window
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def _child(self, name):
+        return self.root.findChild(QtCore.QObject, name)
+
+    def test_panel_starts_closed(self):
+        panel = self._child("nestPanel")
+        self.assertIsNotNone(panel)
+        self.assertFalse(panel.property("open"))
+
+    def test_open_nest_panel_opens_it(self):
+        self.root.openNestPanel()
+        self.app.processEvents()
+        self.assertTrue(self._child("nestPanel").property("open"))
+        self.assertTrue(self.root.property("nestPanelOpen"))
+
+    def test_close_nest_panel_closes_it(self):
+        self.root.openNestPanel()
+        self.root.closeNestPanel()
+        self.app.processEvents()
+        self.assertFalse(self._child("nestPanel").property("open"))
+
+    def test_confirming_emits_the_typed_name(self):
+        seen = []
+        self.root.nestConfirmed.connect(seen.append)
+        self.root.openNestPanel()
+        self._child("nestPanel").setProperty("nestName", "My Nest")
+        self._child("nestPanel").confirm()
+        self.app.processEvents()
+        self.assertEqual(seen, ["My Nest"])
+
+    def test_cancelling_emits_and_closes(self):
+        seen = []
+        self.root.nestCancelled.connect(lambda: seen.append(True))
+        self.root.openNestPanel()
+        self._child("nestPanel").cancel()
+        self.app.processEvents()
+        self.assertEqual(seen, [True])
+        self.assertFalse(self._child("nestPanel").property("open"))
+
+    def test_footer_hint_switches_while_the_panel_is_open(self):
+        footer = self._child("footer")
+        normal = footer.property("hint")
+        self.root.openNestPanel()
+        self.app.processEvents()
+        self.assertNotEqual(footer.property("hint"), normal)
+        self.root.closeNestPanel()
+        self.app.processEvents()
+        self.assertEqual(footer.property("hint"), normal)
+
+
 if __name__ == "__main__":
     unittest.main()
