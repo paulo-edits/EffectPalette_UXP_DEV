@@ -65,6 +65,23 @@ Window {
                 connectionState: vm.connectionState
                 onCategoryPicked: (category) => vm.select_category(category)
             }
+
+            ResultList {
+                id: resultList
+                objectName: "resultList"
+                width: parent.width
+                height: vm.viewState === "results" ? metrics.resultsHeight : 0
+                visible: height > 0
+                model: vm.results
+                currentIndex: vm.selectedIndex
+                onRowClicked: (index) => vm.set_selected_index(index)
+                onRowActivated: (index) => { vm.set_selected_index(index); root.applyRequested() }
+
+                Behavior on height {
+                    enabled: Theme.animationsEnabled
+                    NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeDecel }
+                }
+            }
         }
     }
 }

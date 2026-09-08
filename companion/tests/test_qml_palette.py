@@ -176,5 +176,58 @@ class SearchAndCategoryTests(unittest.TestCase):
         self.assertNotEqual(connected, dot.property("color"))
 
 
+class ResultListTests(unittest.TestCase):
+    def setUp(self):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        self.host = QmlPaletteHost(
+            self.vm, self.apply, self.services.translate, animations_enabled=False,
+        )
+        self.host.load()
+        self.root = self.host.window
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def _child(self, name):
+        return self.root.findChild(QtCore.QObject, name)
+
+    def test_list_exists(self):
+        self.assertIsNotNone(self._child("resultList"))
+
+    def test_list_count_follows_the_model(self):
+        self.vm.set_query("gaussian")
+        self.app.processEvents()
+        self.assertEqual(self._child("resultList").property("count"), 2)
+
+    def test_list_empties_when_nothing_matches(self):
+        self.vm.set_query("nothing matches this")
+        self.app.processEvents()
+        self.assertEqual(self._child("resultList").property("count"), 0)
+
+    def test_current_index_follows_the_view_model(self):
+        self.vm.set_query("gaussian")
+        self.vm.move_selection(1)
+        self.app.processEvents()
+        self.assertEqual(self._child("resultList").property("currentIndex"), 1)
+
+    def test_selection_survives_a_new_query(self):
+        self.vm.set_query("gaussian")
+        self.vm.move_selection(1)
+        self.vm.set_query("studio")
+        self.app.processEvents()
+        self.assertEqual(self._child("resultList").property("currentIndex"), 0)
+
+    def test_all_rows_are_present_without_chunked_rendering(self):
+        # The widget palette rendered 16 rows then chunked the rest via a timer.
+        # A ListView is virtualised, so count is exact immediately.
+        self.services.catalog = [{"name": f"Blur {i}", "type": "effect_video"} for i in range(200)]
+        self.vm.set_query("blur")
+        self.app.processEvents()
+        self.assertEqual(self._child("resultList").property("count"), 200)
+
+
 if __name__ == "__main__":
     unittest.main()
