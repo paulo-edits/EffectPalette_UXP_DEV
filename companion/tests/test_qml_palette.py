@@ -121,5 +121,60 @@ class PaletteMetricsTests(unittest.TestCase):
         from qml_host import PaletteMetrics
         self.assertFalse(PaletteMetrics(animations_enabled=False).animationsEnabled)
 
+class SearchAndCategoryTests(unittest.TestCase):
+    def setUp(self):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        # animations off: Behaviors would leave colours mid-transition when we read them.
+        self.host = QmlPaletteHost(
+            self.vm, self.apply, self.services.translate, animations_enabled=False,
+        )
+        self.host.load()
+        self.root = self.host.window
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def _child(self, name):
+        return self.root.findChild(QtCore.QObject, name)
+
+    def test_animations_can_be_disabled(self):
+        self.assertFalse(self.root.property("themeProbe").property("animationsEnabled"))
+
+    def test_search_field_exists(self):
+        self.assertIsNotNone(self._child("searchField"))
+
+    def test_typing_in_qml_updates_the_view_model(self):
+        self._child("searchField").setProperty("text", "gaussian")
+        self.app.processEvents()
+        self.assertEqual(self.vm.query, "gaussian")
+        self.assertEqual(self.vm.results.rowCount(), 2)
+
+    def test_category_bar_reflects_the_active_category(self):
+        bar = self._child("categoryBar")
+        self.assertIsNotNone(bar)
+        self.vm.select_category("Audio")
+        self.app.processEvents()
+        self.assertEqual(bar.property("activeCategory"), "Audio")
+
+    def test_todos_is_shown_when_no_category_is_active(self):
+        bar = self._child("categoryBar")
+        self.vm.select_category("Todos")
+        self.app.processEvents()
+        self.assertEqual(bar.property("activeCategory"), "Todos")
+
+    def test_connection_dot_colour_tracks_the_state(self):
+        dot = self._child("connectionDot")
+        self.assertIsNotNone(dot)
+        self.vm.set_connection_state("connected")
+        self.app.processEvents()
+        connected = dot.property("color")
+        self.vm.set_connection_state("offline")
+        self.app.processEvents()
+        self.assertNotEqual(connected, dot.property("color"))
+
+
 if __name__ == "__main__":
     unittest.main()
