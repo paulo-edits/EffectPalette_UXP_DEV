@@ -82,6 +82,37 @@ Window {
                     NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeDecel }
                 }
             }
+
+            Item {
+                id: emptyState
+                objectName: "emptyState"
+                width: parent.width
+                height: visible ? 84 : 0
+                visible: vm.viewState === "message"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: i18n.t("no_results_helper")
+                    color: Theme.textFaint
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.sizeBody
+                }
+
+                Behavior on height {
+                    enabled: Theme.animationsEnabled
+                    NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeDecel }
+                }
+            }
+
+            Footer {
+                id: footer
+                objectName: "footer"
+                width: parent.width
+                hint: vm.footerHint
+                status: vm.statusText
+                busy: applyState.busy
+                applyPhase: applyState.state
+            }
         }
     }
 }

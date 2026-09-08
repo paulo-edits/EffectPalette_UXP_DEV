@@ -229,5 +229,65 @@ class ResultListTests(unittest.TestCase):
         self.assertEqual(self._child("resultList").property("count"), 200)
 
 
+class FooterTests(unittest.TestCase):
+    def setUp(self):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        self.host = QmlPaletteHost(
+            self.vm, self.apply, self.services.translate, animations_enabled=False,
+        )
+        self.host.load()
+        self.root = self.host.window
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def _child(self, name):
+        return self.root.findChild(QtCore.QObject, name)
+
+    def test_footer_exists(self):
+        self.assertIsNotNone(self._child("footer"))
+
+    def test_status_text_follows_the_view_model(self):
+        self.vm.set_query("gaussian")
+        self.app.processEvents()
+        self.assertEqual(self._child("footer").property("status"), self.vm.statusText)
+        self.assertEqual(self._child("footer").property("status"), "2/2")
+
+    def test_hint_follows_the_view_model(self):
+        self.assertEqual(self._child("footer").property("hint"), self.vm.footerHint)
+
+    def test_busy_follows_the_apply_controller(self):
+        footer = self._child("footer")
+        self.assertFalse(footer.property("busy"))
+        self.apply.begin({"name": "X"})
+        self.app.processEvents()
+        self.assertTrue(footer.property("busy"))
+        self.apply.complete("error")
+        self.app.processEvents()
+        self.assertFalse(footer.property("busy"))
+
+    def test_apply_phase_follows_the_controller(self):
+        footer = self._child("footer")
+        self.apply.begin({"name": "X"})
+        self.app.processEvents()
+        self.assertEqual(footer.property("applyPhase"), "busy")
+        self.apply.complete("ok")
+        self.app.processEvents()
+        self.assertEqual(footer.property("applyPhase"), "success")
+
+    def test_empty_state_shows_only_in_message_state(self):
+        empty = self._child("emptyState")
+        self.assertIsNotNone(empty)
+        self.vm.set_query("gaussian")
+        self.app.processEvents()
+        self.assertFalse(empty.property("visible"))
+        self.vm.set_query("nothing matches this")
+        self.app.processEvents()
+        self.assertTrue(empty.property("visible"))
+
+
 if __name__ == "__main__":
     unittest.main()
