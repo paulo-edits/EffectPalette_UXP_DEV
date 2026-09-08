@@ -27,12 +27,14 @@ class ModelsModuleTests(unittest.TestCase):
         )
         self.assertIsNone(row.accent_color)
 
-    def test_app_still_re_exports_them(self):
+    def test_app_still_re_exports_the_ones_it_uses(self):
+        # PaletteLayoutMetrics is deliberately absent: it was re-exported for the
+        # QtWidgets palette, which the QML rewrite deleted. qml_host takes it from
+        # models directly now.
         import app
         self.assertIs(app.ResultRowModel, models.ResultRowModel)
         self.assertIs(app.SearchResultSet, models.SearchResultSet)
         self.assertIs(app.MatchInfo, models.MatchInfo)
-        self.assertIs(app.PaletteLayoutMetrics, models.PaletteLayoutMetrics)
 
 
 if __name__ == "__main__":

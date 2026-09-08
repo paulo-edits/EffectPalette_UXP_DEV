@@ -133,6 +133,7 @@ class PaletteViewModel(QtCore.QObject):
         self._selected_index = -1
         self._view_state = "idle"
         self._status_text = ""
+        self._status_override = ""
         self._connection_state = "offline"
 
     # --- properties -----------------------------------------------------------------
@@ -159,7 +160,8 @@ class PaletteViewModel(QtCore.QObject):
 
     @QtCore.Property(str, notify=statusTextChanged)
     def statusText(self) -> str:
-        return self._status_text
+        """The search status, unless an apply is talking over it."""
+        return self._status_override or self._status_text
 
     @QtCore.Property(str, notify=connectionStateChanged)
     def connectionState(self) -> str:
@@ -199,6 +201,17 @@ class PaletteViewModel(QtCore.QObject):
         self._set_selected_index(index)
 
     @QtCore.Slot(str)
+    def set_status_override(self, text: str) -> None:
+        """Apply progress and result messages temporarily replace the search status.
+
+        Cleared by the next recompute, which is what the widget palette did implicitly
+        by overwriting the label on every refresh.
+        """
+        if text != self._status_override:
+            self._status_override = text
+            self.statusTextChanged.emit()
+
+    @QtCore.Slot(str)
     def set_connection_state(self, state: str) -> None:
         if state != self._connection_state:
             self._connection_state = state
@@ -215,6 +228,7 @@ class PaletteViewModel(QtCore.QObject):
     # --- internals ------------------------------------------------------------------
 
     def _recompute(self) -> None:
+        self._status_override = ""
         raw = self._services.resolve_alias(self._raw_query.strip())
         label_filter = self._services.parse_label_command(raw)
 

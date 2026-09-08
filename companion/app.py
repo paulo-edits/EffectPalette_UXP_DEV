@@ -24,9 +24,10 @@ except ImportError:
     winreg = None
 
 import beta_report
-from models import MatchInfo, PaletteLayoutMetrics, ResultRowModel, SearchResultSet
+from models import MatchInfo, ResultRowModel, SearchResultSet
 from palette_view_models import ApplyController, PaletteViewModel
-from window_control import PaletteWindowController, WidgetWindowAdapter
+from qml_host import QmlPaletteHost
+from window_control import PaletteWindowController, QuickWindowAdapter
 
 try:
     from pynput import keyboard
@@ -2732,117 +2733,6 @@ class QtRootAdapter(QtCore.QObject):
         self.app.quit()
 
 
-class QtResultRowWidget(QtWidgets.QFrame):
-    def __init__(self, model: ResultRowModel, parent=None):
-        super().__init__(parent)
-        self.model = model
-        self.setObjectName("resultRow")
-        self.setFixedHeight(PaletteLayoutMetrics().row_height)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(16, 6, 10, 6)
-        layout.setSpacing(10)
-
-        self.icon = QtWidgets.QLabel(get_icon_glyph(model.icon_kind))
-        self.icon.setObjectName("rowIcon")
-        self.icon.setFixedWidth(20)
-        self.icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.icon)
-
-        text_layout = QtWidgets.QVBoxLayout()
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(1)
-        self.title = QtWidgets.QLabel(model.title)
-        self.title.setObjectName("rowTitle")
-        self.title.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
-        self.subtitle = QtWidgets.QLabel(model.subtitle)
-        self.subtitle.setObjectName("rowSubtitle")
-        self.subtitle.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
-        text_layout.addWidget(self.title)
-        text_layout.addWidget(self.subtitle)
-        layout.addLayout(text_layout, 1)
-
-        self.badge = QtWidgets.QLabel(model.type_label)
-        self.badge.setObjectName("rowBadge")
-        self.badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.badge)
-        self.apply_state(selected=False)
-        self._fade_animation = None
-
-    def animate_in(self, delay_ms: int = 0):
-        effect = QtWidgets.QGraphicsOpacityEffect(self)
-        effect.setOpacity(0.0)
-        self.setGraphicsEffect(effect)
-        animation = QtCore.QPropertyAnimation(effect, b"opacity", self)
-        animation.setDuration(150)
-        animation.setStartValue(0.0)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-
-        def finish():
-            self.setGraphicsEffect(None)
-            self._fade_animation = None
-
-        if delay_ms:
-            group = QtCore.QSequentialAnimationGroup(self)
-            group.addPause(delay_ms)
-            group.addAnimation(animation)
-            group.finished.connect(finish)
-            self._fade_animation = group
-            group.start()
-        else:
-            animation.finished.connect(finish)
-            self._fade_animation = animation
-            animation.start()
-
-    def animate_selection(self):
-        effect = QtWidgets.QGraphicsOpacityEffect(self)
-        effect.setOpacity(0.86)
-        self.setGraphicsEffect(effect)
-        animation = QtCore.QPropertyAnimation(effect, b"opacity", self)
-        animation.setDuration(110)
-        animation.setStartValue(0.86)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-        animation.finished.connect(lambda: self.setGraphicsEffect(None))
-        animation.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
-
-    def apply_state(self, *, selected: bool):
-        tokens = get_row_visual_tokens(self.model.accent_kind, selected=selected, hovered=False, accent_color=self.model.accent_color)
-        self.setStyleSheet(
-            f"""
-            QFrame#resultRow {{
-                background: {tokens["bg"]};
-                border: 1px solid {tokens["border"]};
-                border-radius: 12px;
-            }}
-            QLabel#rowTitle {{
-                color: {tokens["title_fg"]};
-                font-weight: 700;
-                background: transparent;
-            }}
-            QLabel#rowSubtitle {{
-                color: {tokens["subtitle_fg"]};
-                font-size: 11px;
-                background: transparent;
-            }}
-            QLabel#rowIcon {{
-                color: {tokens["icon_fg"]};
-                background: transparent;
-                font-size: 14px;
-            }}
-            QLabel#rowBadge {{
-                color: {tokens["type_fg"]};
-                background: {tokens["type_bg"]};
-                border-radius: 4px;
-                padding: 2px 8px;
-                font-size: 11px;
-                font-weight: 700;
-            }}
-            """
-        )
-
 
 class QtHotkeyCatalogEditor(QtWidgets.QDialog):
     """Premiere-style searchable catalog of every shortcut-capable action."""
@@ -3552,34 +3442,6 @@ class QtSettingsCenter(QtWidgets.QDialog):
         self.accept()
 
 
-class QtPaletteWindow(QtWidgets.QWidget):
-    def __init__(self, palette):
-        super().__init__(None)
-        self.palette = palette
-        self.setWindowFlags(
-            QtCore.Qt.WindowType.FramelessWindowHint
-            | QtCore.Qt.WindowType.Tool
-            | QtCore.Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-    def keyPressEvent(self, event):
-        key = event.key()
-        if key == QtCore.Qt.Key.Key_Escape:
-            if getattr(self.palette, "_nest_inline_panel", None) is not None:
-                self.palette._cancel_nest_options()
-            else:
-                self.palette.hide()
-            return
-
-        if key == QtCore.Qt.Key.Key_Down:
-            self.palette._move_selection(1)
-            return
-        if key == QtCore.Qt.Key.Key_Up:
-            self.palette._move_selection(-1)
-            return
-        super().keyPressEvent(event)
-
 
 class AppQueryServices:
     """Binds the module-level query helpers and the loader into one injectable object.
@@ -3630,8 +3492,9 @@ class QtEffectPalette:
         self.loader = EffectsLoader()
         self.view_model = PaletteViewModel(AppQueryServices(self.loader))
         self.execution_adapter = create_execution_adapter()
+        # QML binds straight to applyState.busy / applyState.state, so no widget
+        # projection slot is needed any more.
         self.apply_controller = ApplyController(self.execution_adapter, self.root)
-        self.apply_controller.stateChanged.connect(self._on_apply_state_changed)
         self.animations_enabled = load_app_preferences()["animations"]
         self.reconstruct_easing_enabled = load_app_preferences()["reconstructEasing"]
         self.is_open = False
@@ -3643,17 +3506,12 @@ class QtEffectPalette:
         self._premiere_seen = False
         self._premiere_seen_since = None
         self._feedback_prompt_shown = False
-        self._row_widgets: list[QtResultRowWidget] = []
-        self._render_chunk_job = None
-        self._render_generation = 0
-        self._opacity_animation = None
-        self._geometry_animation = None
-        self._qt_middle_height = 0
         self.window_controller = None  # built in _build(), once the window exists
         self._open_requested_at = None
         self._apply_poll_job = None
         self._apply_close_job = None
         self._apply_started_at = None
+        self._pending_nest_effect = None
         self._exiting = False
         self._build()
         self._start_file_watcher()
@@ -3662,120 +3520,31 @@ class QtEffectPalette:
     def _build(self):
         self._load_qt_fonts()
         self.ui_font_family = self._choose_qt_font_family()
-        self.window = QtPaletteWindow(self)
-        self.window.setObjectName("paletteWindow")
-        self.window.setFixedWidth(FIXED_SEARCH_WINDOW_WIDTH)
 
-        root_layout = QtWidgets.QVBoxLayout(self.window)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        self.qml_host = QmlPaletteHost(
+            self.view_model,
+            self.apply_controller,
+            tr,
+            animations_enabled=self.animations_enabled,
+        )
+        self.qml_host.load()
+        self.window = self.qml_host.window
 
-        self.top_card = QtWidgets.QFrame()
-        self.top_card.setObjectName("topCard")
-        top_layout = QtWidgets.QVBoxLayout(self.top_card)
-        top_layout.setContentsMargins(8, 8, 8, 8)
-        top_layout.setSpacing(0)
-        root_layout.addWidget(self.top_card)
+        self.window.applyRequested.connect(self._apply_selected)
+        self.window.dismissed.connect(self.hide)
+        self.window.refreshRequested.connect(self._manual_refresh)
+        self.window.nestConfirmed.connect(self._confirm_nest_options)
+        self.window.nestCancelled.connect(self._cancel_nest_options)
+        self.window.closeFinished.connect(self._on_close_finished)
 
-        search_row = QtWidgets.QHBoxLayout()
-        search_row.setContentsMargins(14, 0, 14, 0)
-        search_row.setSpacing(8)
-        self.prompt = QtWidgets.QLabel(">")
-        self.prompt.setObjectName("prompt")
-        self.entry = QtWidgets.QLineEdit()
-        self.entry.setObjectName("searchEntry")
-        self.entry.setFrame(False)
-        self.entry.textChanged.connect(self._on_search_change)
-        self.entry.returnPressed.connect(self._apply_selected)
-        self.refresh_btn = QtWidgets.QPushButton(get_reload_icon_glyph())
-        self.refresh_btn.setObjectName("refreshButton")
-        self.refresh_btn.setFixedSize(28, 28)
-        self.refresh_btn.clicked.connect(self._manual_refresh)
-        search_row.addWidget(self.prompt)
-        search_row.addWidget(self.entry, 1)
-        search_row.addWidget(self.refresh_btn)
-        top_layout.addLayout(search_row)
-
-        divider = QtWidgets.QFrame()
-        divider.setObjectName("divider")
-        divider.setFixedHeight(1)
-        top_layout.addWidget(divider)
-
-        filters_row = QtWidgets.QHBoxLayout()
-        filters_row.setContentsMargins(14, 7, 14, 6)
-        filters_row.setSpacing(8)
-        self.category_buttons: dict[str, QtWidgets.QPushButton] = {}
-        for category in ["Todos", "Video", "Audio", "Presets", "Projeto", "Favoritos"]:
-            button = QtWidgets.QPushButton(tr_category(category))
-            button.setObjectName("categoryButton")
-            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-            button.clicked.connect(lambda _checked=False, c=category: self._on_category_click(c))
-            self.category_buttons[category] = button
-            filters_row.addWidget(button)
-        filters_row.addStretch(1)
-        self.conn_dot = QtWidgets.QLabel()
-        self.conn_dot.setObjectName("connectionDot")
-        self.conn_dot.setFixedSize(10, 10)
-        filters_row.addWidget(self.conn_dot)
-        top_layout.addLayout(filters_row)
-
-        self.body_card = QtWidgets.QFrame()
-        self.body_card.setObjectName("bodyCard")
-        body_layout = QtWidgets.QVBoxLayout(self.body_card)
-        self.body_layout = body_layout
-        body_layout.setContentsMargins(8, 8, 8, 8)
-        body_layout.setSpacing(0)
-        root_layout.addWidget(self.body_card)
-
-        self.empty_label = QtWidgets.QLabel(tr("no_results_helper"))
-        self.empty_label.setObjectName("emptyLabel")
-        self.empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.results_list = QtWidgets.QListWidget()
-        self.results_list.setObjectName("resultsList")
-        self.results_list.setUniformItemSizes(False)
-        self.results_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.results_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.results_list.currentRowChanged.connect(self._sync_row_selection)
-        self.results_list.itemDoubleClicked.connect(lambda _item: self._apply_selected())
-        self.results_list.itemActivated.connect(lambda _item: self._apply_selected())
-        body_layout.addWidget(self.empty_label)
-        body_layout.addWidget(self.results_list)
-
-        self.footer = QtWidgets.QFrame()
-        self.footer.setObjectName("footer")
-        footer_layout = QtWidgets.QHBoxLayout(self.footer)
-        footer_layout.setContentsMargins(16, 9, 16, 9)
-        self.help_label = QtWidgets.QLabel(self.view_model.footerHint)
-        self.help_label.setObjectName("helpLabel")
-        self.status_label = QtWidgets.QLabel("")
-        self.status_label.setObjectName("statusLabel")
-        self.apply_progress = QtWidgets.QProgressBar()
-        self.apply_progress.setObjectName("applyProgress")
-        self.apply_progress.setRange(0, 0)
-        self.apply_progress.setTextVisible(False)
-        self.apply_progress.setFixedSize(72, 4)
-        self.apply_progress.hide()
-        footer_layout.addWidget(self.help_label)
-        footer_layout.addStretch(1)
-        footer_layout.addWidget(self.apply_progress)
-        footer_layout.addWidget(self.status_label)
-        body_layout.addWidget(self.footer)
-
-        self._apply_styles()
-        self._update_category_buttons()
-        self.view_model.set_connection_state(self.loader.snapshot.connection_state)
-        self._update_connection_indicator()
-        self._set_idle_state()
-        self.window.layout().activate()
-        self._resize_to_content()
-        self._idle_window_height = self.window.height()
         self.window_controller = PaletteWindowController(
-            WidgetWindowAdapter(self.window, self.entry),
+            QuickWindowAdapter(self.window),
             self.root,
             _NativeWindowCalls(),
             on_focus_acquired=self._report_focus_acquired,
         )
-        self.window.hide()
+
+        self.view_model.set_connection_state(self.loader.snapshot.connection_state)
 
     def _load_qt_fonts(self):
         for font_path in (GOOGLE_SANS_FLEX_REGULAR, GOOGLE_SANS_FLEX_MEDIUM):
@@ -3786,244 +3555,12 @@ class QtEffectPalette:
         families = set(QtGui.QFontDatabase.families())
         return "Google Sans Flex" if "Google Sans Flex" in families else "Segoe UI"
 
-    def _apply_styles(self):
-        self.window.setStyleSheet(
-            f"""
-            QWidget {{
-                font-family: "{self.ui_font_family}";
-                color: {TEXT};
-            }}
-            QFrame#topCard {{
-                background: {BG2};
-                border: 1px solid {BORDER};
-                border-radius: 16px;
-            }}
-            QFrame#bodyCard {{
-                background: {BG};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
-            }}
-            QFrame#divider {{
-                background: {BORDER};
-                border: 0;
-            }}
-            QLabel#prompt {{
-                color: {ACCENT};
-                font-size: 15px;
-            }}
-            QLineEdit#searchEntry {{
-                background: {BG2};
-                color: {TEXT};
-                selection-background-color: {ACCENT};
-                border: 0;
-                padding: 13px 0;
-                font-size: {SEARCH_FONT_SIZE}px;
-            }}
-            QPushButton#refreshButton {{
-                color: {TEXT_MUTED};
-                background: {REFRESH_BUTTON_BG};
-                border: 1px solid {REFRESH_BUTTON_BORDER};
-                border-radius: 6px;
-                font-size: 13px;
-            }}
-            QPushButton#refreshButton:hover {{
-                color: {ACCENT};
-                background: {REFRESH_BUTTON_HOVER_BG};
-                border-color: {blend_colors(REFRESH_BUTTON_BORDER, ACCENT, 0.42)};
-            }}
-            QListWidget#resultsList {{
-                background: {BG};
-                border: 0;
-                outline: 0;
-                padding: 6px;
-            }}
-            QListWidget#resultsList::item {{
-                border: 0;
-                padding: 0;
-                margin: 0 0 4px 0;
-            }}
-            QLabel#emptyLabel {{
-                color: {TEXT_MUTED};
-                background: {BG};
-                padding: 24px;
-            }}
-            QFrame#footer {{
-                background: {BG};
-                border-top: 1px solid {ROW_BORDER};
-            }}
-            QLabel#helpLabel {{
-                color: {TEXT_MUTED};
-                font-size: 11px;
-            }}
-            QLabel#statusLabel {{
-                color: {ACCENT};
-                font-size: 11px;
-                font-weight: 700;
-            }}
-            QProgressBar#applyProgress {{
-                background: {ROW_BORDER};
-                border: 0;
-                border-radius: 2px;
-            }}
-            QProgressBar#applyProgress::chunk {{
-                background: {ACCENT};
-                border-radius: 2px;
-            }}
-            QScrollBar:vertical {{
-                background: {BG};
-                width: 7px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {TEXT_MUTED};
-                border-radius: 3px;
-                min-height: 32px;
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0;
-            }}
-            """
-        )
-
-    def _style_category_button(self, button: QtWidgets.QPushButton, category: str, active: bool):
-        tokens = get_pill_visual_tokens(category, active=active)
-        button.setStyleSheet(
-            f"""
-            QPushButton#categoryButton {{
-                background: {tokens["bg"]};
-                color: {tokens["fg"]};
-                border: 1px solid {tokens["border"]};
-                border-radius: 6px;
-                padding: 5px 13px;
-                min-width: 42px;
-                font-size: 11px;
-                font-weight: 700;
-            }}
-            """
-        )
-
-    def _update_category_buttons(self):
-        for category, button in self.category_buttons.items():
-            active_category = self.view_model.activeCategory
-            active = (category == "Todos" and active_category is None) or category == active_category
-            self._style_category_button(button, category, active)
-
-    def _update_connection_indicator(self):
-        tokens = get_connection_state_tokens(self.view_model.connectionState)
-        self.conn_dot.setStyleSheet(
-            f"background: {tokens['fill']}; border: 1px solid {tokens['outline']}; border-radius: 5px;"
-        )
-
-    def _on_category_click(self, category: str):
-        self.view_model.select_category(category)
-        self._update_category_buttons()
-        self._render_view_model()
-
-    def _on_search_change(self, *_args):
-        if self._search_job is not None:
-            self.root.after_cancel(self._search_job)
-            self._search_job = None
-        self._refresh_list()
-
     def _refresh_list(self):
         self._search_job = None
-        self.view_model.set_query(self.entry.text())
-        self._update_category_buttons()
-        self._render_view_model()
-
-    def _render_view_model(self):
-        state = self.view_model.viewState
-        if state == "idle":
-            self._cancel_render_chunk()
-            self._row_widgets = []
-            self.results_list.clear()
-            self._set_idle_state()
-        elif state == "message":
-            self._set_message_state()
-        else:
-            self._populate_results()
-            self._set_results_state()
-        self.status_label.setText(self.view_model.statusText)
-        self._resize_to_content()
-
-    def _cancel_render_chunk(self):
-        self._render_generation += 1
-        if self._render_chunk_job is not None:
-            self.root.after_cancel(self._render_chunk_job)
-            self._render_chunk_job = None
-
-    def _set_idle_state(self):
-        self._qt_middle_height = 0
-        self.results_list.setFixedHeight(0)
-        self.results_list.hide()
-        self.empty_label.setFixedHeight(0)
-        self.empty_label.hide()
-        self.body_card.show()
-
-    def _set_message_state(self):
-        self._qt_middle_height = 84
-        self.results_list.setFixedHeight(0)
-        self.results_list.hide()
-        self.empty_label.setFixedHeight(84)
-        self.empty_label.show()
-        self.body_card.show()
-
-    def _set_results_state(self):
-        self._qt_middle_height = RESULTS_EXPANDED_HEIGHT
-        self.empty_label.setFixedHeight(0)
-        self.empty_label.hide()
-        self.results_list.setFixedHeight(RESULTS_EXPANDED_HEIGHT)
-        self.results_list.show()
-        self.body_card.show()
-
-    def _populate_results(self):
-        self._cancel_render_chunk()
-        self.results_list.setUpdatesEnabled(False)
-        self.results_list.clear()
-        self._row_widgets = []
-        self.results_list.setUpdatesEnabled(True)
-        generation = self._render_generation
-        self._append_result_rows(0, QT_INITIAL_RENDER_ROWS, generation)
-
-    def _append_result_rows(self, start: int, count: int, generation: int):
-        if generation != self._render_generation:
-            return
-        end = min(self.view_model.results.rowCount(), start + count)
-        self.results_list.setUpdatesEnabled(False)
-        try:
-            for index in range(start, end):
-                model = self.view_model.results.row_at(index)
-                item = QtWidgets.QListWidgetItem()
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, model.payload)
-                item.setSizeHint(QtCore.QSize(FIXED_SEARCH_WINDOW_WIDTH - 34, PaletteLayoutMetrics().row_height + 4))
-                self.results_list.addItem(item)
-                row_widget = QtResultRowWidget(model)
-                self.results_list.setItemWidget(item, row_widget)
-                self._row_widgets.append(row_widget)
-                if self.animations_enabled and start < 12:
-                    row_widget.animate_in(min(90, len(self._row_widgets) * 10))
-            if start == 0 and self._row_widgets:
-                self.results_list.setCurrentRow(0)
-                self._sync_row_selection(0)
-        finally:
-            self.results_list.setUpdatesEnabled(True)
-        if end < self.view_model.results.rowCount():
-            self._render_chunk_job = self.root.after(
-                1,
-                lambda next_start=end, gen=generation: self._append_result_rows(next_start, QT_RENDER_CHUNK_ROWS, gen),
-            )
-        else:
-            self._render_chunk_job = None
-
-    def _sync_row_selection(self, selected_row: int):
-        self.view_model.set_selected_index(selected_row)
-        for index, row in enumerate(self._row_widgets):
-            row.apply_state(selected=index == selected_row)
-            if index == selected_row and row._fade_animation is None:
-                row.animate_selection()
+        self.view_model.set_query(self.window.property("searchText") or "")
 
     def _move_selection(self, direction: int):
         self.view_model.move_selection(direction)
-        self.results_list.setCurrentRow(self.view_model.selectedIndex)
 
     def _selected_payload(self):
         return self.view_model.selected_payload()
@@ -4040,21 +3577,11 @@ class QtEffectPalette:
             return tr("action_executing")
         return tr("action_applying")
 
-    def _on_apply_state_changed(self):
-        """Widgets follow the controller; the controller never touches widgets."""
-        state = self.apply_controller.state
-        locked = state in {"busy", "success"}
-        self.apply_progress.setVisible(state == "busy")
-        self.entry.setEnabled(not locked)
-        self.refresh_btn.setEnabled(not locked)
-        for button in self.category_buttons.values():
-            button.setEnabled(not locked)
-
     def _set_apply_busy(self, busy: bool, label: str = ""):
         if not busy:
             self.apply_controller.reset()
         if label:
-            self.status_label.setText(label)
+            self.view_model.set_status_override(label)
 
     def _complete_apply(self, status: str):
         self._apply_poll_job = None
@@ -4063,12 +3590,11 @@ class QtEffectPalette:
             elapsed_ms = round((time.perf_counter() - self._apply_started_at) * 1000.0, 2)
         effect = self.apply_controller.activeEffect
         effect_name = effect.get("name", "") if effect else ""
-        self.apply_progress.hide()
 
         self.apply_controller.complete(status)
 
         if self.apply_controller.state == "success":
-            self.status_label.setText(tr("status_applied", name=effect_name))
+            self.view_model.set_status_override(tr("status_applied", name=effect_name))
             record_successful_action(effect, confirmed_by=self.execution_adapter.backend_name)
             beta_report.write_event("apply_completed", {
                 "name": effect_name,
@@ -4081,13 +3607,13 @@ class QtEffectPalette:
             )
             return
 
-        self.status_label.setText(format_apply_failure(status))
+        self.view_model.set_status_override(format_apply_failure(status))
         beta_report.write_event("apply_failed", {
             "name": effect_name,
             "status": status,
             "elapsed_ms": elapsed_ms,
         })
-        self.entry.setFocus(QtCore.Qt.FocusReason.ActiveWindowFocusReason)
+        self.window.focusSearch()
 
     def _finish_successful_apply(self):
         self._apply_close_job = None
@@ -4114,13 +3640,12 @@ class QtEffectPalette:
                 effect_name = self.apply_controller.activeEffect.get("name", "")
                 # reset() re-enables the widgets through _on_apply_state_changed.
                 self.apply_controller.reset()
-                self.apply_progress.hide()
-                self.status_label.setText(tr("status_no_response"))
+                self.view_model.set_status_override(tr("status_no_response"))
                 beta_report.write_event("apply_timeout", {
                     "name": effect_name,
                     "elapsed_ms": round(elapsed_ms, 2),
                 })
-                self.entry.setFocus(QtCore.Qt.FocusReason.ActiveWindowFocusReason)
+                self.window.focusSearch()
                 return
         self._apply_poll_job = self.root.after(APPLY_STATUS_POLL_MS, self._poll_apply_status)
 
@@ -4158,7 +3683,7 @@ class QtEffectPalette:
             need_audio = bool(data.get("needsAudio")) and not bool(data.get("audioAvailable", True))
             premiere_hwnd = self.window_controller.previous_handle
             if (need_video or need_audio) and premiere_hwnd:
-                self.status_label.setText(tr("status_creating_track"))
+                self.view_model.set_status_override(tr("status_creating_track"))
                 # The palette still holds OS focus here - force it onto Premiere first so the
                 # native shortcut actually reaches it, with a short delay for Windows to
                 # complete the switch before the shortcut is sent.
@@ -4179,8 +3704,7 @@ class QtEffectPalette:
         except Exception as exc:
             # reset() re-enables the widgets through _on_apply_state_changed.
             self.apply_controller.reset()
-            self.apply_progress.hide()
-            self.status_label.setText(tr("status_send_failed"))
+            self.view_model.set_status_override(tr("status_send_failed"))
             beta_report.log_exception("Apply command failed", exc)
             return
         self.apply_controller.set_command_timestamp(command_timestamp)
@@ -4196,107 +3720,27 @@ class QtEffectPalette:
         )
 
     def _show_nest_options(self, effect: dict) -> None:
-        self._close_nest_options(restore=False)
-        self._pending_nest_effect = dict(effect)
-        self.entry.setEnabled(False)
-        self.results_list.hide()
-        self.empty_label.hide()
-
-        panel = QtWidgets.QFrame()
-        panel.setObjectName("nestInlinePanel")
-        panel.setFixedHeight(170)
-        panel.setStyleSheet(
-            f"""
-            QFrame#nestInlinePanel {{ background: {BG}; border: 0; }}
-            QLabel#nestHeading {{ color: {TEXT}; font-size: 15px; font-weight: 700; }}
-            QLabel#nestFieldLabel {{ color: {TEXT_MUTED}; font-size: 11px; font-weight: 700; }}
-            QLineEdit#nestName {{
-                background: {BG2}; color: {TEXT}; border: 1px solid {BORDER};
-                border-radius: 7px; padding: 8px 10px; selection-background-color: {ACCENT};
-            }}
-            QPushButton {{
-                background: {BG2}; color: {TEXT}; border: 1px solid {BORDER};
-                border-radius: 7px; padding: 7px 13px;
-            }}
-            QPushButton#nestConfirm {{
-                background: {ACCENT}; color: white; border-color: {ACCENT}; font-weight: 700;
-            }}
-            """
-        )
-        self._nest_inline_panel = panel
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(18, 14, 18, 12)
-        layout.setSpacing(7)
-
-        heading = QtWidgets.QLabel(tr("nest_dialog_question"))
-        heading.setObjectName("nestHeading")
-        layout.addWidget(heading)
-
-        name_label = QtWidgets.QLabel(tr("nest_name_label"))
-        name_label.setObjectName("nestFieldLabel")
-        layout.addWidget(name_label)
-        name_entry = QtWidgets.QLineEdit()
-        name_entry.setObjectName("nestName")
-        name_entry.setPlaceholderText(tr("nest_name_hint"))
-        name_entry.returnPressed.connect(self._confirm_nest_options)
-        self._nest_inline_name_entry = name_entry
-        layout.addWidget(name_entry)
-
-        actions = QtWidgets.QHBoxLayout()
-        actions.addStretch(1)
-        cancel_button = QtWidgets.QPushButton(tr("nest_cancel"))
-        confirm_button = QtWidgets.QPushButton(tr("nest_confirm"))
-        confirm_button.setObjectName("nestConfirm")
-        cancel_button.clicked.connect(self._cancel_nest_options)
-        confirm_button.clicked.connect(self._confirm_nest_options)
-        actions.addWidget(cancel_button)
-        actions.addWidget(confirm_button)
-        layout.addLayout(actions)
-
-        footer_index = self.body_layout.indexOf(self.footer)
-        self.body_layout.insertWidget(footer_index, panel)
-        self._qt_middle_height = 170
-        self.body_card.show()
-        self.help_label.setText(tr("nest_footer_hint"))
-        self.status_label.setText("")
-        self._resize_to_content()
-        name_entry.setFocus()
+        self._pending_nest_effect = effect
+        self.window.openNestPanel()
 
     def _close_nest_options(self, *, restore: bool) -> None:
-        panel = getattr(self, "_nest_inline_panel", None)
-        if panel is not None:
-            self.body_layout.removeWidget(panel)
-            panel.deleteLater()
-        self._nest_inline_panel = None
+        self.window.closeNestPanel()
         self._pending_nest_effect = None
-        self.entry.setEnabled(True)
-        self.help_label.setText(tr("footer_hint"))
-        if restore and self.is_open:
-            self._refresh_list()
-            self.entry.setFocus()
+        if restore:
+            self.window.focusSearch()
 
     def _cancel_nest_options(self) -> None:
         self._close_nest_options(restore=True)
-        self.status_label.setText(tr("status_apply_cancelled"))
+        self.view_model.set_status_override(tr("status_apply_cancelled"))
 
-    def _confirm_nest_options(self) -> None:
-        effect = getattr(self, "_pending_nest_effect", None)
+    def _confirm_nest_options(self, nest_name: str = "") -> None:
+        effect = self._pending_nest_effect
+        self._close_nest_options(restore=False)
         if not effect:
             return
-        effect = dict(effect)
-        effect.update({
-            "nestMode": resolve_nest_mode("auto", self.execution_adapter),
-            "nestName": self._nest_inline_name_entry.text().strip(),
-            "nestBin": DEFAULT_NEST_BIN,
-        })
-        self._close_nest_options(restore=True)
-        beta_report.write_event("nest_mode_resolved", {
-            "requested": "auto",
-            "resolved": effect["nestMode"],
-        })
-        if self._execute_timeline_action(effect):
-            return
-        self._begin_apply(effect)
+        payload = dict(effect)
+        payload["nestName"] = (nest_name or "").strip()
+        self._dispatch_apply(payload)
 
     def _execute_timeline_action(self, effect: dict) -> bool:
         if effect.get("action") != "nest":
@@ -4305,11 +3749,11 @@ class QtEffectPalette:
             return False
         shortcut, shortcut_file = find_premiere_command_shortcut("cmd.clip.nestify")
         if shortcut is None:
-            self.status_label.setText(tr("status_shortcut_unavailable"))
+            self.view_model.set_status_override(tr("status_shortcut_unavailable"))
             return True
         premiere_hwnd = self.window_controller.previous_handle
         if not premiere_hwnd:
-            self.status_label.setText(tr("status_premiere_window_unavailable"))
+            self.view_model.set_status_override(tr("status_premiere_window_unavailable"))
             return True
 
         adapter = self.execution_adapter
@@ -4362,11 +3806,11 @@ class QtEffectPalette:
         command_name = f"cmd.edit.label.{label_index}" if label_index is not None else "cmd.edit.labelgroup"
         shortcut, shortcut_file = find_premiere_command_shortcut(command_name)
         if shortcut is None:
-            self.status_label.setText(tr("status_label_shortcut_unavailable"))
+            self.view_model.set_status_override(tr("status_label_shortcut_unavailable"))
             return True
         premiere_hwnd = self.window_controller.previous_handle
         if not premiere_hwnd:
-            self.status_label.setText(tr("status_premiere_window_unavailable"))
+            self.view_model.set_status_override(tr("status_premiere_window_unavailable"))
             return True
 
         beta_report.write_event("timeline_action_started", {
@@ -4417,13 +3861,13 @@ class QtEffectPalette:
         refresh = getattr(self.execution_adapter, "refresh_catalogs", None)
         if callable(refresh):
             refresh()
-        self.status_label.setText(tr("status_requesting_refresh"))
+        self.view_model.set_status_override(tr("status_requesting_refresh"))
         self.loader.request_refresh(self.root, self._on_loader_snapshot_ready, force=True)
 
     def _on_loader_snapshot_ready(self, snapshot: LoaderSnapshot):
         print(f"[Watcher] Lista atualizada - {snapshot.count} efeitos")
+        # The QML dot binds to vm.connectionState; there is no indicator to poke.
         self.view_model.set_connection_state(snapshot.connection_state)
-        self._update_connection_indicator()
         if self.is_open:
             self._refresh_list()
 
@@ -4505,47 +3949,6 @@ class QtEffectPalette:
             position_chooser=choose_window_position_near_pointer,
         )
 
-    def _resize_to_content(self):
-        self.window.setMinimumSize(FIXED_SEARCH_WINDOW_WIDTH, 0)
-        self.window.setMaximumSize(FIXED_SEARCH_WINDOW_WIDTH, 16777215)
-        self.window.layout().activate()
-        body_margins = self.body_card.layout().contentsMargins()
-        body_extra = body_margins.top() + body_margins.bottom() + 2
-        target_height = (
-            self.top_card.sizeHint().height()
-            + self.footer.sizeHint().height()
-            + self._qt_middle_height
-            + body_extra
-        )
-        if self.is_open and self.window.isVisible() and self.window.height() != target_height:
-            self._animate_window_height(target_height)
-        else:
-            self.window.setFixedSize(FIXED_SEARCH_WINDOW_WIDTH, target_height)
-
-    def _animate_window_height(self, target_height: int):
-        if not self.animations_enabled:
-            self.window.setFixedSize(FIXED_SEARCH_WINDOW_WIDTH, target_height)
-            return
-        if self._geometry_animation is not None:
-            self._geometry_animation.stop()
-        start = self.window.geometry()
-        end = QtCore.QRect(start.x(), start.y(), FIXED_SEARCH_WINDOW_WIDTH, target_height)
-        self.window.setMinimumSize(FIXED_SEARCH_WINDOW_WIDTH, 0)
-        self.window.setMaximumSize(FIXED_SEARCH_WINDOW_WIDTH, 16777215)
-        animation = QtCore.QPropertyAnimation(self.window, b"geometry", self.window)
-        animation.setDuration(190)
-        animation.setStartValue(start)
-        animation.setEndValue(end)
-        animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-
-        def finish():
-            self.window.setFixedSize(FIXED_SEARCH_WINDOW_WIDTH, target_height)
-            self._geometry_animation = None
-
-        animation.finished.connect(finish)
-        animation.start()
-        self._geometry_animation = animation
-
     def _window_hwnd(self) -> int | None:
         return self.window_controller.handle()
 
@@ -4579,7 +3982,7 @@ class QtEffectPalette:
     def show(self, invoked_at: float | None = None):
         if self.is_open:
             self.window.raise_()
-            self.window.activateWindow()
+            self.window.requestActivate()
             self._force_focus_attempt()
             return
         self._open_requested_at = invoked_at or time.perf_counter()
@@ -4587,83 +3990,35 @@ class QtEffectPalette:
         self._remember_previous_focus()
         self.is_open = True
         self.window_controller.is_open = True
-        self.entry.blockSignals(True)
-        self.entry.clear()
-        self.entry.blockSignals(False)
+        self.window.setProperty("searchText", "")
         # Resets the category and the result set in one go; _refresh_list() below recomputes.
         self.view_model.select_category("Todos")
-        self._update_category_buttons()
-        self._cancel_render_chunk()
-        self.results_list.clear()
-        self.status_label.setText("")
-        self._set_idle_state()
-        self.window.setFixedSize(FIXED_SEARCH_WINDOW_WIDTH, self._idle_window_height)
         self._anchor_window_to_pointer()
-        self.window.setWindowOpacity(0.92)
         self.window.show()
+        self.window.playOpen()
         self._refresh_list()
         apply_windows_11_window_effects(self._window_hwnd())
-        target_geometry = self.window.geometry()
-        self.window.setGeometry(target_geometry.translated(0, 10))
         self._force_focus_attempt()
-        self._animate_window_opacity(1.0, OPEN_ANIMATION_MS, ease_out_expo)
-        self._animate_window_geometry(target_geometry, OPEN_ANIMATION_MS, opening=True)
 
     def hide(self):
         if self.apply_controller.busy:
             return
         if not self.is_open:
             return
-        if getattr(self, "_nest_inline_panel", None) is not None:
+        if self.window.property("nestPanelOpen"):
             self._close_nest_options(restore=False)
         self.is_open = False
         # The retry loop reads is_open from the controller; a stale True would keep it going.
         self.window_controller.is_open = False
         self._cancel_focus_attempts()
+        self.window.playClose()
 
-        def finish():
-            self.window.hide()
-            self.window.setWindowOpacity(1.0)
-            self._restore_previous_focus()
-
-        self._animate_window_opacity(0.0, CLOSE_ANIMATION_MS, ease_in_expo, finish)
-        self._animate_window_geometry(self.window.geometry().translated(0, 7), CLOSE_ANIMATION_MS, opening=False)
-
-    def _animate_window_geometry(self, target: QtCore.QRect, duration_ms: int, *, opening: bool):
-        if not self.animations_enabled:
-            self.window.setGeometry(target)
+    def _on_close_finished(self):
+        """QML has finished the close animation; now the window can actually go away."""
+        if self.is_open:
             return
-        if self._geometry_animation is not None:
-            self._geometry_animation.stop()
-        animation = QtCore.QPropertyAnimation(self.window, b"geometry", self.window)
-        animation.setDuration(duration_ms)
-        animation.setStartValue(self.window.geometry())
-        animation.setEndValue(target)
-        animation.setEasingCurve(
-            QtCore.QEasingCurve.Type.OutCubic if opening else QtCore.QEasingCurve.Type.InCubic
-        )
-        animation.finished.connect(lambda: setattr(self, "_geometry_animation", None))
-        animation.start()
-        self._geometry_animation = animation
-
-    def _animate_window_opacity(self, target: float, duration_ms: int, easing, on_complete=None):
-        if not self.animations_enabled:
-            self.window.setWindowOpacity(target)
-            if on_complete is not None:
-                on_complete()
-            return
-        start = self.window.windowOpacity()
-        animation = QtCore.QVariantAnimation(self.window)
-        animation.setDuration(duration_ms)
-        animation.setStartValue(start)
-        animation.setEndValue(target)
-        animation.valueChanged.connect(lambda value: self.window.setWindowOpacity(float(value)))
-        if on_complete is not None:
-            animation.finished.connect(on_complete)
-        animation.finished.connect(animation.deleteLater)
-        animation.setEasingCurve(QtCore.QEasingCurve.Type.OutExpo if easing is ease_out_expo else QtCore.QEasingCurve.Type.InExpo)
-        animation.start(QtCore.QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
-        self._opacity_animation = animation
+        self.window.hide()
+        self._restore_previous_focus()
 
     def toggle(self, invoked_at: float | None = None):
         self.hide() if self.is_open else self.show(invoked_at=invoked_at)

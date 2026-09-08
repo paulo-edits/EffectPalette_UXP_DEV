@@ -255,6 +255,24 @@ class PaletteViewModelStatusTests(unittest.TestCase):
         self.vm.set_connection_state("offline")
         self.assertEqual(seen, ["connected", "offline"])
 
+    def test_status_override_replaces_the_search_status(self):
+        self.vm.set_query("gaussian")
+        self.assertEqual(self.vm.statusText, "2/2")
+        self.vm.set_status_override("Applying: Gaussian Blur")
+        self.assertEqual(self.vm.statusText, "Applying: Gaussian Blur")
+
+    def test_override_is_cleared_by_the_next_search(self):
+        self.vm.set_query("gaussian")
+        self.vm.set_status_override("Applying: Gaussian Blur")
+        self.vm.set_query("studio")
+        self.assertEqual(self.vm.statusText, "1/1")
+
+    def test_clearing_the_override_restores_the_search_status(self):
+        self.vm.set_query("gaussian")
+        self.vm.set_status_override("busy")
+        self.vm.set_status_override("")
+        self.assertEqual(self.vm.statusText, "2/2")
+
     def test_status_text_changed_fires_on_transition(self):
         seen = []
         self.vm.statusTextChanged.connect(lambda: seen.append(self.vm.statusText))

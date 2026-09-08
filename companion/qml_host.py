@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6 import QtCore, QtQml
+
+from models import PaletteLayoutMetrics
 from PySide6.QtQuickControls2 import QQuickStyle
 
 QML_DIR = Path(__file__).resolve().parent / "qml"
@@ -101,7 +103,7 @@ class PaletteMetrics(QtCore.QObject):
 
         self._window_width = app.FIXED_SEARCH_WINDOW_WIDTH
         self._results_height = app.RESULTS_EXPANDED_HEIGHT
-        self._row_height = app.PaletteLayoutMetrics().row_height
+        self._row_height = PaletteLayoutMetrics().row_height
         self._open_animation_ms = app.OPEN_ANIMATION_MS
         self._animations_enabled = animations_enabled
 
