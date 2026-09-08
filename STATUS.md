@@ -110,5 +110,10 @@ A dead-code / reliability / performance pass over the whole repository. Details 
 ## Still to do
 
 - Host-test the audit pass (see "In progress").
-- UI redesign of the palette and settings (user's call, 2026-08-27) — now unblocked, since there is
-  a single UI implementation to redesign.
+- **UI rewrite in QML, phase 2** — the visible work. Phase 1 (view-model extraction) is on branch
+  `ui/qml-rewrite`: palette state and logic now live in `companion/palette_view_models.py` and
+  `companion/window_control.py`, the suite went 32 → 97 tests, and the focus path is host-tested
+  (Premiere 26.3.2, 6/6 opens focused on the first attempt). Nothing looks different yet, by design.
+  Still to verify before merge: second-monitor placement, focus returning to Premiere after an
+  apply, native Nest and Label. See `TECHNICAL_PLAN.md` (last slice) and
+  `docs/superpowers/specs/2026-09-07-companion-qml-ui-rewrite-design.md`.
