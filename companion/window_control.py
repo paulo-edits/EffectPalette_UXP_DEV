@@ -169,3 +169,51 @@ class PaletteWindowController:
             screen_height=available_h,
         )
         self._adapter.move(available_x + x, available_y + y)
+
+
+class QuickWindowAdapter:
+    """WindowAdapter over a QQuickWindow.
+
+    QQuickWindow is a QWindow, not a QWidget: it activates with requestActivate() rather
+    than activateWindow(), positions with setPosition() rather than move(), and has no
+    sizeHint(). Focus lives in QML, so the root object must declare a focusSearch()
+    function and a searchHasFocus property.
+    """
+
+    def __init__(self, window):
+        self._window = window
+        self._handle: int | None = None
+
+    def show(self):
+        self._window.show()
+
+    def raise_window(self):
+        self._window.raise_()
+
+    def activate(self):
+        self._window.requestActivate()
+
+    def handle(self):
+        if self._handle:
+            return self._handle
+        try:
+            self._handle = int(self._window.winId())
+        except Exception:
+            return None
+        return self._handle
+
+    def move(self, x, y):
+        self._window.setPosition(int(x), int(y))
+
+    def width(self):
+        return self._window.width()
+
+    def height_hint(self):
+        # QML sizes itself from its content, so the current height is the hint.
+        return self._window.height()
+
+    def focus_input(self):
+        self._window.focusSearch()
+
+    def has_input_focus(self):
+        return bool(self._window.property("searchHasFocus"))

@@ -49,9 +49,25 @@ class QmlPaletteHost(QtCore.QObject):
             raise RuntimeError(f"Palette.qml failed to load: {self.warnings}")
 
     def shutdown(self) -> None:
-        if self.engine is not None:
-            self.engine.deleteLater()
-            self.engine = None
+        """Tear the engine down deterministically.
+
+        deleteLater() alone is not enough: without a running event loop the deletion
+        never happens, so the QQuickWindow outlives its engine and the two are then
+        destroyed in whatever order the interpreter picks at exit -- which segfaults.
+        Close the window, drain the deferred-delete queue, then drop the engine.
+        """
+        if self.engine is None:
+            return
+        window = self.window
+        if window is not None:
+            window.close()
+        self.engine.clearComponentCache()
+        self.engine.deleteLater()
+        app = QtCore.QCoreApplication.instance()
+        if app is not None:
+            app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+            app.processEvents()
+        self.engine = None
 
     def _collect_warnings(self, warnings) -> None:
         self.warnings.extend(w.toString() for w in warnings)

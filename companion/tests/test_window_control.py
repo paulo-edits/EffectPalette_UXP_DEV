@@ -232,3 +232,79 @@ class AnchorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuickWindowAdapterTests(unittest.TestCase):
+    """QQuickWindow speaks a different dialect than QWidget: requestActivate instead of
+    activateWindow, setPosition instead of move. The adapter absorbs that."""
+
+    def setUp(self):
+        import os
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6 import QtWidgets
+        self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+        from palette_view_models import ApplyController, PaletteViewModel
+        from qml_host import QmlPaletteHost
+        from test_view_models import CATALOG, FakeAdapter, FakeQueryServices
+        from test_view_models import FakeScheduler as VmScheduler
+
+        services = FakeQueryServices(CATALOG)
+        self.host = QmlPaletteHost(
+            PaletteViewModel(services), ApplyController(FakeAdapter(), VmScheduler()),
+            services.translate,
+        )
+        self.host.load()
+        from window_control import QuickWindowAdapter
+        self.adapter = QuickWindowAdapter(self.host.window)
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def test_handle_is_a_real_window_id(self):
+        self.adapter.show()
+        self.assertIsInstance(self.adapter.handle(), int)
+        self.assertNotEqual(self.adapter.handle(), 0)
+
+    def test_handle_is_cached(self):
+        self.adapter.show()
+        self.assertEqual(self.adapter.handle(), self.adapter.handle())
+
+    def test_move_sets_the_window_position(self):
+        self.adapter.show()
+        self.adapter.move(300, 210)
+        self.assertEqual((self.host.window.x(), self.host.window.y()), (300, 210))
+
+    def test_width_reports_the_window_width(self):
+        self.assertEqual(self.adapter.width(), self.host.window.width())
+
+    def test_height_hint_is_the_current_height(self):
+        self.assertEqual(self.adapter.height_hint(), self.host.window.height())
+
+    def test_focus_input_gives_the_search_field_focus(self):
+        self.adapter.show()
+        self.assertFalse(self.adapter.has_input_focus())
+        self.adapter.focus_input()
+        self.app.processEvents()
+        self.assertTrue(self.adapter.has_input_focus())
+
+    def test_raise_and_activate_do_not_raise(self):
+        self.adapter.show()
+        self.adapter.raise_window()
+        self.adapter.activate()
+
+    def test_it_satisfies_the_controller(self):
+        # The whole point: PaletteWindowController must drive it unchanged.
+        from window_control import PaletteWindowController
+
+        class Native:
+            def __init__(self): self.activated = []
+            def foreground_handle(self): return 9999
+            def activate_handle(self, h): self.activated.append(h)
+
+        controller = PaletteWindowController(self.adapter, FakeScheduler(), Native())
+        controller.is_open = True
+        self.adapter.show()
+        controller.begin_focus_attempts(max_attempts=3)
+        self.app.processEvents()
+        self.assertTrue(self.adapter.has_input_focus())
