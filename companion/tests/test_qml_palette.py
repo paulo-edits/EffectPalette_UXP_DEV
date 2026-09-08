@@ -353,5 +353,82 @@ class NestPanelTests(unittest.TestCase):
         self.assertEqual(footer.property("hint"), normal)
 
 
+class OpenCloseMotionTests(unittest.TestCase):
+    def _host(self, *, animations):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        self.host = QmlPaletteHost(
+            self.vm, self.apply, self.services.translate, animations_enabled=animations,
+        )
+        self.host.load()
+        self.root = self.host.window
+        # QQuickWindow drives QML animations and layout from its render loop, which
+        # only runs once the window is shown -- even offscreen.
+        self.root.show()
+        self.app.processEvents()
+        return self.root
+
+    def _settle(self, seconds=0.8):
+        """Layout and animations need real elapsed time, not just event-loop turns."""
+        import time
+        end = time.time() + seconds
+        while time.time() < end:
+            self.app.processEvents()
+            time.sleep(0.005)
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def test_play_open_marks_the_shell_visible(self):
+        root = self._host(animations=True)
+        root.playOpen()
+        self.app.processEvents()
+        self.assertTrue(root.property("shellVisible"))
+
+    def test_play_close_clears_it(self):
+        root = self._host(animations=True)
+        root.playOpen()
+        root.playClose()
+        self.app.processEvents()
+        self.assertFalse(root.property("shellVisible"))
+
+    def test_close_finished_fires_with_animations_on(self):
+        import time
+        root = self._host(animations=True)
+        seen = []
+        root.closeFinished.connect(lambda: seen.append(True))
+        root.playOpen()
+        self.app.processEvents()
+        root.playClose()
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not seen:
+            self.app.processEvents()
+            time.sleep(0.01)
+        self.assertEqual(seen, [True])
+
+    def test_close_finished_fires_with_animations_off(self):
+        # Behaviors are skipped entirely when animations are disabled, so the signal
+        # must still fire or hide() would never complete.
+        root = self._host(animations=False)
+        seen = []
+        root.closeFinished.connect(lambda: seen.append(True))
+        root.playOpen()
+        self.app.processEvents()
+        root.playClose()
+        self.app.processEvents()
+        self.assertEqual(seen, [True])
+
+    def test_window_height_tracks_the_content(self):
+        root = self._host(animations=False)
+        self.vm.set_query("nothing matches this")
+        self._settle()
+        message_height = root.height()
+        self.vm.set_query("gaussian")
+        self._settle()
+        self.assertGreater(root.height(), message_height)
+
+
 if __name__ == "__main__":
     unittest.main()

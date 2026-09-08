@@ -1981,12 +1981,25 @@ Wrap the shell's transform and opacity:
         }
 ```
 
-Because `Behavior` is skipped when animations are off, the close signal must still fire in that
-case. Add, on the root `Window`:
+**Do not signal the close from the fade's `onFinished`.** An animation inside a `Behavior` does
+not reliably emit `finished`, and with animations disabled the `Behavior` is skipped entirely --
+either way the window would never hide. Use an explicit `Timer` on the root `Window`:
 
 ```qml
-    onShellVisibleChanged: if (!shellVisible && !Theme.animationsEnabled) root.closeFinished()
+    Timer {
+        id: closeTimer
+        interval: Theme.animationsEnabled ? metrics.openAnimationMs : 0
+        repeat: false
+        onTriggered: root.closeFinished()
+    }
 ```
+
+with `playOpen()` stopping it and `playClose()` restarting it.
+
+**Also:** bind `Window.height` to `shell.height` and let the shell size itself
+(`width: parent.width; height: content.implicitHeight`) with the `Behavior on height` on the
+shell. Anchoring the shell to fill the window while binding the window's height back to the
+shell does not resolve -- the window collapses to 1px.
 
 And make the window follow its content height:
 

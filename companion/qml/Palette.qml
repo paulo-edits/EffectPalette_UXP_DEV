@@ -6,7 +6,7 @@ Window {
     id: root
 
     width: metrics.windowWidth
-    height: shell.implicitHeight
+    height: shell.height
     color: "transparent"
     // MUST be WindowStaysOnTopHint. The short "Qt.WindowStaysOnTop" parses without a
     // warning and silently does nothing, which drops the palette behind Premiere.
@@ -28,6 +28,23 @@ Window {
     function openNestPanel() { nestPanel.open = true; nestPanel.takeFocus() }
     function closeNestPanel() { nestPanel.open = false }
 
+    property bool shellVisible: false
+    signal closeFinished()
+
+    function playOpen() { closeTimer.stop(); shellVisible = true }
+    function playClose() { shellVisible = false; closeTimer.restart() }
+
+    // Tells Python when it is safe to actually hide the window. A Timer rather than the
+    // fade's onFinished: an animation inside a Behavior does not reliably emit finished,
+    // and with animations disabled the Behavior is skipped altogether -- either way the
+    // window would never hide. interval 0 fires on the next event-loop pass.
+    Timer {
+        id: closeTimer
+        interval: Theme.animationsEnabled ? metrics.openAnimationMs : 0
+        repeat: false
+        onTriggered: root.closeFinished()
+    }
+
     function focusSearch() { searchField.takeFocus() }
     readonly property bool searchHasFocus: searchField.inputHasFocus
 
@@ -35,13 +52,34 @@ Window {
 
     Rectangle {
         id: shell
-        anchors.fill: parent
-        implicitHeight: content.implicitHeight
+        width: parent.width
+        height: content.implicitHeight
         radius: Theme.radiusLg
         color: Theme.surface
         border.width: 1
         border.color: Theme.border
         clip: true
+
+        opacity: root.shellVisible ? 1 : 0
+        scale: root.shellVisible ? 1 : 0.97
+        transformOrigin: Item.Center
+
+        Behavior on height {
+            enabled: Theme.animationsEnabled
+            NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeDecel }
+        }
+
+        Behavior on opacity {
+            enabled: Theme.animationsEnabled
+            NumberAnimation {
+                duration: metrics.openAnimationMs
+                easing.type: Theme.easeStandard
+            }
+        }
+        Behavior on scale {
+            enabled: Theme.animationsEnabled
+            NumberAnimation { duration: metrics.openAnimationMs; easing.type: Theme.easeOvershoot }
+        }
 
         Column {
             id: content
