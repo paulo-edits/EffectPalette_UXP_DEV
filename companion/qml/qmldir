@@ -1,0 +1,4 @@
+# No `module` line on purpose. A named module resolves to a directory matching the
+# module name under an import path; with the qmldir sitting beside the components,
+# Qt only finds the singleton via a directory import (`import "."`).
+singleton Theme 1.0 Theme.qml

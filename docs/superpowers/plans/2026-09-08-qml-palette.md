@@ -32,7 +32,7 @@
 ## File Structure
 
 **Created:**
-- `companion/qml/qmldir` — registers `Theme` as a singleton
+- `companion/qml/qmldir` — registers `Theme` as a singleton (unnamed module; components use `import "."`)
 - `companion/qml/Theme.qml` — every colour, spacing, radius, type and motion token
 - `companion/qml/Palette.qml` — the frameless root `Window`
 - `companion/qml/SearchField.qml` — prompt glyph + text input + refresh button
@@ -157,7 +157,9 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'qml_host'`.
 `companion/qml/qmldir`:
 
 ```
-module FxPalette
+# No `module` line on purpose. A named module resolves to a directory matching the
+# module name under an import path; with the qmldir sitting beside the components,
+# Qt only finds the singleton via a directory import (`import "."`).
 singleton Theme 1.0 Theme.qml
 ```
 
@@ -180,7 +182,7 @@ QtObject {
 ```qml
 import QtQuick
 import QtQuick.Controls
-import FxPalette
+import "."
 
 Window {
     id: root
@@ -252,7 +254,7 @@ class QmlPaletteHost(QtCore.QObject):
 
         self.engine = QtQml.QQmlApplicationEngine()
         self.engine.warnings.connect(self._collect_warnings)
-        self.engine.addImportPath(str(QML_DIR.parent))
+        self.engine.addImportPath(str(QML_DIR))
 
         context = self.engine.rootContext()
         context.setContextProperty("vm", self._view_model)
@@ -698,7 +700,7 @@ Replace the body of `companion/qml/Palette.qml` with:
 ```qml
 import QtQuick
 import QtQuick.Controls
-import FxPalette
+import "."
 
 Window {
     id: root
@@ -835,7 +837,7 @@ Expected: FAIL — `self._child("searchField")` is `None`.
 ```qml
 import QtQuick
 import QtQuick.Controls
-import FxPalette
+import "."
 
 Item {
     id: control
@@ -923,7 +925,7 @@ restyling — that is the motion this replaces `_style_category_button` with.
 
 ```qml
 import QtQuick
-import FxPalette
+import "."
 
 Item {
     id: control
@@ -1218,7 +1220,7 @@ Expected: FAIL — `self._child("resultList")` is `None`.
 
 ```qml
 import QtQuick
-import FxPalette
+import "."
 
 Item {
     id: row
@@ -1346,7 +1348,7 @@ Item {
 
 ```qml
 import QtQuick
-import FxPalette
+import "."
 
 ListView {
     id: list
@@ -1533,7 +1535,7 @@ Expected: FAIL — `self._child("footer")` is `None`.
 ```qml
 import QtQuick
 import QtQuick.Controls
-import FxPalette
+import "."
 
 Item {
     id: control
@@ -1739,7 +1741,7 @@ Expected: FAIL — `self._child("nestPanel")` is `None`.
 ```qml
 import QtQuick
 import QtQuick.Controls
-import FxPalette
+import "."
 
 Item {
     id: control
