@@ -62,5 +62,64 @@ class QmlLoadTests(unittest.TestCase):
         self.assertEqual(self.host.window.width(), app.FIXED_SEARCH_WINDOW_WIDTH)
 
 
+
+class ThemeTokenTests(unittest.TestCase):
+    def setUp(self):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        self.host = QmlPaletteHost(self.vm, self.apply, self.services.translate)
+        self.host.load()
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def _theme(self):
+        return self.host.window.property("themeProbe")
+
+    def test_theme_exposes_every_documented_token(self):
+        theme = self._theme()
+        self.assertIsNotNone(theme, "Palette.qml must expose Theme as themeProbe")
+        for name in (
+            "surface", "surfaceRaised", "surfaceOverlay", "border",
+            "text", "textMuted", "textFaint", "accent", "success", "warning", "offline",
+            "spaceXs", "spaceSm", "spaceMd", "spaceLg", "spaceXl",
+            "radiusSm", "radiusMd", "radiusLg", "radiusPill",
+            "fontFamily", "sizeCaption", "sizeBody", "sizeTitle", "sizeDisplay",
+            "durFast", "durBase", "durSlow",
+        ):
+            self.assertIsNotNone(theme.property(name), f"Theme.{name} is missing")
+
+    def test_motion_durations_are_ordered(self):
+        theme = self._theme()
+        self.assertLess(theme.property("durFast"), theme.property("durBase"))
+        self.assertLess(theme.property("durBase"), theme.property("durSlow"))
+
+    def test_animations_flag_follows_the_preference(self):
+        theme = self._theme()
+        self.assertIsInstance(theme.property("animationsEnabled"), bool)
+
+
+class PaletteMetricsTests(unittest.TestCase):
+    def test_metrics_mirror_the_python_constants(self):
+        import app
+        from qml_host import PaletteMetrics
+        m = PaletteMetrics(animations_enabled=True)
+        self.assertEqual(m.windowWidth, app.FIXED_SEARCH_WINDOW_WIDTH)
+        self.assertEqual(m.resultsHeight, app.RESULTS_EXPANDED_HEIGHT)
+        self.assertEqual(m.openAnimationMs, app.OPEN_ANIMATION_MS)
+        self.assertTrue(m.animationsEnabled)
+
+    def test_accent_for_returns_a_colour_string(self):
+        from qml_host import PaletteMetrics
+        m = PaletteMetrics(animations_enabled=False)
+        for kind in ("video", "audio", "preset", "project", "favorite"):
+            self.assertTrue(m.accentFor(kind).startswith("#"), kind)
+
+    def test_animations_flag_is_carried_through(self):
+        from qml_host import PaletteMetrics
+        self.assertFalse(PaletteMetrics(animations_enabled=False).animationsEnabled)
+
 if __name__ == "__main__":
     unittest.main()

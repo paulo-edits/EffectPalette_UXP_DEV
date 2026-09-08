@@ -15,11 +15,13 @@ QML_DIR = Path(__file__).resolve().parent / "qml"
 
 
 class QmlPaletteHost(QtCore.QObject):
-    def __init__(self, view_model, apply_controller, translate, parent=None):
+    def __init__(self, view_model, apply_controller, translate, *,
+                 animations_enabled: bool = True, parent=None):
         super().__init__(parent)
         self._view_model = view_model
         self._apply_controller = apply_controller
         self._translate = translate
+        self._animations_enabled = animations_enabled
         self.warnings: list[str] = []
         self.engine: QtQml.QQmlApplicationEngine | None = None
 
@@ -43,6 +45,8 @@ class QmlPaletteHost(QtCore.QObject):
         context.setContextProperty("vm", self._view_model)
         context.setContextProperty("applyState", self._apply_controller)
         context.setContextProperty("i18n", _Translator(self._translate, self))
+        self._metrics = PaletteMetrics(animations_enabled=self._animations_enabled, parent=self)
+        context.setContextProperty("metrics", self._metrics)
 
         self.engine.load(QtCore.QUrl.fromLocalFile(str(QML_DIR / "Palette.qml")))
         if self.window is None:
@@ -83,3 +87,45 @@ class _Translator(QtCore.QObject):
     @QtCore.Slot(str, result=str)
     def t(self, key: str) -> str:
         return self._translate(key)
+
+
+class PaletteMetrics(QtCore.QObject):
+    """Geometry, motion and accent values that already exist in Python, handed to QML.
+
+    Keeps the window size and animation timing defined in exactly one place.
+    """
+
+    def __init__(self, *, animations_enabled: bool, parent=None):
+        super().__init__(parent)
+        import app  # imported lazily: app.py imports this module
+
+        self._window_width = app.FIXED_SEARCH_WINDOW_WIDTH
+        self._results_height = app.RESULTS_EXPANDED_HEIGHT
+        self._row_height = app.PaletteLayoutMetrics().row_height
+        self._open_animation_ms = app.OPEN_ANIMATION_MS
+        self._animations_enabled = animations_enabled
+
+    @QtCore.Property(int, constant=True)
+    def windowWidth(self) -> int:
+        return self._window_width
+
+    @QtCore.Property(int, constant=True)
+    def resultsHeight(self) -> int:
+        return self._results_height
+
+    @QtCore.Property(int, constant=True)
+    def rowHeight(self) -> int:
+        return self._row_height
+
+    @QtCore.Property(int, constant=True)
+    def openAnimationMs(self) -> int:
+        return self._open_animation_ms
+
+    @QtCore.Property(bool, constant=True)
+    def animationsEnabled(self) -> bool:
+        return self._animations_enabled
+
+    @QtCore.Slot(str, result=str)
+    def accentFor(self, kind: str) -> str:
+        import app
+        return app.get_filter_palette_color(app.filter_key_for_item_type(kind))
