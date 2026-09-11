@@ -32,6 +32,14 @@ QtObject {
     readonly property int radiusLg:   16
     readonly property int radiusPill: 999
 
+    // ---- elevation ------------------------------------------------------------
+    // Drawn in QML, never by DWM: a DWM shadow spans the whole native window and shows
+    // up at once, before the content has faded in. blur + offset must fit the margin.
+    readonly property int   shadowMargin:  24
+    readonly property int   shadowBlur:    20
+    readonly property int   shadowOffsetY: 4
+    readonly property color shadowColor:   "#8C000000"
+
     // ---- type -----------------------------------------------------------------
     readonly property string fontFamily: "Google Sans Flex"
     readonly property int sizeCaption: 11

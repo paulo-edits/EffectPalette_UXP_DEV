@@ -180,8 +180,8 @@ class PreviousFocusTests(unittest.TestCase):
         self.assertEqual(self.controller.previous_handle, 9999)
 
     def test_previous_handle_can_be_set_directly(self):
-        # The recent-action path captures Premiere's handle itself when the palette
-        # already owns focus.
+        # The configured-action path captures Premiere's handle itself when the
+        # palette already owns focus.
         self.controller.previous_handle = 1234
         self.assertEqual(self.controller.previous_handle, 1234)
         self.controller.restore_previous_focus()
@@ -234,6 +234,72 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ShadowMarginPassThroughTests(unittest.TestCase):
+    """Windows hit-tests the whole native window, transparent shadow margin included.
+    Clicks there must still reach the window behind, as they did before the margin."""
+
+    SHELL = (100, 100, 200, 100)  # x, y, width, height of the visible palette
+    INSIDE = (150, 150)
+    MARGIN = (95, 150)
+
+    def _pass_through(self, cursor, handle=4242):
+        from window_control import ShadowMarginPassThrough
+        self.cursor = list(cursor)
+        self.calls = []
+        self.scheduler = FakeScheduler()
+        return ShadowMarginPassThrough(
+            shell_rect=lambda: self.SHELL,
+            cursor_pos=lambda: tuple(self.cursor),
+            handle=lambda: handle,
+            set_click_through=lambda h, on: self.calls.append((h, on)),
+            scheduler=self.scheduler,
+        )
+
+    def test_pointer_in_the_margin_makes_the_window_click_through(self):
+        self._pass_through(self.MARGIN).start()
+        self.assertEqual(self.calls, [(4242, True)])
+
+    def test_pointer_on_the_palette_leaves_it_solid(self):
+        self._pass_through(self.INSIDE).start()
+        self.assertEqual(self.calls, [])
+
+    def test_the_far_edges_are_outside(self):
+        self._pass_through((300, 150)).start()
+        self.assertEqual(self.calls, [(4242, True)])
+
+    def test_it_turns_solid_again_when_the_pointer_returns(self):
+        pass_through = self._pass_through(self.MARGIN)
+        pass_through.start()
+        self.cursor[:] = self.INSIDE
+        self.scheduler.drain(1)
+        self.assertEqual(self.calls, [(4242, True), (4242, False)])
+
+    def test_no_repeated_calls_while_nothing_changes(self):
+        self._pass_through(self.MARGIN).start()
+        self.scheduler.drain(3)
+        self.assertEqual(self.calls, [(4242, True)])
+
+    def test_stop_restores_a_solid_window_and_cancels_the_poll(self):
+        pass_through = self._pass_through(self.MARGIN)
+        pass_through.start()
+        pass_through.stop()
+        self.assertEqual(self.calls[-1], (4242, False))
+        self.assertEqual(self.scheduler.pending, [])
+        self.assertFalse(pass_through.running)
+
+    def test_stop_on_a_solid_window_makes_no_call(self):
+        pass_through = self._pass_through(self.INSIDE)
+        pass_through.start()
+        pass_through.stop()
+        self.assertEqual(self.calls, [])
+
+    def test_starting_twice_runs_one_poll(self):
+        pass_through = self._pass_through(self.INSIDE)
+        pass_through.start()
+        pass_through.start()
+        self.assertEqual(len(self.scheduler.pending), 1)
+
+
 class QuickWindowAdapterTests(unittest.TestCase):
     """QQuickWindow speaks a different dialect than QWidget: requestActivate instead of
     activateWindow, setPosition instead of move. The adapter absorbs that."""
@@ -270,16 +336,33 @@ class QuickWindowAdapterTests(unittest.TestCase):
         self.adapter.show()
         self.assertEqual(self.adapter.handle(), self.adapter.handle())
 
-    def test_move_sets_the_window_position(self):
+    def _margin(self):
+        margin = self.host.window.property("shadowMargin")
+        self.assertGreater(margin, 0)
+        return margin
+
+    def test_move_places_the_visible_shell_not_the_shadow_margin(self):
+        # The controller positions the palette the user sees; the transparent shadow
+        # margin around it must not shift where that palette lands.
+        margin = self._margin()
         self.adapter.show()
         self.adapter.move(300, 210)
-        self.assertEqual((self.host.window.x(), self.host.window.y()), (300, 210))
+        self.assertEqual((self.host.window.x(), self.host.window.y()),
+                         (300 - margin, 210 - margin))
 
-    def test_width_reports_the_window_width(self):
-        self.assertEqual(self.adapter.width(), self.host.window.width())
+    def test_width_reports_the_shell_width(self):
+        self.assertEqual(self.adapter.width(), self.host.window.width() - 2 * self._margin())
 
-    def test_height_hint_is_the_current_height(self):
-        self.assertEqual(self.adapter.height_hint(), self.host.window.height())
+    def test_height_hint_is_the_shell_height(self):
+        self.assertEqual(self.adapter.height_hint(),
+                         self.host.window.height() - 2 * self._margin())
+
+    def test_shell_rect_is_the_visible_palette_in_screen_coordinates(self):
+        self._margin()
+        self.adapter.show()
+        self.adapter.move(300, 210)
+        self.assertEqual(self.adapter.shell_rect(),
+                         (300, 210, self.adapter.width(), self.adapter.height_hint()))
 
     def test_focus_input_gives_the_search_field_focus(self):
         self.adapter.show()

@@ -94,7 +94,6 @@ class QueryServices(Protocol):
     def parse_label_command(self, query: str) -> str | None: ...
     def build_label_color_items(self, label_filter: str) -> list[dict]: ...
     def parse_slash_command(self, query: str) -> tuple[str, str | None, bool]: ...
-    def build_recent_action_items(self) -> tuple[dict, ...]: ...
     def search(self, query: str, type_filters: set[str] | None) -> SearchResultSet: ...
     def build_row_model(self, payload: dict) -> ResultRowModel: ...
     def category_type_filters(self, category: str) -> set[str] | None: ...
@@ -102,7 +101,7 @@ class QueryServices(Protocol):
 
 
 def _unscored(items) -> SearchResultSet:
-    """A result set for items that bypassed the search index (labels, recent actions)."""
+    """A result set for items that bypassed the search index (label colours, empty query)."""
     items = tuple(items)
     return SearchResultSet(
         items=items,
@@ -244,7 +243,7 @@ class PaletteViewModel(QtCore.QObject):
                     query, type_filters=self._resolve_type_filters()
                 )
             else:
-                self._result_set = _unscored(self._services.build_recent_action_items())
+                self._result_set = _unscored(())
 
         self._set_query(query)
         rows = [self._services.build_row_model(item) for item in self._result_set.items]

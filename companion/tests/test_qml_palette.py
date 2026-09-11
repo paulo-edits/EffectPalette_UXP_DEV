@@ -56,10 +56,57 @@ class QmlLoadTests(unittest.TestCase):
         self.host.window.show()
         self.assertIsInstance(int(self.host.window.winId()), int)
 
-    def test_window_width_matches_the_python_constant(self):
+    def test_shell_width_matches_the_python_constant(self):
         import app
         self.host.load()
-        self.assertEqual(self.host.window.width(), app.FIXED_SEARCH_WINDOW_WIDTH)
+        window = self.host.window
+        frame = window.findChild(QtCore.QObject, "shellFrame")
+        self.assertIsNotNone(frame)
+        self.assertEqual(frame.property("width"), app.FIXED_SEARCH_WINDOW_WIDTH)
+
+    def test_window_leaves_room_for_the_shadow_on_every_side(self):
+        import app
+        self.host.load()
+        window = self.host.window
+        margin = window.property("shadowMargin")
+        self.assertGreater(margin, 0)
+        self.assertEqual(window.width(), app.FIXED_SEARCH_WINDOW_WIDTH + 2 * margin)
+        frame = window.findChild(QtCore.QObject, "shellFrame")
+        self.assertEqual((frame.property("x"), frame.property("y")), (margin, margin))
+
+
+class ShadowTests(unittest.TestCase):
+    """The shadow used to come from DWM, which draws it around the whole native window
+    at once -- an empty box with a shadow while the QML content was still fading in.
+    It must live in QML, inside the layer that fades."""
+
+    def setUp(self):
+        self.app = qt_app()
+        self.services = FakeQueryServices(CATALOG)
+        self.vm = PaletteViewModel(self.services)
+        self.apply = ApplyController(FakeAdapter(), FakeScheduler())
+        self.host = QmlPaletteHost(
+            self.vm, self.apply, self.services.translate, animations_enabled=False,
+        )
+        self.host.load()
+        self.root = self.host.window
+
+    def tearDown(self):
+        self.host.shutdown()
+
+    def test_shadow_sits_inside_the_fading_frame(self):
+        from PySide6 import QtQuick
+        shadow = self.root.findChild(QtQuick.QQuickItem, "shellShadow")
+        self.assertIsNotNone(shadow)
+        self.assertEqual(shadow.parentItem().objectName(), "shellFrame")
+
+    def test_frame_is_invisible_until_open_and_opaque_after(self):
+        frame = self.root.findChild(QtCore.QObject, "shellFrame")
+        self.assertEqual(frame.property("opacity"), 0)
+        self.root.show()
+        self.root.playOpen()
+        self.app.processEvents()
+        self.assertEqual(frame.property("opacity"), 1)
 
 
 
@@ -219,6 +266,29 @@ class ResultListTests(unittest.TestCase):
         self.vm.set_query("studio")
         self.app.processEvents()
         self.assertEqual(self._child("resultList").property("currentIndex"), 0)
+
+    def test_rows_render_the_model_text(self):
+        # count alone passed while every row rendered blank: the delegate's
+        # `model.title` bindings evaluated to undefined. Read what a row shows.
+        import time
+        self.root.show()
+        self.root.playOpen()
+        self.vm.set_query("gaussian")
+        end = time.time() + 0.5
+        while time.time() < end:
+            self.app.processEvents()
+            time.sleep(0.005)
+        content = self._child("resultList").property("contentItem")
+        rows = sorted(
+            (item for item in content.childItems() if item.property("title") is not None),
+            key=lambda item: item.y(),
+        )
+        model = self.vm.results
+        expected = [model.data(model.index(i, 0), model.TitleRole) for i in range(model.rowCount())]
+        self.assertEqual([row.property("title") for row in rows], expected)
+        self.assertTrue(all(row.property("typeLabel") for row in rows))
+        self.assertTrue(rows[0].property("selected"))
+        self.assertEqual(self.host.warnings, [])
 
     def test_all_rows_are_present_without_chunked_rendering(self):
         # The widget palette rendered 16 rows then chunked the rest via a timer.

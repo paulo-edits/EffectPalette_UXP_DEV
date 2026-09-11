@@ -27,7 +27,7 @@ import beta_report
 from models import MatchInfo, ResultRowModel, SearchResultSet
 from palette_view_models import ApplyController, PaletteViewModel
 from qml_host import QmlPaletteHost
-from window_control import PaletteWindowController, QuickWindowAdapter
+from window_control import PaletteWindowController, QuickWindowAdapter, ShadowMarginPassThrough
 
 try:
     from pynput import keyboard
@@ -271,73 +271,6 @@ def resolve_alias_query(query: str, entries: list[dict] | None = None) -> str:
         resolved = aliases[normalized]
 
 
-def action_from_effect(effect: dict) -> dict | None:
-    """Convert a successful result payload into the stable product action schema."""
-    effect_type = str(effect.get("type", ""))
-    if effect_type == "label_color":
-        return {"type": "label", "labelIndex": int(effect.get("labelIndex", 0))}
-    if effect_type == "label_group_action":
-        return {"type": "select_label_group"}
-    if effect_type == "timeline_action" and effect.get("action") == "nest":
-        action = {"type": "nest"}
-        if str(effect.get("nestName", "")).strip():
-            action["name"] = str(effect["nestName"]).strip()
-        return action
-    name = str(effect.get("name", "")).strip()
-    if name and effect_type not in {"history_action", "project_item"}:
-        return {"type": "apply_search", "query": name}
-    return None
-
-
-def load_recent_actions() -> list[dict]:
-    raw = _load_settings_data().get("recentActions", [])
-    if not isinstance(raw, list):
-        return []
-    return [dict(entry) for entry in raw if isinstance(entry, dict) and isinstance(entry.get("action"), dict)][:MAX_RECENT_ACTIONS]
-
-
-def record_successful_action(effect: dict, *, confirmed_by: str) -> dict | None:
-    action = action_from_effect(effect)
-    if action is None:
-        return None
-    entry = {
-        "name": str(effect.get("name") or action.get("query") or action.get("type")),
-        "action": action,
-        "timestamp": time.time(),
-        "confirmedBy": confirmed_by,
-    }
-    action_key = json.dumps(action, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    recent = [
-        previous for previous in load_recent_actions()
-        if json.dumps(previous.get("action", {}), sort_keys=True, ensure_ascii=False, separators=(",", ":")) != action_key
-    ]
-    data = _load_settings_data()
-    data["recentActions"] = [entry, *recent][:MAX_RECENT_ACTIONS]
-    _save_settings_data(data)
-    return entry
-
-
-def last_successful_action() -> dict | None:
-    recent = load_recent_actions()
-    return dict(recent[0]["action"]) if recent else None
-
-
-def build_recent_action_items(limit: int = 7) -> tuple[dict, ...]:
-    recent = load_recent_actions()
-    if not recent:
-        return ()
-    items = []
-    for entry in recent[:limit]:
-        items.append({
-            "name": str(entry.get("name", "")),
-            "category": "Recentes",
-            "type": "history_action",
-            "action": "execute_recent",
-            "productAction": dict(entry["action"]),
-        })
-    return tuple(items)
-
-
 def startup_registry_enabled() -> bool:
     if not IS_WINDOWS or winreg is None:
         return False
@@ -425,7 +358,6 @@ STRINGS: dict[str, dict[str, str]] = {
     # Inline Nest configuration
     "nest_dialog_title": {"en": "Create Nest", "pt": "Criar Nest"},
     "timeline_action_nest": {"en": "Nest clips", "pt": "Aninhar clipes"},
-    "repeat_last_action": {"en": "Repeat last action", "pt": "Repetir ultima acao"},
     "nest_dialog_question": {"en": "Create a nested sequence", "pt": "Criar sequencia aninhada"},
     "nest_mode_label": {"en": "Method", "pt": "Metodo"},
     "nest_mode_auto": {"en": "Automatic", "pt": "Automatico"},
@@ -544,7 +476,6 @@ APPLY_STATUS_POLL_MS = 60
 # unreachable for as long as this module kept its own parallel copy of them.
 APPLY_STATUS_TIMEOUT_GRACE_MS = 2000
 APPLY_SUCCESS_CLOSE_DELAY_MS = 300
-MAX_RECENT_ACTIONS = 20
 
 
 def apply_status_timeout_ms(effect: dict) -> float:
@@ -941,34 +872,6 @@ def send_native_shortcut(shortcut: PremiereCommandShortcut) -> bool:
                 USER32.keybd_event(vk, 0, key_event_up, 0)
             except Exception:
                 pass
-        return False
-
-
-def apply_windows_11_window_effects(hwnd: int | None) -> bool:
-    """Ask DWM for native dark framing, rounded corners and compositor shadow."""
-    if not IS_WINDOWS or not hwnd:
-        return False
-    try:
-        dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
-
-        def set_attribute(attribute: int, value: int) -> None:
-            data = ctypes.c_int(value)
-            dwmapi.DwmSetWindowAttribute(
-                wintypes.HWND(hwnd), attribute, ctypes.byref(data), ctypes.sizeof(data)
-            )
-
-        set_attribute(20, 1)  # DWMWA_USE_IMMERSIVE_DARK_MODE
-        set_attribute(33, 2)  # DWMWA_WINDOW_CORNER_PREFERENCE / ROUND
-        set_attribute(34, 0x00453B3B)  # DWMWA_BORDER_COLOR (COLORREF/BGR)
-
-        class MARGINS(ctypes.Structure):
-            _fields_ = (("left", ctypes.c_int), ("right", ctypes.c_int),
-                        ("top", ctypes.c_int), ("bottom", ctypes.c_int))
-
-        margins = MARGINS(1, 1, 1, 1)
-        dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(margins))
-        return True
-    except Exception:
         return False
 
 
@@ -2231,32 +2134,12 @@ def execute_effect_through_adapter(palette, effect: dict) -> float:
     return adapter.execute(effect)
 
 
-def track_adapter_action_success(palette, effect: dict, timestamp: float) -> None:
-    """Record asynchronous adapter actions only after the backend reports success."""
-    root = getattr(palette, "root", None)
-    adapter = getattr(palette, "execution_adapter", None)
-    if root is None or not hasattr(root, "after") or adapter is None:
-        return
-    deadline = time.monotonic() + (apply_status_timeout_ms(effect) / 1000.0)
-
-    def poll():
-        status = adapter.poll_status(timestamp)
-        if adapter.is_success(status):
-            record_successful_action(effect, confirmed_by=adapter.backend_name)
-            return
-        if adapter.is_terminal(status) or time.monotonic() >= deadline:
-            return
-        root.after(APPLY_STATUS_POLL_MS, poll)
-
-    root.after(APPLY_STATUS_INITIAL_DELAY_MS, poll)
-
-
 def execute_configured_hotkey_action(palette, action: dict) -> bool:
     """Execute one configured action while preserving Premiere's selection/focus."""
     action_type = str(action.get("type", "")).strip().lower()
     premiere_hwnd = foreground_window_handle_native()
-    # When invoked from a visible recent-action row, the palette itself owns
-    # focus. Preserve the Premiere handle captured when the palette opened.
+    # When invoked while the palette is open, the palette itself owns focus.
+    # Preserve the Premiere handle captured when the palette opened.
     if premiere_hwnd and premiere_is_focused():
         palette.window_controller.previous_handle = premiere_hwnd
 
@@ -2273,10 +2156,6 @@ def execute_configured_hotkey_action(palette, action: dict) -> bool:
 
         palette.root.after(0, fill_search)
         return True
-
-    if action_type == "repeat_last_action":
-        previous = last_successful_action()
-        return execute_configured_hotkey_action(palette, previous) if previous else False
 
     if action_type == "nest":
         effect = dict(next((item for item in TIMELINE_ACTIONS if item.get("action") == "nest"), {}))
@@ -2326,11 +2205,9 @@ def execute_configured_hotkey_action(palette, action: dict) -> bool:
     if effect.get("type") == "timeline_action" and effect.get("action") == "nest":
         if effect.get("nestMode") == "premiere":
             return bool(palette._execute_timeline_action(effect))
-        timestamp = execute_effect_through_adapter(palette, effect)
-        track_adapter_action_success(palette, effect, timestamp)
+        execute_effect_through_adapter(palette, effect)
         return True
-    timestamp = execute_effect_through_adapter(palette, effect)
-    track_adapter_action_success(palette, effect, timestamp)
+    execute_effect_through_adapter(palette, effect)
     return True
 
 
@@ -2566,6 +2443,19 @@ def activate_window_handle_native(hwnd: int | None):
         pass
 
 
+def set_window_click_through_native(hwnd: int | None, enabled: bool) -> None:
+    """Toggle WS_EX_TRANSPARENT: while set, mouse input passes through the whole window."""
+    if not hwnd or USER32 is None:
+        return
+    gwl_exstyle, ws_ex_transparent = -20, 0x20
+    try:
+        style = USER32.GetWindowLongW(hwnd, gwl_exstyle)
+        style = style | ws_ex_transparent if enabled else style & ~ws_ex_transparent
+        USER32.SetWindowLongW(hwnd, gwl_exstyle, style)
+    except Exception:
+        pass
+
+
 def premiere_is_focused() -> bool:
     title = foreground_window_title_native()
     if title is not None:
@@ -2633,10 +2523,6 @@ def build_result_row_model(effect: dict) -> ResultRowModel:
         type_label = "Action"
         icon_kind = "action"
         subtitle = effect.get("category", "Timeline")
-    elif item_type == "history_action":
-        type_label = "Recent"
-        icon_kind = "action"
-        subtitle = effect.get("category", "Recentes")
     elif is_favorite:
         type_label = "Favorite"
         icon_kind = "favorite"
@@ -3464,9 +3350,6 @@ class AppQueryServices:
     def parse_slash_command(self, query: str):
         return parse_slash_command(query)
 
-    def build_recent_action_items(self):
-        return build_recent_action_items()
-
     def search(self, query: str, type_filters=None):
         return self.loader.search(query, type_filters=type_filters)
 
@@ -3537,11 +3420,20 @@ class QtEffectPalette:
         self.window.nestCancelled.connect(self._cancel_nest_options)
         self.window.closeFinished.connect(self._on_close_finished)
 
+        window_adapter = QuickWindowAdapter(self.window)
         self.window_controller = PaletteWindowController(
-            QuickWindowAdapter(self.window),
+            window_adapter,
             self.root,
             _NativeWindowCalls(),
             on_focus_acquired=self._report_focus_acquired,
+        )
+        # QCursor.pos() and the window position are both in Qt's logical coordinates.
+        self.margin_pass_through = ShadowMarginPassThrough(
+            shell_rect=window_adapter.shell_rect,
+            cursor_pos=lambda: (QtGui.QCursor.pos().x(), QtGui.QCursor.pos().y()),
+            handle=window_adapter.handle,
+            set_click_through=set_window_click_through_native,
+            scheduler=self.root,
         )
 
         self.view_model.set_connection_state(self.loader.snapshot.connection_state)
@@ -3595,7 +3487,6 @@ class QtEffectPalette:
 
         if self.apply_controller.state == "success":
             self.view_model.set_status_override(tr("status_applied", name=effect_name))
-            record_successful_action(effect, confirmed_by=self.execution_adapter.backend_name)
             beta_report.write_event("apply_completed", {
                 "name": effect_name,
                 "status": status,
@@ -3790,7 +3681,6 @@ class QtEffectPalette:
                 sent = send_native_shortcut(shortcut)
                 beta_report.write_event("timeline_action_dispatched", {"action": "nest", "sent": sent})
                 if sent:
-                    record_successful_action(effect, confirmed_by="native_dispatch")
                     schedule_native_nest_dialog_confirmation(self, premiere_hwnd, nest_name, on_confirmed=on_dialog_confirmed)
 
             dispatch_when_window_foreground(self, premiere_hwnd, dispatch, action="nest")
@@ -3826,8 +3716,6 @@ class QtEffectPalette:
             def dispatch():
                 sent = send_native_shortcut(shortcut)
                 beta_report.write_event("timeline_action_dispatched", {"action": "set_label", "label_index": label_index, "sent": sent})
-                if sent:
-                    record_successful_action(effect, confirmed_by="native_dispatch")
             dispatch_when_window_foreground(self, premiere_hwnd, dispatch, action="set_label")
 
         self.root.after(CLOSE_ANIMATION_MS + 40, focus_then_send)
@@ -3838,15 +3726,6 @@ class QtEffectPalette:
             return
         effect = self._selected_payload()
         if not effect:
-            return
-        if effect.get("type") == "history_action" and effect.get("action") == "repeat_last_action":
-            if execute_configured_hotkey_action(self, {"type": "repeat_last_action"}):
-                self.hide()
-            return
-        if effect.get("type") == "history_action" and effect.get("action") == "execute_recent":
-            action = effect.get("productAction")
-            if isinstance(action, dict) and execute_configured_hotkey_action(self, action):
-                self.hide()
             return
         if effect.get("type") == "timeline_action" and effect.get("action") == "nest":
             self._show_nest_options(effect)
@@ -3953,6 +3832,10 @@ class QtEffectPalette:
         return self.window_controller.handle()
 
     def _report_focus_acquired(self, attempt: int):
+        # Started only once the palette holds focus, so the click-through toggle can
+        # never interfere with activation.
+        if self.is_open:
+            self.margin_pass_through.start()
         elapsed_ms = None
         if self._open_requested_at is not None:
             elapsed_ms = round((time.perf_counter() - self._open_requested_at) * 1000.0, 2)
@@ -3997,7 +3880,6 @@ class QtEffectPalette:
         self.window.show()
         self.window.playOpen()
         self._refresh_list()
-        apply_windows_11_window_effects(self._window_hwnd())
         self._force_focus_attempt()
 
     def hide(self):
@@ -4011,6 +3893,7 @@ class QtEffectPalette:
         # The retry loop reads is_open from the controller; a stale True would keep it going.
         self.window_controller.is_open = False
         self._cancel_focus_attempts()
+        self.margin_pass_through.stop()
         self.window.playClose()
 
     def _on_close_finished(self):

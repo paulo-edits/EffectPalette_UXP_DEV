@@ -51,14 +51,10 @@ ListView {
     }
 
     delegate: ResultRow {
-        // `index` and `model` come from the ListView delegate context.
-        title: model.title
-        subtitle: model.subtitle
-        typeLabel: model.typeLabel
-        iconKind: model.iconKind
-        accentKind: model.accentKind
-        accentColor: model.accentColor
-        isFavorite: model.isFavorite
+        // ResultRow declares required properties, which switches the view to
+        // required-property mode: roles fill the same-named properties directly, and
+        // `model`/`index` are no longer injected -- so `index` must be declared here.
+        required property int index
         selected: index === list.currentIndex
         onClicked: list.rowClicked(index)
         onActivated: list.rowActivated(index)

@@ -73,7 +73,6 @@ class FakeQueryServices:
 
     def __init__(self, catalog=None):
         self.catalog = catalog if catalog is not None else []
-        self.recent = ({"name": "Recent One", "type": "effect_video"},)
         self.label_items = [{"name": "Violet", "type": "timeline_action"}]
         self.aliases = {}
         self.label_queries = set()
@@ -93,9 +92,6 @@ class FakeQueryServices:
         if query in self.slash:
             return self.slash[query]
         return query, None, False
-
-    def build_recent_action_items(self):
-        return self.recent
 
     def search(self, query, type_filters=None):
         self.last_type_filters = type_filters
@@ -138,13 +134,8 @@ class PaletteViewModelTests(unittest.TestCase):
         self.services = FakeQueryServices(CATALOG)
         self.vm = PaletteViewModel(self.services)
 
-    def test_empty_query_shows_recent_actions_and_results_state(self):
-        self.vm.set_query("")
-        self.assertEqual(self.vm.results.rowCount(), 1)
-        self.assertEqual(self.vm.viewState, "results")
-
-    def test_empty_query_with_no_recent_actions_is_idle(self):
-        self.services.recent = ()
+    def test_empty_query_shows_nothing_and_is_idle(self):
+        # The recent-actions list that used to fill an empty query was removed.
         self.vm.set_query("")
         self.assertEqual(self.vm.results.rowCount(), 0)
         self.assertEqual(self.vm.viewState, "idle")
@@ -237,7 +228,6 @@ class PaletteViewModelStatusTests(unittest.TestCase):
         self.assertEqual(self.vm.statusText, "no results")
 
     def test_idle_state_has_no_status_text(self):
-        self.services.recent = ()
         self.vm.set_query("")
         self.assertEqual(self.vm.statusText, "")
 
@@ -288,11 +278,24 @@ class AppQueryServicesTests(unittest.TestCase):
         import app
         self.assertTrue(hasattr(app, "AppQueryServices"))
 
+    def test_recent_actions_are_gone(self):
+        # The empty-query "Recent" rows and "Repeat last action" (which the shortcut
+        # editor never offered) were removed, and with them the history written to
+        # settings.json after every successful apply.
+        import app
+        for name in ("build_recent_action_items", "record_successful_action",
+                     "last_successful_action", "load_recent_actions",
+                     "action_from_effect", "MAX_RECENT_ACTIONS",
+                     "track_adapter_action_success"):
+            self.assertFalse(hasattr(app, name), f"app.{name} should be gone")
+        self.assertFalse(hasattr(app.AppQueryServices, "build_recent_action_items"))
+        self.assertNotIn("repeat_last_action", app.STRINGS)
+
     def test_services_methods_are_all_present(self):
         import app
         required = (
             "resolve_alias", "parse_label_command", "build_label_color_items",
-            "parse_slash_command", "build_recent_action_items", "search",
+            "parse_slash_command", "search",
             "build_row_model", "category_type_filters",
         )
         for name in required:

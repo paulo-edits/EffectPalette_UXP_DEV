@@ -90,6 +90,36 @@ class PaletteBootTests(unittest.TestCase):
         self.assertFalse(self.palette.is_open)
         self.assertFalse(self.palette.window.property("shellVisible"))
 
+    @unittest.skipUnless(hasattr(__import__("ctypes"), "WinDLL"), "Windows only")
+    def test_show_does_not_ask_dwm_for_a_native_frame(self):
+        # A DWM frame (rounded corners, border, shadow) spans the whole native window and
+        # appears at once, while the QML content fades in: an empty box on every open.
+        import ctypes
+        from unittest import mock
+
+        loaded = []
+        real_windll = ctypes.WinDLL
+
+        def spy(name, *args, **kwargs):
+            loaded.append(str(name).lower())
+            return real_windll(name, *args, **kwargs)
+
+        with mock.patch.object(ctypes, "WinDLL", side_effect=spy):
+            self.palette.show()
+            self._settle(0.2)
+            self.palette.hide()
+            self._settle()
+        self.assertNotIn("dwmapi", loaded)
+
+    def test_margin_pass_through_runs_only_while_open_and_focused(self):
+        self.palette.show()
+        self._settle(0.1)
+        self.palette._report_focus_acquired(0)
+        self.assertTrue(self.palette.margin_pass_through.running)
+        self.palette.hide()
+        self._settle()
+        self.assertFalse(self.palette.margin_pass_through.running)
+
     def test_selection_moves(self):
         self.palette.window.setProperty("searchText", "blur")
         self._settle()

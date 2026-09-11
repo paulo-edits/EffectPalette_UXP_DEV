@@ -110,10 +110,14 @@ A dead-code / reliability / performance pass over the whole repository. Details 
 ## Still to do
 
 - Host-test the audit pass (see "In progress").
-- **UI rewrite in QML, phase 2** — the visible work. Phase 1 (view-model extraction) is on branch
-  `ui/qml-rewrite`: palette state and logic now live in `companion/palette_view_models.py` and
-  `companion/window_control.py`, the suite went 32 → 97 tests, and the focus path is host-tested
-  (Premiere 26.3.2, 6/6 opens focused on the first attempt). Nothing looks different yet, by design.
-  Still to verify before merge: second-monitor placement, focus returning to Premiere after an
-  apply, native Nest and Label. See `TECHNICAL_PLAN.md` (last slice) and
+- **UI rewrite in QML** — branch `ui/qml-rewrite`. Phase 1 (view-model extraction into
+  `companion/palette_view_models.py` and `companion/window_control.py`) is done and host-tested.
+  Phase 2: the search palette is now QML (`companion/qml/`), with its shadow drawn in QML and
+  click-through in the shadow margin. Host-tested 2026-09-11 on Premiere 26.5.0: rows render, no
+  empty box on open, focused on the first press. Still to do in phase 2: PyInstaller QML packaging
+  (plan Task 10), the host tests in plan Task 11 (margin click-through into Premiere, second
+  monitor, native Nest and Label, animations off, the packaged build), and a visual design pass.
+  The settings/shortcut/debug windows are phase 3. Recent actions and "Repeat last action" were
+  removed on 2026-09-11. See `TECHNICAL_PLAN.md` (last slice),
+  `docs/superpowers/plans/2026-09-08-qml-palette.md` and
   `docs/superpowers/specs/2026-09-07-companion-qml-ui-rewrite-design.md`.

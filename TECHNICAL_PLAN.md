@@ -1409,3 +1409,66 @@ test before phase 2 merges.
 Phase 2 (the visible work): `Theme.qml` with design and motion tokens, the QML palette bound to
 these view-models, `QuickWindowAdapter`, PyInstaller QML packaging verified with a real packaged
 build, then the secondary windows one at a time.
+
+## Slice: QML palette fixes before the visual pass — 2026-09-11
+
+Branch `ui/qml-rewrite`, on top of `a28c457` (the QML palette replacing the widget one). The first
+real run of the QML palette showed two bugs; the user also dropped the recent-actions feature.
+
+### Blank result rows
+
+Every row showed only its fallback icon — no title, subtitle or type badge. The model returned the
+right data. `ResultRow.qml` declares `required property` fields, and a delegate with required
+properties switches the `ListView` into required-property mode, which stops injecting `model` and
+`index` into the delegate. `ResultList.qml`'s `title: model.title` bindings therefore evaluated to
+`undefined`. Fix: the roles fill the same-named required properties directly; the delegate declares
+`required property int index` for `selected`.
+
+The suites had missed it: they read QML warnings only at load, before any delegate existed, and
+never read a row's text. `test_rows_render_the_model_text` does both.
+
+### The empty box on every open, and the shadow margin
+
+`show()` called `apply_windows_11_window_effects` (DWM dark mode, rounded corners, border colour,
+`DwmExtendFrameIntoClientArea`). DWM draws that frame and shadow around the whole native window at
+once, while the QML shell fades in from opacity 0 — an empty rounded box with a shadow and a stroke
+on every open and close. Evidence: a frame capture over a magenta backdrop shows a full-size stroke
+while the content is still invisible with the effects on, and nothing with them off.
+
+Fix: the call and the function are gone. The shadow is drawn in QML (`RectangularShadow`,
+Qt 6.9+) inside `shellFrame`, the item that fades and scales, so nothing is on screen before the
+content. The window is the shell plus `Theme.shadowMargin` (24 px) on every side;
+`QuickWindowAdapter` reports and places the visible shell, so `PaletteWindowController` is
+unchanged (probe: the shell lands exactly at the requested position).
+
+That margin created a new problem: Windows hit-tests the whole window, transparent pixels included
+(the window is already `WS_EX_LAYERED` and still caught the clicks), so the margin swallowed clicks
+meant for Premiere. `ShadowMarginPassThrough` (`window_control.py`) polls the pointer every 30 ms
+while the palette is open and sets `WS_EX_TRANSPARENT` only while the pointer is outside the shell.
+It starts when the palette reports focus — so it cannot interfere with activation — and stops on
+hide. Real-window probe with the real `QtEffectPalette`: a margin click reaches the window behind,
+a click on the shell reaches the palette, and the flag is cleared after hide.
+
+Plan Task 11 (the translucency experiment) was written against `apply_windows_11_window_effects`
+and needs a new approach.
+
+### Recent actions removed (user decision)
+
+An empty query no longer lists the seven "Recent" rows. With them went "Repeat last action" — the
+shortcut editor never offered it and the user's settings had no hotkey using it — and the history
+written to `settings.json` after every successful apply (`record_successful_action`,
+`last_successful_action`, `load_recent_actions`, `action_from_effect`,
+`track_adapter_action_success`). Existing `recentActions` entries in `settings.json` are left in
+place and no longer read. An empty query is now the idle state: search field, chips, footer.
+
+### Evidence
+
+Off-host: `npm run validate` passes (171 tests); pyflakes clean.
+
+**Host-tested (user's own session, 2026-09-11, Premiere Pro 26.5.0, project `TESTE MOTRACK`,
+`python app.py`):** rows render their titles and badges; the empty box on open is gone; the palette
+opens focused, caret in the field, on the first press.
+
+**Not verified by the user yet:** margin click-through into Premiere (probe only), second-monitor
+placement, native Nest and Label on the QML window, animations off, the packaged build. These stay
+on the Task 11 host-test list.
