@@ -1472,3 +1472,62 @@ opens focused, caret in the field, on the first press.
 **Not verified by the user yet:** margin click-through into Premiere (probe only), second-monitor
 placement, native Nest and Label on the QML window, animations off, the packaged build. These stay
 on the Task 11 host-test list.
+
+## Slice: palette visual pass (UI rewrite, phase 2) — 2026-09-11, continued
+
+Branch `ui/qml-rewrite`, on top of `592fc24`. Driven by the user's review of the running palette.
+Each open visual choice was settled from rendered variants (real QML, real font, real row builder,
+throwaway copies in the scratchpad) rather than from descriptions.
+
+### What changed
+
+- **Layout.** One 8 px grid. Search field 56 px with an 18 px input, a placeholder and a drawn
+  magnifier; the refresh button is a borderless icon, and it and the connection dot form one
+  right-hand column.
+- **Categories as tabs.** Plain labels with an accent underline that slides under the active label.
+  Added a Transitions tab: `/trans` switched to a filter that had no tab, leaving an invisible
+  filter. A test now requires a tab for every `CATEGORY_TYPE_FILTERS` key. Tab / Shift+Tab in the
+  search field cycle categories (wrapping); the field accepts the key so focus stays put.
+- **Footer → status strip.** Key hints and the result count are gone; the strip appears only for an
+  apply message (`PaletteViewModel.statusOverride`) and collapses after the next search. Found on
+  the way: clearing the message did not signal when the search status came back unchanged.
+- **Rows.** One drawn line icon per item type (fx, waveform, transition, sliders, film frame, star,
+  layers, label dot) replaced unicode glyphs in tinted tiles; `icon_kind` carries the type. Transitions
+  got their own colour (`#F3B6CD`) — they shared the neutral key with actions and labels. The
+  selection highlight uses the selected row's hue at a fixed strength (`Theme.selectionTint`) — at a
+  fixed alpha the preset lavender blended to grey — and is inset like the rows (the view positions
+  the highlight's own `x`, so the visible rectangle sits inside a wrapper).
+- **List edges.** Top and bottom breathing room; edge fades only where rows continue past that
+  edge; one row of look-ahead while the selection moves (`highlightRangeMode: ApplyRange`). The list
+  now stops 8 px above the shell's bottom edge: the shell clips to a rectangle, not its rounded shape,
+  and pixel probes showed the bottom fade and scrolling rows painting over the rounded corners and
+  the bottom border.
+- **Motion.** Slide up while fading in on open, slide down while fading out on close; the scale pop
+  is gone. Open and close are separate state transitions. A single `Behavior` whose easing was bound
+  to `shellVisible` ran each direction with the other's curve — which one depended on binding update
+  order, so it differed by platform: offscreen the close was wrong, on Windows the open started slow
+  and then snapped (frame capture: still 12 px low at 81 ms; after the fix, 1 px from place at 82 ms).
+- **Language.** The palette follows the tray language live: `apply_language()` switches in memory,
+  `set_language()` also saves; QML bindings re-run through `i18n.retranslate`; tray labels are
+  callables re-read by `update_menu()`, and the switch reaches the palette on the Qt thread. Tabs,
+  type badges, internal category keys in subtitles (also inside paths such as "Transicoes > Video")
+  and the Nest action name (baked into the search index, rebuilt from the local catalogs) translate.
+  The "restart to apply" notification is gone.
+- **Removed.** `get_icon_glyph` (the widget palette's glyph table; nothing called it).
+
+### Evidence
+
+Off-host: `npm run validate` passes (217 tests); pyflakes clean. Every visual change was checked on a
+real-platform render or frame capture before it was handed over (scratchpad, not committed).
+
+**Host (user's own session, Premiere Pro 26.5.0):** the user worked in the running palette through
+the pass; their screenshots show the tabs, the row icons, the transition colour and the highlight in
+the real app, and they confirmed the corner/fade leak fixed.
+
+**Not confirmed by the user yet:** the last-row fade fix, the underline re-alignment, the corrected
+open/close easing, Tab / Shift+Tab, the live language switch from the tray, and the Task 11 list
+above.
+
+### Next
+
+The rest of the app (spec phase 3): the settings, shortcut editor, alias picker and debug windows.

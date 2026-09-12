@@ -165,5 +165,124 @@ class HelperTests(unittest.TestCase):
             self.assertFalse(hasattr(app, name), f"{name} should be gone")
 
 
+class RowIconTests(unittest.TestCase):
+    """Each item type gets its own icon, and transitions their own colour."""
+
+    ICONS = {
+        "video": "fx",
+        "audio": "audio",
+        "transition_video": "transition",
+        "transition_audio": "transition",
+        "preset": "preset",
+        "project_item": "project",
+        "generic_item": "favorite",
+        "favorite_item": "favorite",
+        "timeline_action": "layers",
+        "label_group_action": "label",
+        "label_color": "label",
+    }
+
+    def setUp(self):
+        self.original = app.CURRENT_LANGUAGE
+
+    def tearDown(self):
+        app.apply_language(self.original)
+
+    def test_each_type_gets_its_own_icon(self):
+        for item_type, expected in self.ICONS.items():
+            row = app.build_result_row_model({"name": "X", "type": item_type, "labelColor": "#A17FE0"})
+            self.assertEqual(row.icon_kind, expected, item_type)
+
+    def test_transitions_have_their_own_colour(self):
+        # They used to share the neutral "all" key with actions and labels.
+        colour = app.get_filter_palette_color(
+            app.build_result_row_model({"name": "X", "type": "transition_video"}).accent_kind)
+        others = {app.get_filter_palette_color(key) for key in ("Todos", "Video", "Audio")}
+        self.assertNotIn(colour, others)
+
+    def test_internal_category_subtitles_are_translated(self):
+        # GENERIC_ITEMS carry the internal "Favoritos" key as their category.
+        app.apply_language("en")
+        row = app.build_result_row_model({"name": "Adjustment Layer", "type": "generic_item",
+                                          "category": "Favoritos"})
+        self.assertEqual(row.subtitle, "Favorites")
+        effect = app.build_result_row_model({"name": "X", "type": "video", "category": "Blur & Sharpen"})
+        self.assertEqual(effect.subtitle, "Blur & Sharpen")
+
+    def test_internal_keys_inside_a_path_are_translated(self):
+        # The transitions catalog files items under "Transicoes > Video".
+        app.apply_language("en")
+        row = app.build_result_row_model({"name": "Split", "type": "transition_video",
+                                          "category": "Transicoes > Video"})
+        self.assertEqual(row.subtitle, "Transitions > Video")
+        preset = app.build_result_row_model({"name": "Look", "type": "preset",
+                                             "category": "1. Finzar > 2. Character Animation"})
+        self.assertEqual(preset.subtitle, "1. Finzar > 2. Character Animation")
+
+
+class LanguageSwitchTests(unittest.TestCase):
+    """Picking a language in the tray reaches every palette string, with no restart."""
+
+    PT_BADGES = {
+        "preset": "Preset",
+        "transition_video": "Transição",
+        "project_item": "Projeto",
+        "label_color": "Label",
+        "label_group_action": "Ação",
+        "timeline_action": "Ação",
+        "favorite_item": "Favorito",
+        "video": "Efeito",
+    }
+
+    def setUp(self):
+        self.original = app.CURRENT_LANGUAGE
+
+    def tearDown(self):
+        app.apply_language(self.original)
+
+    def _badge(self, item_type):
+        return app.build_result_row_model({"name": "X", "type": item_type}).type_label
+
+    def test_badges_follow_the_language(self):
+        app.apply_language("en")
+        self.assertEqual(self._badge("video"), "Effect")
+        app.apply_language("pt")
+        self.assertEqual(self._badge("video"), "Efeito")
+
+    def test_every_badge_is_translated(self):
+        app.apply_language("pt")
+        for item_type, expected in self.PT_BADGES.items():
+            self.assertEqual(self._badge(item_type), expected, item_type)
+
+    def test_fallback_subtitles_use_the_display_label(self):
+        # Items without a category of their own fall back to a category key, which
+        # must be shown translated, not as the internal Portuguese key.
+        app.apply_language("en")
+        for item_type, expected in (("transition_video", "Transitions"), ("project_item", "Project"),
+                                    ("favorite_item", "Favorites"), ("preset", "Presets")):
+            subtitle = app.build_result_row_model({"name": "X", "type": item_type}).subtitle
+            self.assertEqual(subtitle, expected, item_type)
+
+    def test_apply_language_renames_the_nest_action(self):
+        # TIMELINE_ACTIONS is built at import; its name must follow a later switch.
+        for lang in ("pt", "en"):
+            app.apply_language(lang)
+            nest = next(a for a in app.TIMELINE_ACTIONS if a.get("action") == "nest")
+            self.assertEqual(nest["name"], app.STRINGS["timeline_action_nest"][lang])
+
+    def test_apply_language_never_saves_but_set_language_does(self):
+        from unittest import mock
+        other = "pt" if self.original != "pt" else "en"
+        with mock.patch.object(app, "_save_language") as save:
+            app.apply_language(other)
+            save.assert_not_called()
+            app.set_language(self.original)
+            save.assert_called_once_with(self.original)
+
+    def test_unknown_language_is_ignored(self):
+        app.apply_language("xx")
+        self.assertEqual(app.CURRENT_LANGUAGE, self.original)
+
+
 if __name__ == "__main__":
     unittest.main()

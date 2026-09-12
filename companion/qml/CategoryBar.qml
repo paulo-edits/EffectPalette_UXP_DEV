@@ -1,6 +1,8 @@
 import QtQuick
 import "."
 
+// Categories as tabs: plain labels, with one accent underline that slides to the active
+// one. No outlines -- the bar reads as part of the search surface, not a row of buttons.
 Item {
     id: control
 
@@ -8,75 +10,55 @@ Item {
     property string connectionState: "offline"
     signal categoryPicked(string category)
 
-    readonly property var categories: ["Todos", "Video", "Audio", "Presets", "Projeto", "Favoritos"]
+    // Internal keys, shared with the view-model and settings; shown translated.
+    // Every filter the palette can be in needs a tab, or an active one (say from /trans)
+    // is invisible -- the tests check this list against CATEGORY_TYPE_FILTERS.
+    readonly property var categories: ["Todos", "Video", "Audio", "Transicoes", "Presets", "Projeto", "Favoritos"]
     readonly property int activeIndex: categories.indexOf(activeCategory)
 
-    implicitHeight: 40
-
-    // One pill that slides between chips. The chips themselves stay transparent, so the
-    // pill is the only thing carrying "active" state -- that is what makes it read as
-    // movement rather than six independent colour changes.
-    Rectangle {
-        id: activePill
-
-        readonly property Item target: control.activeIndex >= 0 ? chipRepeater.itemAt(control.activeIndex) : null
-
-        visible: target !== null
-        x: target ? chips.x + target.x : 0
-        y: target ? chips.y + target.y : 0
-        width: target ? target.width : 0
-        height: target ? target.height : 0
-        radius: Theme.radiusPill
-        color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.20)
-        border.width: 1
-        border.color: Theme.accent
-
-        Behavior on x {
-            enabled: Theme.animationsEnabled
-            NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeStandard }
-        }
-        Behavior on width {
-            enabled: Theme.animationsEnabled
-            NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeStandard }
-        }
+    // Tab / Shift+Tab from the search field: the next or previous tab, wrapping around.
+    // Goes through categoryPicked, the same path as a click.
+    function cycle(step) {
+        const count = categories.length
+        const current = activeIndex >= 0 ? activeIndex : 0
+        categoryPicked(categories[(current + step + count) % count])
     }
+
+    implicitHeight: 40
 
     Row {
         id: chips
         anchors.left: parent.left
-        anchors.leftMargin: Theme.spaceLg
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Theme.spaceSm
+        // Each tab pads its label by spaceSm, so the first label lands on the spaceLg
+        // content edge shared with the search icon and the footer.
+        anchors.leftMargin: Theme.spaceLg - Theme.spaceSm
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        spacing: 0
 
         Repeater {
             id: chipRepeater
             model: control.categories
-            delegate: Rectangle {
+            delegate: Item {
                 id: chip
                 required property string modelData
                 readonly property bool active: modelData === control.activeCategory
+                readonly property string label: i18n.category(modelData) + i18n.retranslate
 
-                height: 26
-                width: label.implicitWidth + Theme.spaceMd * 2
-                radius: Theme.radiusPill
-                // Only hover paints here; "active" belongs to the sliding pill above.
-                color: (!active && chipArea.containsMouse) ? Theme.surfaceOverlay : "transparent"
-                border.width: 1
-                border.color: active ? "transparent" : Theme.border
-
-                Behavior on color {
-                    enabled: Theme.animationsEnabled
-                    ColorAnimation { duration: Theme.durFast }
-                }
+                objectName: "chip_" + modelData
+                height: chips.height
+                width: labelText.implicitWidth + Theme.spaceSm * 2
 
                 Text {
-                    id: label
+                    id: labelText
+                    objectName: "chipLabel"
                     anchors.centerIn: parent
-                    text: chip.modelData
-                    color: chip.active ? Theme.text : Theme.textMuted
+                    text: chip.label
+                    color: chip.active || chipArea.containsMouse ? Theme.text : Theme.textMuted
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.sizeCaption
-                    font.bold: chip.active
+                    font.pixelSize: Theme.sizeBody
+                    // One weight for every state, so a tab never changes width.
+                    font.weight: Font.Medium
 
                     Behavior on color {
                         enabled: Theme.animationsEnabled
@@ -95,13 +77,44 @@ Item {
         }
     }
 
+    // The one moving part: an underline that slides and resizes between tabs.
+    Rectangle {
+        id: activePill
+        objectName: "activePill"
+
+        // itemAt() is not a notifying property, so without `count` in the expression
+        // the binding ran once, before the Repeater had built any tab, and stayed null.
+        readonly property Item target: chipRepeater.count > 0 && control.activeIndex >= 0
+                                       ? chipRepeater.itemAt(control.activeIndex) : null
+
+        visible: target !== null
+        height: 2
+        radius: 1
+        y: parent.height - height
+        // Exactly under the label text, so it lines up with the text and with the
+        // search icon above it. Spanning the whole tab, it stuck out into the padding.
+        x: target ? chips.x + target.x + Theme.spaceSm : 0
+        width: target ? target.width - Theme.spaceSm * 2 : 0
+        color: Theme.accent
+
+        Behavior on x {
+            enabled: Theme.animationsEnabled
+            NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeStandard }
+        }
+        Behavior on width {
+            enabled: Theme.animationsEnabled
+            NumberAnimation { duration: Theme.durBase; easing.type: Theme.easeStandard }
+        }
+    }
+
     Rectangle {
         id: connectionDot
         objectName: "connectionDot"
-        width: 10; height: 10
-        radius: 5
+        width: 8; height: 8
+        radius: 4
         anchors.right: parent.right
-        anchors.rightMargin: Theme.spaceLg
+        // Centred under the refresh button above it: one right-hand column.
+        anchors.rightMargin: Theme.spaceLg + (Theme.iconButtonSize - width) / 2
         anchors.verticalCenter: parent.verticalCenter
         color: control.connectionState === "connected" ? Theme.success
              : control.connectionState === "problem"   ? Theme.warning

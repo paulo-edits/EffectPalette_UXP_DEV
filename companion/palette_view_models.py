@@ -119,7 +119,6 @@ class PaletteViewModel(QtCore.QObject):
     viewStateChanged = QtCore.Signal()
     statusTextChanged = QtCore.Signal()
     connectionStateChanged = QtCore.Signal()
-    footerHintChanged = QtCore.Signal()
 
     def __init__(self, services: QueryServices, parent=None):
         super().__init__(parent)
@@ -162,13 +161,14 @@ class PaletteViewModel(QtCore.QObject):
         """The search status, unless an apply is talking over it."""
         return self._status_override or self._status_text
 
+    @QtCore.Property(str, notify=statusTextChanged)
+    def statusOverride(self) -> str:
+        """Only the apply message, never the result count: what the status strip shows."""
+        return self._status_override
+
     @QtCore.Property(str, notify=connectionStateChanged)
     def connectionState(self) -> str:
         return self._connection_state
-
-    @QtCore.Property(str, notify=footerHintChanged)
-    def footerHint(self) -> str:
-        return self._services.translate("footer_hint")
 
     @property
     def resultSet(self) -> SearchResultSet:
@@ -227,7 +227,11 @@ class PaletteViewModel(QtCore.QObject):
     # --- internals ------------------------------------------------------------------
 
     def _recompute(self) -> None:
-        self._status_override = ""
+        # Signal the clear itself: when the search status comes back unchanged,
+        # _set_status_text stays silent and the strip would keep a stale message.
+        if self._status_override:
+            self._status_override = ""
+            self.statusTextChanged.emit()
         raw = self._services.resolve_alias(self._raw_query.strip())
         label_filter = self._services.parse_label_command(raw)
 

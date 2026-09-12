@@ -18,12 +18,14 @@ QML_DIR = Path(__file__).resolve().parent / "qml"
 
 class QmlPaletteHost(QtCore.QObject):
     def __init__(self, view_model, apply_controller, translate, *,
-                 animations_enabled: bool = True, parent=None):
+                 category_label=None, animations_enabled: bool = True, parent=None):
         super().__init__(parent)
         self._view_model = view_model
         self._apply_controller = apply_controller
         self._translate = translate
+        self._category_label = category_label or (lambda key: key)
         self._animations_enabled = animations_enabled
+        self._translator: _Translator | None = None
         self.warnings: list[str] = []
         self.engine: QtQml.QQmlApplicationEngine | None = None
 
@@ -46,13 +48,19 @@ class QmlPaletteHost(QtCore.QObject):
         context = self.engine.rootContext()
         context.setContextProperty("vm", self._view_model)
         context.setContextProperty("applyState", self._apply_controller)
-        context.setContextProperty("i18n", _Translator(self._translate, self))
+        self._translator = _Translator(self._translate, self._category_label, self)
+        context.setContextProperty("i18n", self._translator)
         self._metrics = PaletteMetrics(animations_enabled=self._animations_enabled, parent=self)
         context.setContextProperty("metrics", self._metrics)
 
         self.engine.load(QtCore.QUrl.fromLocalFile(str(QML_DIR / "Palette.qml")))
         if self.window is None:
             raise RuntimeError(f"Palette.qml failed to load: {self.warnings}")
+
+    def retranslate(self) -> None:
+        """Re-run every translated binding in the loaded QML: a live language switch."""
+        if self._translator is not None:
+            self._translator.retranslateChanged.emit()
 
     def shutdown(self) -> None:
         """Tear the engine down deterministically.
@@ -80,15 +88,32 @@ class QmlPaletteHost(QtCore.QObject):
 
 
 class _Translator(QtCore.QObject):
-    """Exposes the companion's tr() to QML as i18n.t("key")."""
+    """Exposes the companion's tr() to QML as i18n.t("key") and i18n.category("Key").
 
-    def __init__(self, translate, parent=None):
+    QML cannot know that t() depends on the current language, so every translated
+    binding appends `i18n.retranslate` -- an always-empty string whose change signal
+    makes QML re-run the binding. That is Qt's usual pattern for switching language at
+    runtime.
+    """
+
+    retranslateChanged = QtCore.Signal()
+
+    def __init__(self, translate, category_label, parent=None):
         super().__init__(parent)
         self._translate = translate
+        self._category_label = category_label
+
+    @QtCore.Property(str, notify=retranslateChanged)
+    def retranslate(self) -> str:
+        return ""
 
     @QtCore.Slot(str, result=str)
     def t(self, key: str) -> str:
         return self._translate(key)
+
+    @QtCore.Slot(str, result=str)
+    def category(self, key: str) -> str:
+        return self._category_label(key)
 
 
 class PaletteMetrics(QtCore.QObject):

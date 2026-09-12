@@ -43,7 +43,7 @@ Item {
             spacing: Theme.spaceSm
 
             Text {
-                text: i18n.t("nest_dialog_question")
+                text: i18n.t("nest_dialog_question") + i18n.retranslate
                 color: Theme.text
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.sizeTitle
@@ -51,7 +51,7 @@ Item {
             }
 
             Text {
-                text: i18n.t("nest_name_label")
+                text: i18n.t("nest_name_label") + i18n.retranslate
                 color: Theme.textMuted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.sizeCaption
@@ -84,7 +84,7 @@ Item {
 
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        text: i18n.t("nest_name_hint")
+                        text: i18n.t("nest_name_hint") + i18n.retranslate
                         color: Theme.textFaint
                         font: nameInput.font
                         visible: nameInput.text.length === 0
@@ -112,7 +112,7 @@ Item {
                     Text {
                         id: cancelLabel
                         anchors.centerIn: parent
-                        text: i18n.t("nest_cancel")
+                        text: i18n.t("nest_cancel") + i18n.retranslate
                         color: Theme.textMuted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.sizeCaption
@@ -143,7 +143,7 @@ Item {
                     Text {
                         id: confirmLabel
                         anchors.centerIn: parent
-                        text: i18n.t("nest_confirm")
+                        text: i18n.t("nest_confirm") + i18n.retranslate
                         color: "#FFFFFF"
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.sizeCaption

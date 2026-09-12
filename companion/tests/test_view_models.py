@@ -117,8 +117,6 @@ class FakeQueryServices:
             return f"{kwargs['visible']}/{kwargs['total']}"
         if key == "status_no_results":
             return "no results"
-        if key == "footer_hint":
-            return "Enter to apply"
         return key
 
 
@@ -231,8 +229,23 @@ class PaletteViewModelStatusTests(unittest.TestCase):
         self.vm.set_query("")
         self.assertEqual(self.vm.statusText, "")
 
-    def test_footer_hint_comes_from_the_translator(self):
-        self.assertEqual(self.vm.footerHint, "Enter to apply")
+    def test_status_override_is_exposed_on_its_own(self):
+        # The status strip shows only apply messages, never the result count.
+        self.vm.set_query("gaussian")
+        self.assertEqual(self.vm.statusOverride, "")
+        self.vm.set_status_override("Applying: Gaussian Blur")
+        self.assertEqual(self.vm.statusOverride, "Applying: Gaussian Blur")
+
+    def test_recompute_clears_the_override_even_when_the_status_text_is_unchanged(self):
+        # "2/2" -> message -> the same "2/2" search: the message must still clear,
+        # with a change signal, or the status strip would stay up.
+        self.vm.set_query("gaussian")
+        self.vm.set_status_override("Select a clip first.")
+        seen = []
+        self.vm.statusTextChanged.connect(lambda: seen.append(self.vm.statusOverride))
+        self.vm.set_query("gaussian")
+        self.assertEqual(self.vm.statusOverride, "")
+        self.assertEqual(seen, [""])
 
     def test_connection_state_defaults_to_offline(self):
         self.assertEqual(self.vm.connectionState, "offline")

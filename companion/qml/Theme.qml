@@ -26,6 +26,9 @@ QtObject {
     readonly property int spaceLg: 16
     readonly property int spaceXl: 24
 
+    // ---- controls -------------------------------------------------------------
+    readonly property int iconButtonSize: 28
+
     // ---- radii ----------------------------------------------------------------
     readonly property int radiusSm:   6
     readonly property int radiusMd:   10
@@ -43,7 +46,9 @@ QtObject {
     // ---- type -----------------------------------------------------------------
     readonly property string fontFamily: "Google Sans Flex"
     readonly property int sizeCaption: 11
+    readonly property int sizeSmall:   12
     readonly property int sizeBody:    13
+    readonly property int sizeInput:   18
     readonly property int sizeTitle:   15
     readonly property int sizeDisplay: 20
 
@@ -55,10 +60,21 @@ QtObject {
     readonly property int easeStandard:  Easing.OutCubic
     readonly property int easeDecel:     Easing.OutQuint
     readonly property int easeOvershoot: Easing.OutBack
+    readonly property int easeAccel:     Easing.InCubic
+
+    // How far the palette travels as it slides in on open and out on close.
+    readonly property int slideDistance: 12
 
     // Mirrors the user's "Use interface animations" preference. Every Behavior and
     // Transition gates on this.
     property bool animationsEnabled: true
+
+    // The selection tint for an item colour: the item's hue at a fixed saturation and
+    // lightness, so a pale pastel (the preset lavender) reads as clearly as a vivid one.
+    function selectionTint(c, alpha) {
+        const achromatic = c.hslHue < 0
+        return Qt.hsla(achromatic ? 0 : c.hslHue, achromatic ? 0 : 0.65, 0.66, alpha)
+    }
 
     // Linear colour mix, the QML counterpart of app.blend_colors.
     function mix(a, b, t) {

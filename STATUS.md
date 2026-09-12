@@ -115,9 +115,11 @@ A dead-code / reliability / performance pass over the whole repository. Details 
   Phase 2: the search palette is now QML (`companion/qml/`), with its shadow drawn in QML and
   click-through in the shadow margin. Host-tested 2026-09-11 on Premiere 26.5.0: rows render, no
   empty box on open, focused on the first press. Still to do in phase 2: PyInstaller QML packaging
-  (plan Task 10), the host tests in plan Task 11 (margin click-through into Premiere, second
-  monitor, native Nest and Label, animations off, the packaged build), and a visual design pass.
-  The settings/shortcut/debug windows are phase 3. Recent actions and "Repeat last action" were
+  (plan Task 10) and the host tests in plan Task 11 (margin click-through into Premiere, second
+  monitor, native Nest and Label, animations off, the packaged build). The visual pass on the
+  palette is done (2026-09-11: tabs incl. Transitions, Tab / Shift+Tab, per-type row icons, status
+  strip instead of the footer, live language switching from the tray; see the last slice). Next:
+  the rest of the app — settings, shortcut editor, alias picker and debug windows (phase 3). Recent actions and "Repeat last action" were
   removed on 2026-09-11. See `TECHNICAL_PLAN.md` (last slice),
   `docs/superpowers/plans/2026-09-08-qml-palette.md` and
   `docs/superpowers/specs/2026-09-07-companion-qml-ui-rewrite-design.md`.

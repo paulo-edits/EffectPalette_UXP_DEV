@@ -55,31 +55,46 @@ Window {
 
     Component.onCompleted: Theme.animationsEnabled = metrics.animationsEnabled
 
-    // The shadow and the shell fade and scale together, so nothing is on screen
-    // before the content is.
+    // The shadow and the shell move together, so nothing is on screen before the
+    // content is. Hidden, the frame rests slideDistance lower and transparent: opening
+    // slides it up into place while it fades in, closing slides it back down.
     Item {
         id: frame
         objectName: "shellFrame"
         x: root.shadowMargin
-        y: root.shadowMargin
         width: metrics.windowWidth
         height: shell.height
 
-        opacity: root.shellVisible ? 1 : 0
-        scale: root.shellVisible ? 1 : 0.97
-        transformOrigin: Item.Center
-
-        Behavior on opacity {
-            enabled: Theme.animationsEnabled
-            NumberAnimation {
-                duration: metrics.openAnimationMs
-                easing.type: Theme.easeStandard
+        // Each direction has its own curve -- decelerate into place on open, accelerate
+        // away on close -- so each gets its own transition. One Behavior with an easing
+        // bound to shellVisible does not work: QML may start the animation before that
+        // binding updates, and which one wins depends on the platform, so a direction
+        // silently ran the other's curve (on Windows, opening started slow, then snapped).
+        state: root.shellVisible ? "shown" : "hidden"
+        states: [
+            State {
+                name: "hidden"
+                PropertyChanges { target: frame; y: root.shadowMargin + Theme.slideDistance; opacity: 0 }
+            },
+            State {
+                name: "shown"
+                PropertyChanges { target: frame; y: root.shadowMargin; opacity: 1 }
             }
-        }
-        Behavior on scale {
-            enabled: Theme.animationsEnabled
-            NumberAnimation { duration: metrics.openAnimationMs; easing.type: Theme.easeOvershoot }
-        }
+        ]
+        transitions: [
+            Transition {
+                from: "hidden"; to: "shown"
+                enabled: Theme.animationsEnabled
+                NumberAnimation { property: "y"; duration: metrics.openAnimationMs; easing.type: Theme.easeDecel }
+                NumberAnimation { property: "opacity"; duration: metrics.openAnimationMs; easing.type: Theme.easeStandard }
+            },
+            Transition {
+                from: "shown"; to: "hidden"
+                enabled: Theme.animationsEnabled
+                NumberAnimation { property: "y"; duration: metrics.openAnimationMs; easing.type: Theme.easeAccel }
+                NumberAnimation { property: "opacity"; duration: metrics.openAnimationMs; easing.type: Theme.easeStandard }
+            }
+        ]
 
         RectangularShadow {
             objectName: "shellShadow"
@@ -117,6 +132,7 @@ Window {
                     onMoveSelection: (delta) => vm.move_selection(delta)
                     onDismissed: root.dismissed()
                     onRefreshRequested: root.refreshRequested()
+                    onCycleCategory: (step) => categoryBar.cycle(step)
                     onTextChanged: vm.set_query(text)
                 }
 
@@ -151,6 +167,8 @@ Window {
                     visible: height > 0
                     model: vm.results
                     currentIndex: vm.selectedIndex
+                    // With the strip hidden, listBottomSpacer below provides the gap.
+                    bottomMargin: footer.shown ? Theme.spaceSm : 0
                     onRowClicked: (index) => vm.set_selected_index(index)
                     onRowActivated: (index) => { vm.set_selected_index(index); root.applyRequested() }
 
@@ -169,7 +187,7 @@ Window {
 
                     Text {
                         anchors.centerIn: parent
-                        text: i18n.t("no_results_helper")
+                        text: i18n.t("no_results_helper") + i18n.retranslate
                         color: Theme.textFaint
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.sizeBody
@@ -181,12 +199,23 @@ Window {
                     }
                 }
 
+                // Plain palette below the last band while the strip is hidden. The shell
+                // clips to a rectangle, not its rounded shape, so nothing may reach the
+                // bottom edge: scrolling rows, the list fade or the tab underline would
+                // paint over the rounded corners and the border.
+                Item {
+                    objectName: "listBottomSpacer"
+                    width: parent.width
+                    height: footer.shown ? 0 : Theme.spaceSm
+                }
+
+                // Only the apply message, never the result count: the strip is empty,
+                // and collapsed, unless an apply has something to say.
                 Footer {
                     id: footer
                     objectName: "footer"
                     width: parent.width
-                    hint: nestPanel.open ? i18n.t("nest_footer_hint") : vm.footerHint
-                    status: vm.statusText
+                    status: vm.statusOverride
                     busy: applyState.busy
                     applyPhase: applyState.state
                 }

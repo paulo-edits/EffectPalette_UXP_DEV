@@ -303,17 +303,40 @@ def set_startup_registry_enabled(enabled: bool) -> bool:
 CURRENT_LANGUAGE = _load_language()
 
 
-def set_language(lang: str) -> None:
+def apply_language(lang: str) -> bool:
+    """Switch the language in memory. Everything that calls tr() follows from here on;
+    the palette re-reads its strings through QtEffectPalette.on_language_changed()."""
     global CURRENT_LANGUAGE
     if lang not in SUPPORTED_LANGUAGES or lang == CURRENT_LANGUAGE:
-        return
+        return False
     CURRENT_LANGUAGE = lang
-    _save_language(lang)
+    _retranslate_static_items()
+    return True
+
+
+def set_language(lang: str) -> None:
+    if apply_language(lang):
+        _save_language(lang)
+
+
+def _retranslate_static_items() -> None:
+    """Names built with tr() at import time; they have to follow a later switch."""
+    for action in TIMELINE_ACTIONS:
+        if action.get("action") == "nest":
+            action["name"] = tr("timeline_action_nest")
 
 
 STRINGS: dict[str, dict[str, str]] = {
     # Footer hint
-    "footer_hint": {"en": "[↑↓] navigate  [↵] apply  [esc] close", "pt": "[↑↓] navegar  [↵] aplicar  [esc] fechar"},
+    "search_placeholder": {"en": "Search effects, presets, transitions…", "pt": "Buscar efeitos, presets, transições…"},
+    # Result-row type badges
+    "type_effect": {"en": "Effect", "pt": "Efeito"},
+    "type_preset": {"en": "Preset", "pt": "Preset"},
+    "type_transition": {"en": "Transition", "pt": "Transição"},
+    "type_project": {"en": "Project", "pt": "Projeto"},
+    "type_label": {"en": "Label", "pt": "Label"},
+    "type_action": {"en": "Action", "pt": "Ação"},
+    "type_favorite": {"en": "Favorite", "pt": "Favorito"},
     # Status / apply flow
     "status_requesting_refresh": {"en": "Requesting update from Premiere...", "pt": "Solicitando atualizacao ao Premiere..."},
     "status_no_response": {"en": "Premiere did not respond", "pt": "Premiere nao respondeu"},
@@ -379,14 +402,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "nest_name_hint": {"en": "Empty generates FXN-001, FXN-002...", "pt": "Vazio gera FXN-001, FXN-002..."},
     "nest_cancel": {"en": "Cancel", "pt": "Cancelar"},
     "nest_confirm": {"en": "Create Nest", "pt": "Criar Nest"},
-    "nest_footer_hint": {"en": "[enter] create  [esc] cancel", "pt": "[enter] criar  [esc] cancelar"},
     "tray_language_pt": {"en": "Portuguese", "pt": "Portugues"},
     "tray_quit": {"en": "Quit", "pt": "Sair"},
-    "tray_language_restart_title": {"en": "FX.palette", "pt": "FX.palette"},
-    "tray_language_restart_body": {
-        "en": "Language changed. Restart FX.palette for it to take effect.",
-        "pt": "Idioma alterado. Reinicie o FX.palette para aplicar.",
-    },
     # Bridge failure labels
     "bridge_error_no_selection": {"en": "No selection available", "pt": "Nenhuma selecao disponivel"},
     "bridge_error_no_sequence": {"en": "No active sequence", "pt": "Nenhuma sequencia ativa"},
@@ -545,6 +562,7 @@ FILTER_PALETTE = {
     "Presets": "#D8C2F3",
     "Projeto": "#B7D7F6",
     "Favoritos": "#F2DA8A",
+    "Transicoes": "#F3B6CD",
 }
 
 ITEM_TYPE_FILTER_KEYS = {
@@ -552,6 +570,8 @@ ITEM_TYPE_FILTER_KEYS = {
     "audio": "Audio",
     "preset": "Presets",
     "project_item": "Projeto",
+    "transition_video": "Transicoes",
+    "transition_audio": "Transicoes",
     "generic_item": "Favoritos",
     "favorite_item": "Favoritos",
     "favorite": "Favoritos",
@@ -1528,25 +1548,6 @@ def get_connection_state_tokens(state: str) -> dict[str, str]:
     }
 
 
-def get_icon_glyph(icon_kind: str, *, ascii_only: bool = False) -> str:
-    glyphs = {
-        "effect": "✦",
-        "preset": "✎",
-        "project": "▣",
-        "favorite": "★",
-    }
-    fallback = {
-        "effect": "FX",
-        "preset": "PR",
-        "project": "PJ",
-        "favorite": "*",
-        "action": "N",
-    }
-    if ascii_only:
-        return fallback.get(icon_kind, "•")
-    return glyphs.get(icon_kind, fallback.get(icon_kind, "•"))
-
-
 def get_reload_icon_glyph() -> str:
     return "\u21bb"
 
@@ -2499,38 +2500,44 @@ CATEGORY_TYPE_FILTERS = {
 def build_result_row_model(effect: dict) -> ResultRowModel:
     item_type = effect.get("type", "video")
     is_favorite = item_type in {"generic_item", "favorite_item"}
+    # icon_kind names the row icon ResultRow.qml draws: fx, audio, transition, preset,
+    # project, favorite, layers or label.
     if item_type == "preset":
-        type_label = "Preset"
+        type_label = tr("type_preset")
         icon_kind = "preset"
         subtitle = effect.get("category", "Presets")
     elif item_type in {"transition_video", "transition_audio"}:
-        type_label = "Transition"
-        icon_kind = "effect"
+        type_label = tr("type_transition")
+        icon_kind = "transition"
         subtitle = effect.get("category", "Transicoes")
     elif item_type == "project_item":
-        type_label = "Project"
+        type_label = tr("type_project")
         icon_kind = "project"
         subtitle = effect.get("treePath") or effect.get("category", "Projeto")
     elif item_type == "label_color":
-        type_label = "Label"
-        icon_kind = "effect"
+        type_label = tr("type_label")
+        icon_kind = "label"
         subtitle = effect.get("labelColor", "")
     elif item_type == "label_group_action":
-        type_label = "Action"
-        icon_kind = "action"
+        type_label = tr("type_action")
+        icon_kind = "label"
         subtitle = tr("label_select_group_desc")
     elif item_type == "timeline_action":
-        type_label = "Action"
-        icon_kind = "action"
+        type_label = tr("type_action")
+        icon_kind = "layers"
         subtitle = effect.get("category", "Timeline")
     elif is_favorite:
-        type_label = "Favorite"
+        type_label = tr("type_favorite")
         icon_kind = "favorite"
         subtitle = effect.get("sourceTreePath") or effect.get("category", "Favoritos")
     else:
-        type_label = "Effect"
-        icon_kind = "effect"
+        type_label = tr("type_effect")
+        icon_kind = "audio" if item_type == "audio" else "fx"
         subtitle = effect.get("category", "Effects")
+    # Internal category keys ("Favoritos", "Transicoes"...) are shown translated, also
+    # inside a path ("Transicoes > Video"); real Premiere names pass through unchanged.
+    if subtitle:
+        subtitle = " > ".join(tr_category(part) for part in subtitle.split(" > "))
     return ResultRowModel(
         payload=effect,
         title=effect.get("name", ""),
@@ -3408,6 +3415,7 @@ class QtEffectPalette:
             self.view_model,
             self.apply_controller,
             tr,
+            category_label=tr_category,
             animations_enabled=self.animations_enabled,
         )
         self.qml_host.load()
@@ -3733,6 +3741,14 @@ class QtEffectPalette:
         if self._execute_label_action(effect):
             return
         self._begin_apply(effect)
+
+    def on_language_changed(self):
+        """The tray switched language: retranslate the palette without a restart."""
+        self.qml_host.retranslate()
+        # Row badges and subtitles are built by build_result_row_model at recompute.
+        self.view_model.refresh()
+        # The Nest action's name is baked into the search index.
+        self.loader.request_refresh(self.root, self._on_loader_snapshot_ready, force=True)
 
     def _manual_refresh(self):
         if self.apply_controller.state in {"busy", "success"}:
@@ -4173,9 +4189,12 @@ class SystemTrayController:
         if lang == CURRENT_LANGUAGE:
             return
         set_language(lang)
+        # pystray calls this on its own thread; the palette lives on the Qt thread.
+        self._run_on_ui(self.palette.on_language_changed)
         if self.icon is not None:
             try:
-                self.icon.notify(tr("tray_language_restart_body"), tr("tray_language_restart_title"))
+                # The menu labels are callables over tr(); this re-reads them.
+                self.icon.update_menu()
             except Exception:
                 pass
 
@@ -4225,23 +4244,23 @@ class SystemTrayController:
 
         try:
             menu = pystray.Menu(
-                pystray.MenuItem(tr("tray_open_palette"), self._show_palette, default=True),
-                pystray.MenuItem(tr("tray_toggle_palette"), self._toggle_palette),
-                pystray.MenuItem(tr("tray_settings"), self._show_settings),
-                pystray.MenuItem(tr("tray_debug_window"), self._show_debug),
-                pystray.MenuItem(tr("tray_edit_hotkeys"), self._edit_hotkeys),
+                pystray.MenuItem(lambda item: tr("tray_open_palette"), self._show_palette, default=True),
+                pystray.MenuItem(lambda item: tr("tray_toggle_palette"), self._toggle_palette),
+                pystray.MenuItem(lambda item: tr("tray_settings"), self._show_settings),
+                pystray.MenuItem(lambda item: tr("tray_debug_window"), self._show_debug),
+                pystray.MenuItem(lambda item: tr("tray_edit_hotkeys"), self._edit_hotkeys),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(
-                    tr("tray_language"),
+                    lambda item: tr("tray_language"),
                     pystray.Menu(
                         pystray.MenuItem(
-                            tr("tray_language_en"),
+                            lambda item: tr("tray_language_en"),
                             lambda: self._set_language("en"),
                             checked=lambda item: CURRENT_LANGUAGE == "en",
                             radio=True,
                         ),
                         pystray.MenuItem(
-                            tr("tray_language_pt"),
+                            lambda item: tr("tray_language_pt"),
                             lambda: self._set_language("pt"),
                             checked=lambda item: CURRENT_LANGUAGE == "pt",
                             radio=True,
@@ -4249,10 +4268,10 @@ class SystemTrayController:
                     ),
                 ),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(tr("tray_generate_beta_report"), self._generate_beta_report),
-                pystray.MenuItem(tr("tray_open_report_folder"), self._open_report_folder),
+                pystray.MenuItem(lambda item: tr("tray_generate_beta_report"), self._generate_beta_report),
+                pystray.MenuItem(lambda item: tr("tray_open_report_folder"), self._open_report_folder),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(tr("tray_quit"), self._quit),
+                pystray.MenuItem(lambda item: tr("tray_quit"), self._quit),
             )
             self.icon = pystray.Icon("FX.palette", self._make_icon_image(), "FX.palette", menu)
             self._thread = threading.Thread(target=self.icon.run, daemon=True)

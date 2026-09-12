@@ -120,6 +120,36 @@ class PaletteBootTests(unittest.TestCase):
         self._settle()
         self.assertFalse(self.palette.margin_pass_through.running)
 
+    def _find_item(self, name):
+        def walk(item):
+            for child in item.childItems():
+                if child.objectName() == name:
+                    return child
+                found = walk(child)
+                if found is not None:
+                    return found
+            return None
+        return walk(self.palette.window.contentItem())
+
+    def test_language_switch_retranslates_the_open_palette(self):
+        # apply_language switches in memory only; it must never write settings.json.
+        from unittest import mock
+        original = app.CURRENT_LANGUAGE
+        other = "pt" if original != "pt" else "en"
+        with mock.patch.object(app, "_save_language") as save:
+            try:
+                app.apply_language(other)
+                self.palette.on_language_changed()
+                self._settle(0.2)
+                self.assertEqual(self._find_item("searchPlaceholder").property("text"),
+                                 app.tr("search_placeholder"))
+                self.assertEqual(app.CURRENT_LANGUAGE, other)
+            finally:
+                app.apply_language(original)
+                self.palette.on_language_changed()
+                self._settle(0.2)
+            save.assert_not_called()
+
     def test_selection_moves(self):
         self.palette.window.setProperty("searchText", "blur")
         self._settle()
